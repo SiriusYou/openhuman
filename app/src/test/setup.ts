@@ -163,6 +163,8 @@ vi.mock('../utils/config', () => ({
   SENTRY_DSN: undefined,
   BACKEND_URL: mockApiUrl,
   TELEGRAM_BOT_USERNAME: 'openhuman_bot',
+  YOUPET_CORE_API_URL: 'http://127.0.0.1:8000',
+  YOUPET_WORKBENCH_ACTOR_ID: 'openhuman-workbench',
   LATEST_APP_DOWNLOAD_URL: 'https://github.com/tinyhumansai/openhuman/releases/latest',
   APP_VERSION: '0.0.0-test',
   DEV_JWT_TOKEN: undefined,
