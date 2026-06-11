@@ -290,6 +290,9 @@ fn build_internal_only_controllers() -> Vec<RegisteredController> {
     // MCP write audit list: internal-only so the desktop UI/CLI can inspect
     // local write history without exposing cross-client history as an MCP tool.
     controllers.extend(crate::openhuman::mcp_audit::all_mcp_audit_internal_controllers());
+    // YouPet Core workbench integration — token-owned Rust bridge for the
+    // renderer. Internal-only so agents cannot use the stored service token.
+    controllers.extend(crate::openhuman::youpet::all_youpet_internal_controllers());
     controllers
 }
 

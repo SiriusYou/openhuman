@@ -218,11 +218,35 @@ fn schema_for_rpc_method_finds_internal_mcp_audit_list() {
 }
 
 #[test]
+fn schema_for_rpc_method_finds_internal_youpet_methods() {
+    for (method, function) in [
+        ("openhuman.youpet_list_alerts", "list_alerts"),
+        ("openhuman.youpet_ack_alert", "ack_alert"),
+        ("openhuman.youpet_resolve_alert", "resolve_alert"),
+    ] {
+        let schema = schema_for_rpc_method(method)
+            .unwrap_or_else(|| panic!("{method} should be internally routable"));
+        assert_eq!(schema.namespace, "youpet");
+        assert_eq!(schema.function, function);
+    }
+}
+
+#[test]
 fn rpc_method_from_parts_does_not_expose_internal_mcp_audit_list() {
     assert!(
         rpc_method_from_parts("mcp_audit", "list").is_none(),
         "internal MCP audit RPC must not appear in the public controller registry"
     );
+}
+
+#[test]
+fn rpc_method_from_parts_does_not_expose_internal_youpet_methods() {
+    for function in ["list_alerts", "ack_alert", "resolve_alert"] {
+        assert!(
+            rpc_method_from_parts("youpet", function).is_none(),
+            "internal YouPet RPC must not appear in the public controller registry"
+        );
+    }
 }
 
 #[test]

@@ -40,6 +40,9 @@ export const CORE_RPC_METHODS = {
   mcpClientsToolCall: 'openhuman.mcp_clients_tool_call',
   healthSnapshot: 'openhuman.health_snapshot',
   healthSystemInfo: 'openhuman.health_system_info',
+  youpetListAlerts: 'openhuman.youpet_list_alerts',
+  youpetAckAlert: 'openhuman.youpet_ack_alert',
+  youpetResolveAlert: 'openhuman.youpet_resolve_alert',
 } as const;
 
 export type CoreRpcMethod = (typeof CORE_RPC_METHODS)[keyof typeof CORE_RPC_METHODS];

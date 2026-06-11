@@ -117,16 +117,6 @@ export const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN as string | undefined;
 export const BACKEND_URL =
   (import.meta.env.VITE_BACKEND_URL as string | undefined)?.trim() || DEFAULT_BACKEND_URL;
 
-/** YouPet Core REST API base URL for the internal Core workbench client. */
-export const YOUPET_CORE_API_URL =
-  (import.meta.env.VITE_YOUPET_CORE_API_URL as string | undefined)?.trim() ||
-  'http://127.0.0.1:8000';
-
-/** Service actor label sent in `X-Actor-Id`; the domain user UUID stays in alert action bodies. */
-export const YOUPET_WORKBENCH_ACTOR_ID =
-  (import.meta.env.VITE_YOUPET_WORKBENCH_ACTOR_ID as string | undefined)?.trim() ||
-  'openhuman-workbench';
-
 /** Telegram bot username used for managed DM linking when backend does not return a launch URL. */
 export const TELEGRAM_BOT_USERNAME =
   (import.meta.env.VITE_TELEGRAM_BOT_USERNAME as string | undefined) || 'openhuman_bot';

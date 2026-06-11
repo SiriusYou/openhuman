@@ -280,6 +280,26 @@ fn snapshot_config_json_emits_config_and_workspace_and_config_path() {
     assert!(ws.contains(tmp.path().to_str().unwrap_or("")));
 }
 
+#[test]
+fn snapshot_config_json_masks_youpet_service_token() {
+    let tmp = tempdir().unwrap();
+    let mut cfg = tmp_config(&tmp);
+    cfg.youpet.service_token = Some("youpet-secret-token".into());
+
+    let snap = snapshot_config_json(&cfg).expect("snapshot");
+    let youpet = &snap["config"]["youpet"];
+
+    assert_eq!(youpet["service_token_set"], true);
+    assert!(
+        youpet.get("service_token").is_none(),
+        "config_get snapshot must not echo youpet.service_token"
+    );
+    assert!(
+        !snap.to_string().contains("youpet-secret-token"),
+        "YouPet token leaked in config snapshot: {snap}"
+    );
+}
+
 // ── agent_server_status ────────────────────────────────────────
 
 #[test]
