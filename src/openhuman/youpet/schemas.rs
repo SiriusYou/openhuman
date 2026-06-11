@@ -1,0 +1,190 @@
+use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
+
+use crate::core::all::{ControllerFuture, RegisteredController};
+use crate::core::{ControllerSchema, FieldSchema, TypeSchema};
+use crate::openhuman::config::rpc as config_rpc;
+use crate::rpc::RpcOutcome;
+
+use super::types::{AlertActionRpcParams, ListAlertsRpcParams};
+
+pub fn all_internal_controllers() -> Vec<RegisteredController> {
+    vec![
+        RegisteredController {
+            schema: youpet_schemas("list_alerts"),
+            handler: handle_list_alerts,
+        },
+        RegisteredController {
+            schema: youpet_schemas("ack_alert"),
+            handler: handle_ack_alert,
+        },
+        RegisteredController {
+            schema: youpet_schemas("resolve_alert"),
+            handler: handle_resolve_alert,
+        },
+    ]
+}
+
+pub fn youpet_schemas(function: &str) -> ControllerSchema {
+    match function {
+        "list_alerts" => ControllerSchema {
+            namespace: "youpet",
+            function: "list_alerts",
+            description: "List YouPet Core workbench alerts through the Rust core.",
+            inputs: vec![
+                optional_string(
+                    "status",
+                    "Optional alert status filter. Omitted -> open alerts only; null or empty string -> all states.",
+                ),
+                optional_string("severity", "Optional alert severity filter."),
+            ],
+            outputs: vec![json_output("alerts", "Core workbench alert rows.")],
+        },
+        "ack_alert" => ControllerSchema {
+            namespace: "youpet",
+            function: "ack_alert",
+            description: "Acknowledge a YouPet Core workbench alert.",
+            inputs: alert_action_inputs("note"),
+            outputs: vec![json_output("alert", "Updated Core alert.")],
+        },
+        "resolve_alert" => ControllerSchema {
+            namespace: "youpet",
+            function: "resolve_alert",
+            description: "Resolve a YouPet Core workbench alert.",
+            inputs: alert_action_inputs("resolution"),
+            outputs: vec![json_output("alert", "Updated Core alert.")],
+        },
+        _ => ControllerSchema {
+            namespace: "youpet",
+            function: "unknown",
+            description: "Unknown YouPet controller function.",
+            inputs: vec![],
+            outputs: vec![FieldSchema {
+                name: "error",
+                ty: TypeSchema::String,
+                comment: "Lookup error details.",
+                required: true,
+            }],
+        },
+    }
+}
+
+fn handle_list_alerts(params: Map<String, Value>) -> ControllerFuture {
+    Box::pin(async move {
+        let config = config_rpc::load_config_with_timeout().await?;
+        let payload = deserialize_params::<ListAlertsRpcParams>(params)?;
+        to_json(crate::openhuman::youpet::list_alerts(&config, payload).await?)
+    })
+}
+
+fn handle_ack_alert(params: Map<String, Value>) -> ControllerFuture {
+    Box::pin(async move {
+        let config = config_rpc::load_config_with_timeout().await?;
+        let payload = deserialize_params::<AlertActionRpcParams>(params)?;
+        to_json(crate::openhuman::youpet::ack_alert(&config, payload).await?)
+    })
+}
+
+fn handle_resolve_alert(params: Map<String, Value>) -> ControllerFuture {
+    Box::pin(async move {
+        let config = config_rpc::load_config_with_timeout().await?;
+        let payload = deserialize_params::<AlertActionRpcParams>(params)?;
+        to_json(crate::openhuman::youpet::resolve_alert(&config, payload).await?)
+    })
+}
+
+fn deserialize_params<T: DeserializeOwned>(params: Map<String, Value>) -> Result<T, String> {
+    serde_json::from_value(Value::Object(params)).map_err(|e| format!("invalid params: {e}"))
+}
+
+fn to_json<T: serde::Serialize>(outcome: RpcOutcome<T>) -> Result<Value, String> {
+    outcome.into_cli_compatible_json()
+}
+
+fn json_output(name: &'static str, comment: &'static str) -> FieldSchema {
+    FieldSchema {
+        name,
+        ty: TypeSchema::Json,
+        comment,
+        required: true,
+    }
+}
+
+fn optional_string(name: &'static str, comment: &'static str) -> FieldSchema {
+    FieldSchema {
+        name,
+        ty: TypeSchema::Option(Box::new(TypeSchema::String)),
+        comment,
+        required: false,
+    }
+}
+
+fn alert_action_inputs(optional_text_name: &'static str) -> Vec<FieldSchema> {
+    vec![
+        FieldSchema {
+            name: "alertId",
+            ty: TypeSchema::String,
+            comment: "Alert id.",
+            required: true,
+        },
+        FieldSchema {
+            name: "actorUserId",
+            ty: TypeSchema::String,
+            comment: "Domain user id performing the action.",
+            required: true,
+        },
+        optional_string(optional_text_name, "Optional action text."),
+        optional_string(
+            "idempotencyKey",
+            "Optional caller-supplied idempotency key. Omitted or blank -> fresh UUID per attempt, so retries are not replay/dedupe safe; supply a stable key for retry-safe semantics.",
+        ),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn schemas_and_controllers_match() {
+        let controllers = all_internal_controllers();
+        assert_eq!(controllers.len(), 3);
+        for controller in controllers {
+            assert_eq!(
+                controller.schema,
+                youpet_schemas(controller.schema.function)
+            );
+        }
+    }
+
+    #[test]
+    fn action_params_parse_camel_case() {
+        let payload: AlertActionRpcParams = serde_json::from_value(json!({
+            "alertId": "11111111-1111-4111-8111-111111111111",
+            "actorUserId": "22222222-2222-4222-8222-222222222222",
+            "idempotencyKey": "idem-1",
+            "note": "checking"
+        }))
+        .unwrap();
+        assert_eq!(payload.alert_id, "11111111-1111-4111-8111-111111111111");
+        assert_eq!(
+            payload.actor_user_id,
+            "22222222-2222-4222-8222-222222222222"
+        );
+        assert_eq!(payload.idempotency_key.as_deref(), Some("idem-1"));
+    }
+
+    #[test]
+    fn list_params_preserve_null_status() {
+        let payload: ListAlertsRpcParams = serde_json::from_value(json!({
+            "status": null,
+            "severity": "critical"
+        }))
+        .unwrap();
+        assert_eq!(
+            payload.status,
+            crate::openhuman::youpet::types::CoreAlertStatusFilter::All
+        );
+    }
+}

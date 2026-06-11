@@ -40,6 +40,7 @@ mod storage_memory;
 mod task_sources;
 mod tools;
 mod update;
+mod youpet;
 
 pub use accessibility::ScreenIntelligenceConfig;
 pub use agent::{
@@ -89,6 +90,7 @@ pub use tools::{
     SEARCH_ENGINE_MANAGED, SEARCH_ENGINE_PARALLEL, SEARCH_ENGINE_QUERIT,
 };
 pub use update::{UpdateConfig, UpdateRestartStrategy};
+pub use youpet::YouPetConfig;
 mod voice_server;
 pub use voice_server::{VoiceActivationMode, VoiceServerConfig};
 pub mod voice_providers;

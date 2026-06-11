@@ -274,6 +274,11 @@ mod tests {
             .collect()
     }
 
+    fn routable_rpc_methods_exist(method: &str) -> bool {
+        crate::core::all::schema_for_rpc_method(method).is_some()
+            || registered_http_methods().contains(method)
+    }
+
     #[test]
     fn quoted_value_extracts_single_quoted_string() {
         assert_eq!(quoted_value(": 'hello'"), "hello");
@@ -478,10 +483,9 @@ mod tests {
     fn frontend_core_rpc_methods_exist_in_core_schema_registry() {
         let source = read_frontend_rpc_catalog();
         let core_methods = parse_core_rpc_methods(&source);
-        let registered = registered_http_methods();
         let missing: Vec<_> = core_methods
             .values()
-            .filter(|method| !registered.contains(*method))
+            .filter(|method| !routable_rpc_methods_exist(method))
             .cloned()
             .collect();
 
@@ -509,10 +513,9 @@ mod tests {
 
     #[test]
     fn legacy_alias_targets_exist_in_core_schema_registry() {
-        let registered = registered_http_methods();
         let missing: Vec<_> = legacy_aliases()
             .iter()
-            .filter(|(_, canonical)| !registered.contains(*canonical))
+            .filter(|(_, canonical)| !routable_rpc_methods_exist(canonical))
             .map(|(legacy, canonical)| format!("{legacy} -> {canonical}"))
             .collect();
 

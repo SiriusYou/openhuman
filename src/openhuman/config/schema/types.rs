@@ -159,6 +159,9 @@ pub struct Config {
     pub task_sources: TaskSourcesConfig,
 
     #[serde(default)]
+    pub youpet: YouPetConfig,
+
+    #[serde(default)]
     pub channels_config: ChannelsConfig,
 
     #[serde(default)]
@@ -652,6 +655,7 @@ impl Default for Config {
             heartbeat: HeartbeatConfig::default(),
             cron: CronConfig::default(),
             task_sources: TaskSourcesConfig::default(),
+            youpet: YouPetConfig::default(),
             channels_config: ChannelsConfig::default(),
             memory: MemoryConfig::default(),
             memory_tree: MemoryTreeConfig::default(),

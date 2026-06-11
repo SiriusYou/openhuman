@@ -467,6 +467,11 @@ fn decrypt_config_secrets(config: &mut Config, openhuman_dir: &Path) -> Result<(
         &mut config.search.querit.api_key,
         "search.querit.api_key",
     )?;
+    decrypt_optional_secret(
+        &store,
+        &mut config.youpet.service_token,
+        "youpet.service_token",
+    )?;
 
     // Channels: decrypt every optional secret field.
     //
@@ -579,6 +584,11 @@ fn encrypt_config_secrets(config: &mut Config) -> Result<()> {
         &store,
         &mut config.search.querit.api_key,
         "search.querit.api_key",
+    )?;
+    encrypt_optional_secret(
+        &store,
+        &mut config.youpet.service_token,
+        "youpet.service_token",
     )?;
 
     let ch = &mut config.channels_config;
@@ -1380,6 +1390,25 @@ impl Config {
             let language = language.trim();
             if !language.is_empty() {
                 self.output_language = Some(language.to_string());
+            }
+        }
+
+        if let Some(url) = env.get("YOUPET_CORE_API_URL") {
+            let trimmed = url.trim().trim_end_matches('/');
+            if !trimmed.is_empty() {
+                self.youpet.core_api_url = trimmed.to_string();
+            }
+        }
+        if let Some(token) = env.get("YOUPET_SERVICE_TOKEN") {
+            let trimmed = token.trim();
+            if !trimmed.is_empty() {
+                self.youpet.service_token = Some(trimmed.to_string());
+            }
+        }
+        if let Some(actor) = env.get("YOUPET_WORKBENCH_ACTOR_ID") {
+            let trimmed = actor.trim();
+            if !trimmed.is_empty() {
+                self.youpet.workbench_actor_id = trimmed.to_string();
             }
         }
 

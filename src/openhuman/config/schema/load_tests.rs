@@ -520,6 +520,46 @@ fn env_overlay_model_ignores_empty() {
 }
 
 #[test]
+fn env_overlay_youpet_config_trims_and_ignores_blanks() {
+    let mut cfg = Config::default();
+    cfg.youpet.core_api_url = "http://old.example.test".into();
+    cfg.youpet.service_token = Some("old-token".into());
+    cfg.youpet.workbench_actor_id = "old-actor".into();
+
+    cfg.apply_env_overlay_with(
+        &HashMapEnv::new()
+            .with("YOUPET_CORE_API_URL", " https://core.example.test/// ")
+            .with("YOUPET_SERVICE_TOKEN", "  svc-token  ")
+            .with("YOUPET_WORKBENCH_ACTOR_ID", "  workbench-actor  "),
+    );
+
+    assert_eq!(cfg.youpet.core_api_url, "https://core.example.test");
+    assert_eq!(cfg.youpet.service_token.as_deref(), Some("svc-token"));
+    assert_eq!(cfg.youpet.workbench_actor_id, "workbench-actor");
+
+    cfg.apply_env_overlay_with(
+        &HashMapEnv::new()
+            .with("YOUPET_CORE_API_URL", "   ")
+            .with("YOUPET_SERVICE_TOKEN", "   ")
+            .with("YOUPET_WORKBENCH_ACTOR_ID", "   "),
+    );
+
+    assert_eq!(
+        cfg.youpet.core_api_url, "https://core.example.test",
+        "blank YouPet URL must not clobber"
+    );
+    assert_eq!(
+        cfg.youpet.service_token.as_deref(),
+        Some("svc-token"),
+        "blank YouPet token must not clobber"
+    );
+    assert_eq!(
+        cfg.youpet.workbench_actor_id, "workbench-actor",
+        "blank YouPet actor must not clobber"
+    );
+}
+
+#[test]
 fn env_overlay_temperature_accepts_valid_and_ignores_out_of_range_or_garbage() {
     let mut cfg = Config::default();
     cfg.default_temperature = 0.5;
@@ -1762,6 +1802,45 @@ allowed_users = ["@admin"]
         Some(known_secret),
         "decrypt path broken: reloaded bot_token '{reloaded_token:?}' \
          does not match original '{known_secret}'"
+    );
+}
+
+#[tokio::test]
+async fn youpet_service_token_encrypted_on_save_decrypted_on_load() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = tmp.path().join("config.toml");
+    let workspace_dir = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace_dir).unwrap();
+
+    let known_secret = "youpet-service-token-sensitive";
+    let cfg = Config {
+        config_path: config_path.clone(),
+        workspace_dir,
+        secrets: crate::openhuman::config::schema::SecretsConfig { encrypt: true },
+        youpet: crate::openhuman::config::schema::YouPetConfig {
+            service_token: Some(known_secret.to_string()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    cfg.save().await.unwrap();
+
+    let raw_contents = std::fs::read_to_string(&config_path).expect("config.toml should exist");
+    assert!(
+        !raw_contents.contains(known_secret),
+        "SECURITY BUG: youpet.service_token persisted in plaintext:\n{raw_contents}"
+    );
+    assert!(
+        raw_contents.contains("service_token = \"enc"),
+        "youpet.service_token should be encrypted in TOML:\n{raw_contents}"
+    );
+
+    let reloaded = load_or_init_for_workspace(tmp.path()).await;
+    assert_eq!(
+        reloaded.youpet.service_token.as_deref(),
+        Some(known_secret),
+        "decrypt path must restore youpet.service_token"
     );
 }
 
