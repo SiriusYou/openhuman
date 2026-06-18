@@ -16,6 +16,8 @@ pub struct YouPetConfig {
     pub service_token: Option<String>,
     /// Actor label sent in X-Actor-Id for workbench operations.
     pub workbench_actor_id: String,
+    /// Core users.id UUID for the operator performing workbench actions.
+    pub operator_user_id: Option<String>,
 }
 
 impl fmt::Debug for YouPetConfig {
@@ -31,6 +33,7 @@ impl fmt::Debug for YouPetConfig {
                     .map(|_| "<redacted>"),
             )
             .field("workbench_actor_id", &self.workbench_actor_id)
+            .field("operator_user_id", &self.operator_user_id)
             .finish()
     }
 }
@@ -41,6 +44,7 @@ impl Default for YouPetConfig {
             core_api_url: DEFAULT_YOUPET_CORE_API_URL.to_string(),
             service_token: None,
             workbench_actor_id: DEFAULT_YOUPET_WORKBENCH_ACTOR_ID.to_string(),
+            operator_user_id: None,
         }
     }
 }
@@ -70,6 +74,13 @@ impl YouPetConfig {
             trimmed
         }
     }
+
+    pub fn operator_user_id(&self) -> Option<&str> {
+        self.operator_user_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|operator| !operator.is_empty())
+    }
 }
 
 #[cfg(test)]
@@ -82,6 +93,7 @@ mod tests {
         assert_eq!(cfg.core_api_url, DEFAULT_YOUPET_CORE_API_URL);
         assert_eq!(cfg.workbench_actor_id, DEFAULT_YOUPET_WORKBENCH_ACTOR_ID);
         assert!(cfg.service_token.is_none());
+        assert!(cfg.operator_user_id.is_none());
     }
 
     #[test]
@@ -101,9 +113,17 @@ mod tests {
             core_api_url: "  https://core.example.test///  ".into(),
             service_token: Some("  tok  ".into()),
             workbench_actor_id: "   ".into(),
+            operator_user_id: Some("  operator-1  ".into()),
         };
         assert_eq!(cfg.normalized_core_api_url(), "https://core.example.test");
         assert_eq!(cfg.service_token(), Some("tok"));
         assert_eq!(cfg.workbench_actor_id(), DEFAULT_YOUPET_WORKBENCH_ACTOR_ID);
+        assert_eq!(cfg.operator_user_id(), Some("operator-1"));
+
+        let blank_operator = YouPetConfig {
+            operator_user_id: Some("   ".into()),
+            ..Default::default()
+        };
+        assert_eq!(blank_operator.operator_user_id(), None);
     }
 }

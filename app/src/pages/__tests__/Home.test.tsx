@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveHomeUserName } from '../Home';
 
@@ -14,7 +14,8 @@ vi.mock('../../utils/config', async importOriginal => {
   return { ...actual, APP_VERSION: '0.0.0-test' };
 });
 
-vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }));
+const navigateMock = vi.hoisted(() => vi.fn());
+vi.mock('react-router-dom', () => ({ useNavigate: () => navigateMock }));
 
 const mockUseUsageState = vi.hoisted(() =>
   vi.fn(() => ({ shouldShowBudgetCompletedMessage: false }))
@@ -70,6 +71,10 @@ vi.mock('../../components/upsell/upsellDismissState', () => ({
   dismissBanner: (...args: Parameters<typeof mockDismissBanner>) => mockDismissBanner(...args),
 }));
 
+beforeEach(() => {
+  navigateMock.mockReset();
+});
+
 describe('resolveHomeUserName', () => {
   it('uses camelCase name fields when present', () => {
     expect(resolveHomeUserName({ firstName: 'Ada', lastName: 'Lovelace' })).toBe('Ada Lovelace');
@@ -109,6 +114,17 @@ describe('resolveHomeUserName', () => {
 });
 
 describe('Home page — handleRestartCore and blocking state rendering', () => {
+  it('links to the YouPet Workbench from Home', async () => {
+    useAppSelectorMock.mockReturnValue('ok');
+    mockShouldShowBanner.mockReturnValue(false);
+
+    const { default: Home } = await import('../Home');
+    render(<Home />);
+
+    fireEvent.click(screen.getByRole('button', { name: /YouPet Workbench/i }));
+    expect(navigateMock).toHaveBeenCalledWith('/workbench');
+  });
+
   it('shows "Restart Core" button when blocking=core-unreachable (lines 194, 200)', async () => {
     useAppSelectorMock.mockReturnValue('core-unreachable');
     mockShouldShowBanner.mockReturnValue(false);

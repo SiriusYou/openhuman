@@ -22,6 +22,7 @@ import Skills from './pages/Skills';
 import SkillsRun from './pages/SkillsRun';
 import WebCallbackPage from './pages/WebCallbackPage';
 import Welcome from './pages/Welcome';
+import Workbench from './pages/Workbench';
 
 const AppRoutes = () => {
   // Mobile target (iOS or Android): pair → Human/Chat/Settings only.
@@ -180,6 +181,15 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute requireAuth={true}>
             <AgentWorkflows />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/workbench"
+        element={
+          <ProtectedRoute requireAuth={true}>
+            <Workbench />
           </ProtectedRoute>
         }
       />
