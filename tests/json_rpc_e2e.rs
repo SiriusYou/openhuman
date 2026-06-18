@@ -1097,6 +1097,7 @@ async fn json_rpc_youpet_bridge_is_internal_only_but_routable() {
         EnvVarGuard::set("YOUPET_CORE_API_URL", &format!("http://{youpet_addr}"));
     let _youpet_token_guard = EnvVarGuard::set("YOUPET_SERVICE_TOKEN", "rpc-youpet-token");
     let _youpet_actor_guard = EnvVarGuard::set("YOUPET_WORKBENCH_ACTOR_ID", "rpc-workbench-actor");
+    let _youpet_operator_guard = EnvVarGuard::set("YOUPET_OPERATOR_USER_ID", YOUPET_ACTOR_USER_ID);
 
     let (rpc_addr, rpc_join) = serve_on_ephemeral(build_core_http_router(false)).await;
     let rpc_base = format!("http://{rpc_addr}");
@@ -1123,7 +1124,7 @@ async fn json_rpc_youpet_bridge_is_internal_only_but_routable() {
         &rpc_base,
         2026_2,
         "openhuman.youpet_ack_alert",
-        json!({ "alertId": YOUPET_ALERT_ID, "actorUserId": YOUPET_ACTOR_USER_ID }),
+        json!({ "alertId": YOUPET_ALERT_ID }),
     )
     .await;
     let ack_result = assert_no_jsonrpc_error(&ack, "youpet_ack_alert");
@@ -1135,7 +1136,6 @@ async fn json_rpc_youpet_bridge_is_internal_only_but_routable() {
         "openhuman.youpet_resolve_alert",
         json!({
             "alertId": YOUPET_ALERT_ID,
-            "actorUserId": YOUPET_ACTOR_USER_ID,
             "idempotencyKey": "idem-json-rpc-resolve"
         }),
     )

@@ -28,7 +28,6 @@ export interface ListCoreWorkbenchAlertsParams {
 }
 
 export interface CoreAlertActionParams {
-  actorUserId: string;
   note?: string;
   resolution?: string;
   idempotencyKey?: string;
@@ -59,12 +58,7 @@ export class CoreWorkbenchClient {
   async ackAlert(alertId: string, params: CoreAlertActionParams): Promise<CoreWorkbenchAlert> {
     const raw = await callCoreRpc<CoreResult<CoreWorkbenchAlert>>({
       method: CORE_RPC_METHODS.youpetAckAlert,
-      params: {
-        alertId,
-        actorUserId: params.actorUserId,
-        note: params.note,
-        idempotencyKey: params.idempotencyKey,
-      },
+      params: { alertId, note: params.note, idempotencyKey: params.idempotencyKey },
       timeoutMs: this.timeoutMs,
     });
     return unwrapCoreResult(raw);
@@ -73,12 +67,7 @@ export class CoreWorkbenchClient {
   async resolveAlert(alertId: string, params: CoreAlertActionParams): Promise<CoreWorkbenchAlert> {
     const raw = await callCoreRpc<CoreResult<CoreWorkbenchAlert>>({
       method: CORE_RPC_METHODS.youpetResolveAlert,
-      params: {
-        alertId,
-        actorUserId: params.actorUserId,
-        resolution: params.resolution,
-        idempotencyKey: params.idempotencyKey,
-      },
+      params: { alertId, resolution: params.resolution, idempotencyKey: params.idempotencyKey },
       timeoutMs: this.timeoutMs,
     });
     return unwrapCoreResult(raw);

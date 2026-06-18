@@ -1411,6 +1411,14 @@ impl Config {
                 self.youpet.workbench_actor_id = trimmed.to_string();
             }
         }
+        if let Some(operator) = env.get("YOUPET_OPERATOR_USER_ID") {
+            let trimmed = operator.trim();
+            self.youpet.operator_user_id = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+        }
 
         if let Some(flag) = env.get_any(&["OPENHUMAN_REASONING_ENABLED", "REASONING_ENABLED"]) {
             let normalized = flag.trim().to_ascii_lowercase();

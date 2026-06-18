@@ -62,7 +62,6 @@ describe('coreWorkbenchClient', () => {
     const client = createCoreWorkbenchClient();
 
     const updated = await client.ackAlert('alert-1', {
-      actorUserId: 'user-1',
       note: 'Calling owner.',
       idempotencyKey: 'idem-ack-1',
     });
@@ -70,12 +69,7 @@ describe('coreWorkbenchClient', () => {
     expect(updated.status).toBe('acknowledged');
     expect(mockCallCoreRpc).toHaveBeenCalledWith({
       method: CORE_RPC_METHODS.youpetAckAlert,
-      params: {
-        alertId: 'alert-1',
-        actorUserId: 'user-1',
-        note: 'Calling owner.',
-        idempotencyKey: 'idem-ack-1',
-      },
+      params: { alertId: 'alert-1', note: 'Calling owner.', idempotencyKey: 'idem-ack-1' },
       timeoutMs: undefined,
     });
   });
@@ -85,7 +79,6 @@ describe('coreWorkbenchClient', () => {
     const client = createCoreWorkbenchClient();
 
     const updated = await client.resolveAlert('alert-1', {
-      actorUserId: 'user-1',
       resolution: 'Owner confirmed completion.',
     });
 
@@ -94,7 +87,6 @@ describe('coreWorkbenchClient', () => {
       method: CORE_RPC_METHODS.youpetResolveAlert,
       params: {
         alertId: 'alert-1',
-        actorUserId: 'user-1',
         resolution: 'Owner confirmed completion.',
         idempotencyKey: undefined,
       },
@@ -106,8 +98,6 @@ describe('coreWorkbenchClient', () => {
     mockCallCoreRpc.mockRejectedValueOnce(new Error('invalid_task_state'));
     const client = createCoreWorkbenchClient();
 
-    await expect(client.ackAlert('alert-1', { actorUserId: 'user-1' })).rejects.toThrow(
-      'invalid_task_state'
-    );
+    await expect(client.ackAlert('alert-1', {})).rejects.toThrow('invalid_task_state');
   });
 });

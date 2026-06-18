@@ -120,7 +120,6 @@ pub struct ListAlertsRpcParams {
 #[serde(rename_all = "camelCase")]
 pub struct AlertActionRpcParams {
     pub alert_id: String,
-    pub actor_user_id: String,
     #[serde(default)]
     pub note: Option<String>,
     #[serde(default)]

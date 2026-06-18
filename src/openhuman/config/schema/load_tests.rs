@@ -525,23 +525,30 @@ fn env_overlay_youpet_config_trims_and_ignores_blanks() {
     cfg.youpet.core_api_url = "http://old.example.test".into();
     cfg.youpet.service_token = Some("old-token".into());
     cfg.youpet.workbench_actor_id = "old-actor".into();
+    cfg.youpet.operator_user_id = Some("old-operator".into());
 
     cfg.apply_env_overlay_with(
         &HashMapEnv::new()
             .with("YOUPET_CORE_API_URL", " https://core.example.test/// ")
             .with("YOUPET_SERVICE_TOKEN", "  svc-token  ")
-            .with("YOUPET_WORKBENCH_ACTOR_ID", "  workbench-actor  "),
+            .with("YOUPET_WORKBENCH_ACTOR_ID", "  workbench-actor  ")
+            .with("YOUPET_OPERATOR_USER_ID", "  operator-user-id  "),
     );
 
     assert_eq!(cfg.youpet.core_api_url, "https://core.example.test");
     assert_eq!(cfg.youpet.service_token.as_deref(), Some("svc-token"));
     assert_eq!(cfg.youpet.workbench_actor_id, "workbench-actor");
+    assert_eq!(
+        cfg.youpet.operator_user_id.as_deref(),
+        Some("operator-user-id")
+    );
 
     cfg.apply_env_overlay_with(
         &HashMapEnv::new()
             .with("YOUPET_CORE_API_URL", "   ")
             .with("YOUPET_SERVICE_TOKEN", "   ")
-            .with("YOUPET_WORKBENCH_ACTOR_ID", "   "),
+            .with("YOUPET_WORKBENCH_ACTOR_ID", "   ")
+            .with("YOUPET_OPERATOR_USER_ID", "   "),
     );
 
     assert_eq!(
@@ -556,6 +563,10 @@ fn env_overlay_youpet_config_trims_and_ignores_blanks() {
     assert_eq!(
         cfg.youpet.workbench_actor_id, "workbench-actor",
         "blank YouPet actor must not clobber"
+    );
+    assert!(
+        cfg.youpet.operator_user_id.is_none(),
+        "blank YouPet operator id must clear to None"
     );
 }
 

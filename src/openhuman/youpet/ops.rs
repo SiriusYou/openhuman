@@ -39,8 +39,9 @@ pub async fn ack_alert(
     config: &Config,
     params: AlertActionRpcParams,
 ) -> Result<RpcOutcome<CoreWorkbenchAlert>, String> {
+    let actor_user_id = required_operator_user_id(config)?;
     let mut body = Map::new();
-    body.insert("actor_user_id".to_string(), json!(params.actor_user_id));
+    body.insert("actor_user_id".to_string(), json!(actor_user_id));
     if let Some(note) = params.note {
         body.insert("note".to_string(), json!(note));
     }
@@ -62,8 +63,9 @@ pub async fn resolve_alert(
     config: &Config,
     params: AlertActionRpcParams,
 ) -> Result<RpcOutcome<CoreWorkbenchAlert>, String> {
+    let actor_user_id = required_operator_user_id(config)?;
     let mut body = Map::new();
-    body.insert("actor_user_id".to_string(), json!(params.actor_user_id));
+    body.insert("actor_user_id".to_string(), json!(actor_user_id));
     if let Some(resolution) = params.resolution {
         body.insert("resolution".to_string(), json!(resolution));
     }
@@ -126,7 +128,7 @@ async fn send_request<T: DeserializeOwned>(
     let token = config
         .youpet
         .service_token()
-        .ok_or_else(|| config_error("youpet.service_token is required"))?;
+        .ok_or_else(|| config_error("youpet.service_token is required", "service_token"))?;
     let response = request
         .bearer_auth(token)
         .header("X-Actor-Id", config.youpet.workbench_actor_id())
@@ -213,11 +215,20 @@ fn http_error(status: StatusCode, body: Value) -> String {
     )
 }
 
-fn config_error(message: &str) -> String {
+fn required_operator_user_id(config: &Config) -> Result<&str, String> {
+    config.youpet.operator_user_id().ok_or_else(|| {
+        config_error(
+            "youpet.operator_user_id is required for YouPet Workbench actions",
+            "operator_user_id",
+        )
+    })
+}
+
+fn config_error(message: &str, field: &str) -> String {
     structured_error(
         message,
         "YouPetConfigMissing",
-        json!({ "field": "service_token" }),
+        json!({ "field": field }),
         true,
     )
 }
@@ -282,6 +293,7 @@ mod tests {
                 core_api_url: base,
                 service_token: Some("svc-token".into()),
                 workbench_actor_id: "operator-workbench".into(),
+                operator_user_id: Some(TEST_ACTOR_USER_ID.into()),
             },
             ..Config::default()
         }
@@ -429,7 +441,6 @@ mod tests {
             &config,
             AlertActionRpcParams {
                 alert_id: TEST_ALERT_ID.into(),
-                actor_user_id: TEST_ACTOR_USER_ID.into(),
                 note: Some("Calling owner.".into()),
                 resolution: None,
                 idempotency_key: None,
@@ -462,7 +473,6 @@ mod tests {
             &config,
             AlertActionRpcParams {
                 alert_id: TEST_ALERT_ID.into(),
-                actor_user_id: TEST_ACTOR_USER_ID.into(),
                 note: None,
                 resolution: None,
                 idempotency_key: Some("idem".into()),
@@ -495,7 +505,6 @@ mod tests {
                 &config,
                 AlertActionRpcParams {
                     alert_id: TEST_ALERT_ID.into(),
-                    actor_user_id: TEST_ACTOR_USER_ID.into(),
                     note: None,
                     resolution: None,
                     idempotency_key: Some(raw_key.into()),
@@ -538,7 +547,6 @@ mod tests {
             &config,
             AlertActionRpcParams {
                 alert_id: TEST_ALERT_ID.into(),
-                actor_user_id: TEST_ACTOR_USER_ID.into(),
                 note: None,
                 resolution: None,
                 idempotency_key: Some(" idem ".into()),
@@ -566,7 +574,6 @@ mod tests {
             &config,
             AlertActionRpcParams {
                 alert_id: TEST_ALERT_ID.into(),
-                actor_user_id: TEST_ACTOR_USER_ID.into(),
                 note: None,
                 resolution: Some("done".into()),
                 idempotency_key: Some("idem-supplied".into()),
@@ -595,7 +602,6 @@ mod tests {
             &config,
             AlertActionRpcParams {
                 alert_id: TEST_ALERT_ID.into(),
-                actor_user_id: TEST_ACTOR_USER_ID.into(),
                 note: None,
                 resolution: None,
                 idempotency_key: Some("idem-supplied".into()),
@@ -738,7 +744,6 @@ mod tests {
             &config,
             AlertActionRpcParams {
                 alert_id: TEST_ALERT_ID.into(),
-                actor_user_id: TEST_ACTOR_USER_ID.into(),
                 note: None,
                 resolution: None,
                 idempotency_key: Some("idem".into()),
@@ -767,6 +772,59 @@ mod tests {
         assert!(!data_string.contains("not-a-uuid-secret"));
         assert!(!data_string.contains("Input should be a valid UUID"));
         assert!(!data_string.contains("actor_user_id"));
+    }
+
+    #[tokio::test]
+    async fn http_error_marks_invalid_operator_reference_as_expected_user_state() {
+        let route = format!("/api/v1/alerts/{TEST_ALERT_ID}/ack");
+        let app = Router::new().route(
+            &route,
+            post(|| async {
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    axum::Json(json!({
+                        "detail": {
+                            "code": "invalid_reference",
+                            "field": "actor_user_id",
+                            "message": "unknown user"
+                        }
+                    })),
+                )
+            }),
+        );
+        let base = spawn_mock(app).await;
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp, base);
+
+        let err = ack_alert(
+            &config,
+            AlertActionRpcParams {
+                alert_id: TEST_ALERT_ID.into(),
+                note: None,
+                resolution: None,
+                idempotency_key: Some("idem".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+        let structured = StructuredRpcError::decode(&err).expect("structured error");
+        assert_eq!(
+            structured.message,
+            "YouPet Core request failed with HTTP 422"
+        );
+        assert!(
+            structured.expected_user_state,
+            "Core invalid_reference should be expected config/user state"
+        );
+        let data = structured.data.unwrap();
+        assert_eq!(data["kind"], json!("YouPetCoreHttpError"));
+        assert_eq!(data["youpet"]["code"], json!("invalid_reference"));
+        assert_eq!(data["youpet"]["http_status"], json!(422));
+        assert!(
+            data["youpet"].get("response_body").is_none(),
+            "Core response body must not cross the renderer boundary"
+        );
+        assert!(!data.to_string().contains("unknown user"));
     }
 
     #[tokio::test]
@@ -822,5 +880,36 @@ mod tests {
             structured.data.unwrap()["kind"],
             json!("YouPetConfigMissing")
         );
+    }
+
+    #[tokio::test]
+    async fn missing_operator_user_id_is_expected_config_error_for_actions() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = test_config(&tmp, "http://127.0.0.1:1".into());
+        config.youpet.operator_user_id = None;
+
+        let err = ack_alert(
+            &config,
+            AlertActionRpcParams {
+                alert_id: TEST_ALERT_ID.into(),
+                note: None,
+                resolution: None,
+                idempotency_key: Some("idem".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+        let structured = StructuredRpcError::decode(&err).expect("structured error");
+        assert_eq!(
+            structured.message,
+            "youpet.operator_user_id is required for YouPet Workbench actions"
+        );
+        assert!(
+            structured.expected_user_state,
+            "missing operator is a local config/user-state issue"
+        );
+        let data = structured.data.unwrap();
+        assert_eq!(data["kind"], json!("YouPetConfigMissing"));
+        assert_eq!(data["youpet"]["field"], json!("operator_user_id"));
     }
 }
