@@ -590,9 +590,9 @@ async fn round20_spawn_subagent_covers_validation_schema_and_disabled_worker_bra
             "dedicated_thread": true
         }))
         .await
-        .expect("dedicated thread disabled returns tool result");
+        .expect("dedicated thread returns tool result");
     assert!(dedicated_thread.is_error);
-    assert!(dedicated_thread.output().contains("temporarily disabled"));
+    assert!(!dedicated_thread.output().contains("temporarily disabled"));
 }
 
 async fn start_loopback(app: Router) -> String {

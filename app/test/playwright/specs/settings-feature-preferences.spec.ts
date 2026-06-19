@@ -93,13 +93,22 @@ test.describe('Settings - Feature Preferences', () => {
       };
     }>('openhuman.app_state_snapshot', {});
     const enabledBefore = before.result?.localState?.onboardingTasks?.enabledTools ?? [];
+    const targetTool = [
+      { label: 'Open Browser', rustName: 'browser_open' },
+      { label: 'Browser Automation', rustName: 'browser' },
+      { label: 'HTTP Requests', rustName: 'http_request' },
+    ].find(tool => !enabledBefore.includes(tool.rustName)) ?? {
+      label: 'Open Browser',
+      rustName: 'browser_open',
+    };
+    const expectedEnabled = !enabledBefore.includes(targetTool.rustName);
 
     await openAuthenticatedRoute(page, 'pw-settings-tools', '/settings/tools');
 
     await expect(page.getByText('Tools', { exact: true })).toBeVisible();
     await page
       .locator('button')
-      .filter({ has: page.getByText('Shell Commands', { exact: true }) })
+      .filter({ has: page.getByText(targetTool.label, { exact: true }) })
       .click();
     await page.getByRole('button', { name: 'Save Changes', exact: true }).click();
     await expect(page.getByText('Preferences saved')).toBeVisible();
@@ -112,7 +121,7 @@ test.describe('Settings - Feature Preferences', () => {
           };
         }>('openhuman.app_state_snapshot', {});
         const enabledAfter = after.result?.localState?.onboardingTasks?.enabledTools ?? [];
-        return JSON.stringify(enabledAfter) !== JSON.stringify(enabledBefore);
+        return enabledAfter.includes(targetTool.rustName) === expectedEnabled;
       })
       .toBe(true);
   });
