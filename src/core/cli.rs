@@ -278,7 +278,16 @@ fn run_server_command(args: &[String]) -> Result<()> {
     crate::core::logging::init_for_cli_run(verbose, log_scope);
 
     // Initialize the Tokio multi-threaded runtime.
+    //
+    // Keep the standalone `openhuman-core run` harness aligned with
+    // the Tauri in-process runtime in `app/src-tauri/src/lib.rs`: chat
+    // turns can enter the deep
+    // web-channel -> orchestrator -> subagent-runner tower, and the
+    // default ~2 MiB tokio worker stack has historically overflowed in
+    // that path. Playwright E2E runs the standalone harness, so it needs
+    // the same headroom as the desktop runtime.
     let rt = tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(8 * 1024 * 1024)
         .enable_all()
         .build()?;
     rt.block_on(async {
