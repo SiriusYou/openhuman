@@ -86,6 +86,111 @@ function formatDate(value: string | null | undefined, noneLabel: string) {
   return date.toLocaleString();
 }
 
+function formatOptional(value: string | null | undefined, noneLabel: string) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : noneLabel;
+}
+
+function WorkbenchAlertContextPanel({
+  alert,
+  t,
+}: {
+  alert: CoreWorkbenchAlert;
+  t: (key: string, fallback?: string) => string;
+}) {
+  const none = t('workbench.none');
+  const context = alert.context;
+  if (!context) {
+    return (
+      <section className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+        {t('workbench.contextUnavailable')}
+      </section>
+    );
+  }
+
+  const latestCheckin = context.latest_checkin;
+
+  return (
+    <section
+      aria-label={t('workbench.contextFor', 'Operational context for {alertId}').replace(
+        '{alertId}',
+        alert.id
+      )}
+      className="mt-4 grid gap-3 rounded-lg border border-stone-200 bg-stone-50 p-3 text-sm dark:border-neutral-800 dark:bg-neutral-950 md:grid-cols-2">
+      <div>
+        <p className="text-xs font-semibold uppercase text-stone-400">
+          {t('workbench.context.pet', 'Pet')}
+        </p>
+        <p className="font-medium text-stone-900 dark:text-neutral-100">{context.pet.name}</p>
+        <p className="text-stone-600 dark:text-neutral-300">
+          {context.pet.species} · {context.pet.status}
+          {context.pet.breed ? ` · ${context.pet.breed}` : ''}
+        </p>
+      </div>
+      <div>
+        <p className="text-xs font-semibold uppercase text-stone-400">
+          {t('workbench.context.owner', 'Owner')}
+        </p>
+        <p className="font-medium text-stone-900 dark:text-neutral-100">{context.owner.name}</p>
+        <p className="text-stone-600 dark:text-neutral-300">
+          {formatOptional(context.owner.phone, none)} · {context.owner.status}
+        </p>
+      </div>
+      <div>
+        <p className="text-xs font-semibold uppercase text-stone-400">
+          {t('workbench.context.plan', 'Health plan')}
+        </p>
+        <p className="font-medium text-stone-900 dark:text-neutral-100">
+          {context.health_plan.title}
+        </p>
+        <p className="text-stone-600 dark:text-neutral-300">
+          {context.health_plan.plan_type} · {context.health_plan.status}
+        </p>
+        <p className="break-all text-stone-500 dark:text-neutral-400">
+          {t('workbench.context.flowId', 'Flow ID')}:{' '}
+          {formatOptional(context.health_plan.openclaw_flow_id, none)}
+        </p>
+      </div>
+      <div>
+        <p className="text-xs font-semibold uppercase text-stone-400">
+          {t('workbench.context.task', 'Task')}
+        </p>
+        <p className="font-medium text-stone-900 dark:text-neutral-100">
+          {context.task.status} · {t('workbench.context.missed', 'Missed')}:{' '}
+          {context.task.missed_count}
+        </p>
+        <p className="text-stone-600 dark:text-neutral-300">
+          {t('workbench.context.due', 'Due')}: {formatDate(context.task.due_at, none)}
+        </p>
+        <p className="break-all text-stone-500 dark:text-neutral-400">
+          {t('workbench.context.flowId', 'Flow ID')}:{' '}
+          {formatOptional(context.task.openclaw_flow_id, none)}
+        </p>
+      </div>
+      <div className="md:col-span-2">
+        <p className="text-xs font-semibold uppercase text-stone-400">
+          {t('workbench.context.latestCheckin', 'Latest check-in')}
+        </p>
+        {latestCheckin ? (
+          <>
+            <p className="font-medium text-stone-900 dark:text-neutral-100">
+              {formatOptional(latestCheckin.text, none)}
+            </p>
+            <p className="text-stone-600 dark:text-neutral-300">
+              {formatDate(latestCheckin.submitted_at, none)}
+              {latestCheckin.status_tags.length > 0
+                ? ` · ${latestCheckin.status_tags.join(', ')}`
+                : ''}
+            </p>
+          </>
+        ) : (
+          <p className="text-stone-600 dark:text-neutral-300">{none}</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
 const Workbench = () => {
   const { t } = useT();
   const client = useMemo(() => createCoreWorkbenchClient({ timeoutMs: 15_000 }), []);
@@ -144,7 +249,16 @@ const Workbench = () => {
               idempotencyKey,
             });
       clearIdempotencyKey(alert.id, action);
-      setAlerts(current => current.map(item => (item.id === updated.id ? updated : item)));
+      setAlerts(current =>
+        current.map(item =>
+          item.id === updated.id
+            ? {
+                ...updated,
+                context: updated.context === undefined ? item.context : updated.context,
+              }
+            : item
+        )
+      );
       await loadAlerts('refresh');
     } catch {
       setActionError(t('workbench.requestFailed'));
@@ -209,10 +323,6 @@ const Workbench = () => {
               ))}
             </select>
           </label>
-        </section>
-
-        <section className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
-          {t('workbench.contextUnavailable')}
         </section>
 
         {error && (
@@ -282,6 +392,7 @@ const Workbench = () => {
                         <dd>{formatDate(alert.resolved_at, t('workbench.none'))}</dd>
                       </div>
                     </dl>
+                    <WorkbenchAlertContextPanel alert={alert} t={t} />
                   </div>
 
                   <div className="flex flex-col gap-3">

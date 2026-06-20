@@ -4,6 +4,32 @@ import { CORE_RPC_METHODS } from '../rpcMethods';
 export type CoreAlertSeverity = 'low' | 'medium' | 'high' | 'critical';
 export type CoreAlertStatus = 'open' | 'acknowledged' | 'resolved' | 'dismissed';
 
+export interface CoreWorkbenchAlertContext {
+  pet: { id: string; name: string; species: string; breed?: string | null; status: string };
+  owner: { id: string; name: string; phone?: string | null; status: string };
+  health_plan: {
+    id: string;
+    title: string;
+    plan_type: string;
+    status: string;
+    openclaw_flow_id?: string | null;
+  };
+  task: {
+    id: string;
+    status: string;
+    due_at: string;
+    missed_count: number;
+    openclaw_flow_id?: string | null;
+  };
+  latest_checkin?: {
+    id: string;
+    submitted_at: string;
+    submitted_by?: string | null;
+    text?: string | null;
+    status_tags: string[];
+  } | null;
+}
+
 export interface CoreWorkbenchAlert {
   id: string;
   alert_type: string;
@@ -16,6 +42,7 @@ export interface CoreWorkbenchAlert {
   created_at: string;
   acknowledged_at?: string | null;
   resolved_at?: string | null;
+  context?: CoreWorkbenchAlertContext | null;
 }
 
 export interface ListCoreWorkbenchAlertsParams {

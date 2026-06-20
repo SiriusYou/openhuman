@@ -25,6 +25,37 @@ const baseAlert = {
   created_at: '2026-06-01T00:00:00Z',
   acknowledged_at: null,
   resolved_at: null,
+  context: {
+    pet: {
+      id: 'pet-1',
+      name: 'Mochi',
+      species: 'cat',
+      breed: 'Exotic Shorthair',
+      status: 'active',
+    },
+    owner: { id: 'owner-1', name: 'Owner A', phone: '18800000001', status: 'active' },
+    health_plan: {
+      id: 'plan-1',
+      title: 'Daily check-in',
+      plan_type: 'checkin',
+      status: 'active',
+      openclaw_flow_id: 'flow-plan-1',
+    },
+    task: {
+      id: 'task-1',
+      status: 'missed',
+      due_at: '2026-06-01T10:01:00Z',
+      missed_count: 2,
+      openclaw_flow_id: 'flow-task-1',
+    },
+    latest_checkin: {
+      id: 'checkin-1',
+      submitted_at: '2026-06-01T10:10:00Z',
+      submitted_by: 'owner-1',
+      text: 'Looks normal.',
+      status_tags: ['normal'],
+    },
+  },
 } as const;
 
 function storedIdempotencyKeys() {
@@ -50,7 +81,7 @@ describe('Workbench', () => {
     window.localStorage.clear();
   });
 
-  it('renders alerts and deferred context placeholder', async () => {
+  it('renders alerts with operational context', async () => {
     mockClient.listAlerts.mockResolvedValueOnce([baseAlert]);
 
     render(<Workbench />);
@@ -59,9 +90,22 @@ describe('Workbench', () => {
     expect(screen.getByText('critical')).toBeInTheDocument();
     expect(screen.getByText('open')).toBeInTheDocument();
     expect(screen.getByText('missed_checkin')).toBeInTheDocument();
-    expect(
-      screen.getByText(/Pet, owner, latest check-in, and event trace context/i)
-    ).toBeInTheDocument();
+    expect(screen.getByText('Mochi')).toBeInTheDocument();
+    expect(screen.getByText('Owner A')).toBeInTheDocument();
+    expect(screen.getByText('Daily check-in')).toBeInTheDocument();
+    expect(screen.getAllByText(/flow-plan-1/i)).toHaveLength(1);
+    expect(screen.getAllByText(/flow-task-1/i)).toHaveLength(1);
+    expect(screen.getByText('Looks normal.')).toBeInTheDocument();
+    expect(screen.getByText(/· normal/)).toBeInTheDocument();
+  });
+
+  it('renders unavailable context per row when Core returns null context', async () => {
+    mockClient.listAlerts.mockResolvedValueOnce([{ ...baseAlert, context: null }]);
+
+    render(<Workbench />);
+
+    expect(await screen.findByText('Buddy missed a check-in.')).toBeInTheDocument();
+    expect(screen.getByText('Operational context unavailable for this alert.')).toBeInTheDocument();
   });
 
   it('maps all filters to Core sentinel params instead of status=all', async () => {
@@ -133,6 +177,39 @@ describe('Workbench', () => {
     await waitFor(() => expect(mockClient.listAlerts).toHaveBeenCalledTimes(2));
     expect(storedIdempotencyKeys()['ack:alert-1']).toBeUndefined();
     expect(await screen.findByText('acknowledged')).toBeInTheDocument();
+  });
+
+  it('preserves existing context when an action response is plain and refresh fails', async () => {
+    const plainAcknowledged = {
+      id: baseAlert.id,
+      alert_type: baseAlert.alert_type,
+      severity: baseAlert.severity,
+      related_type: baseAlert.related_type,
+      related_id: baseAlert.related_id,
+      status: 'acknowledged',
+      summary: baseAlert.summary,
+      created_at: baseAlert.created_at,
+      acknowledged_at: '2026-06-01T01:00:00Z',
+      resolved_at: null,
+    } as const;
+    mockClient.listAlerts
+      .mockResolvedValueOnce([baseAlert])
+      .mockRejectedValueOnce(new Error('refresh failed'));
+    mockClient.ackAlert.mockResolvedValueOnce(plainAcknowledged);
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
+
+    await waitFor(() => expect(mockClient.ackAlert).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockClient.listAlerts).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('acknowledged')).toBeInTheDocument();
+    expect(screen.getByText('Mochi')).toBeInTheDocument();
+    expect(screen.getByText('Daily check-in')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Operational context unavailable for this alert.')
+    ).not.toBeInTheDocument();
   });
 
   it('disables both row actions while an alert action is pending', async () => {

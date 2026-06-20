@@ -18,6 +18,7 @@ const alert = (overrides = {}) => ({
   status: 'open',
   summary: 'Owner missed check-in.',
   created_at: '2026-06-01T00:00:00Z',
+  context: null,
   ...overrides,
 });
 
@@ -34,11 +35,60 @@ describe('coreWorkbenchClient', () => {
 
     expect(alerts).toHaveLength(1);
     expect(alerts[0]?.id).toBe('alert-1');
+    expect(alerts[0]?.context).toBeNull();
     expect(mockCallCoreRpc).toHaveBeenCalledWith({
       method: CORE_RPC_METHODS.youpetListAlerts,
       params: { status: 'open', severity: 'critical' },
       timeoutMs: 12_000,
     });
+  });
+
+  it('preserves operational context from listed Core alerts', async () => {
+    mockCallCoreRpc.mockResolvedValueOnce({
+      result: [
+        alert({
+          context: {
+            pet: {
+              id: 'pet-1',
+              name: 'Mochi',
+              species: 'cat',
+              breed: 'Exotic Shorthair',
+              status: 'active',
+            },
+            owner: { id: 'owner-1', name: 'Owner A', phone: '18800000001', status: 'active' },
+            health_plan: {
+              id: 'plan-1',
+              title: 'Daily check-in',
+              plan_type: 'checkin',
+              status: 'active',
+              openclaw_flow_id: 'flow-plan-1',
+            },
+            task: {
+              id: 'task-1',
+              status: 'missed',
+              due_at: '2026-06-01T10:01:00Z',
+              missed_count: 2,
+              openclaw_flow_id: 'flow-task-1',
+            },
+            latest_checkin: {
+              id: 'checkin-1',
+              submitted_at: '2026-06-01T10:10:00Z',
+              submitted_by: 'owner-1',
+              text: 'Looks normal.',
+              status_tags: ['normal'],
+            },
+          },
+        }),
+      ],
+      logs: ['listed'],
+    });
+    const client = createCoreWorkbenchClient();
+
+    const alerts = await client.listAlerts();
+
+    expect(alerts[0]?.context?.pet.name).toBe('Mochi');
+    expect(alerts[0]?.context?.health_plan.openclaw_flow_id).toBe('flow-plan-1');
+    expect(alerts[0]?.context?.latest_checkin?.status_tags).toEqual(['normal']);
   });
 
   it('passes null status through so Rust can request all alert states', async () => {
