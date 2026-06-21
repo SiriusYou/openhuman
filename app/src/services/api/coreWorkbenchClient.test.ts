@@ -22,6 +22,30 @@ const alert = (overrides = {}) => ({
   ...overrides,
 });
 
+const trace = (overrides = {}) => ({
+  alert_id: 'alert-1',
+  partial: true,
+  warnings: [
+    { code: 'trace_truncated', message: 'Trace limited to 50 entries', source: 'event_outbox' },
+  ],
+  entries: [
+    {
+      id: 'event:event-1',
+      occurred_at: '2026-06-01T00:00:00Z',
+      kind: 'outbox_event',
+      source: 'event_outbox',
+      title: 'Event emitted',
+      detail: null,
+      actor: null,
+      related_type: null,
+      related_id: null,
+      severity: null,
+      metadata: { event_type: 'task.checkin_received', nested: { b: 2 } },
+    },
+  ],
+  ...overrides,
+});
+
 describe('coreWorkbenchClient', () => {
   beforeEach(() => {
     mockCallCoreRpc.mockReset();
@@ -142,6 +166,61 @@ describe('coreWorkbenchClient', () => {
       },
       timeoutMs: undefined,
     });
+  });
+
+  it('loads alert traces through the core RPC bridge', async () => {
+    mockCallCoreRpc.mockResolvedValueOnce({ result: trace(), logs: ['traced'] });
+    const client = createCoreWorkbenchClient({ timeoutMs: 8_000 });
+
+    const loaded = await client.getAlertTrace('alert-1');
+
+    expect(loaded.partial).toBe(true);
+    expect(loaded.warnings[0]?.code).toBe('trace_truncated');
+    expect(loaded.entries[0]?.kind).toBe('outbox_event');
+    expect(loaded.entries[0]?.metadata).toEqual({
+      event_type: 'task.checkin_received',
+      nested: { b: 2 },
+    });
+    expect(mockCallCoreRpc).toHaveBeenCalledWith({
+      method: CORE_RPC_METHODS.youpetTraceAlert,
+      params: { alertId: 'alert-1' },
+      timeoutMs: 8_000,
+    });
+  });
+
+  it('unwraps raw alert trace responses too', async () => {
+    mockCallCoreRpc.mockResolvedValueOnce(trace({ partial: false, warnings: [] }));
+    const client = createCoreWorkbenchClient();
+
+    const loaded = await client.getAlertTrace('alert-1');
+
+    expect(loaded.partial).toBe(false);
+    expect(loaded.entries[0]?.source).toBe('event_outbox');
+  });
+
+  it('preserves future trace literal strings from Core', async () => {
+    mockCallCoreRpc.mockResolvedValueOnce(
+      trace({
+        warnings: [{ code: 'future_warning', message: 'Future warning', source: 'future_source' }],
+        entries: [
+          {
+            ...trace().entries[0],
+            kind: 'future_kind',
+            source: 'future_source',
+            severity: 'future_severity',
+          },
+        ],
+      })
+    );
+    const client = createCoreWorkbenchClient();
+
+    const loaded = await client.getAlertTrace('alert-1');
+
+    expect(loaded.warnings[0]?.code).toBe('future_warning');
+    expect(loaded.warnings[0]?.source).toBe('future_source');
+    expect(loaded.entries[0]?.kind).toBe('future_kind');
+    expect(loaded.entries[0]?.source).toBe('future_source');
+    expect(loaded.entries[0]?.severity).toBe('future_severity');
   });
 
   it('propagates RPC errors to callers', async () => {
