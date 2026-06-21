@@ -6,7 +6,7 @@ use crate::core::{ControllerSchema, FieldSchema, TypeSchema};
 use crate::openhuman::config::rpc as config_rpc;
 use crate::rpc::RpcOutcome;
 
-use super::types::{AlertActionRpcParams, ListAlertsRpcParams};
+use super::types::{AlertActionRpcParams, ListAlertsRpcParams, TraceAlertRpcParams};
 
 pub fn all_internal_controllers() -> Vec<RegisteredController> {
     vec![
@@ -21,6 +21,10 @@ pub fn all_internal_controllers() -> Vec<RegisteredController> {
         RegisteredController {
             schema: youpet_schemas("resolve_alert"),
             handler: handle_resolve_alert,
+        },
+        RegisteredController {
+            schema: youpet_schemas("trace_alert"),
+            handler: handle_trace_alert,
         },
     ]
 }
@@ -53,6 +57,13 @@ pub fn youpet_schemas(function: &str) -> ControllerSchema {
             description: "Resolve a YouPet Core workbench alert.",
             inputs: alert_action_inputs("resolution"),
             outputs: vec![json_output("alert", "Updated Core alert.")],
+        },
+        "trace_alert" => ControllerSchema {
+            namespace: "youpet",
+            function: "trace_alert",
+            description: "Load a read-only YouPet Core workbench alert trace.",
+            inputs: vec![required_string("alertId", "Alert id.")],
+            outputs: vec![json_output("trace", "Core workbench alert trace.")],
         },
         _ => ControllerSchema {
             namespace: "youpet",
@@ -93,6 +104,14 @@ fn handle_resolve_alert(params: Map<String, Value>) -> ControllerFuture {
     })
 }
 
+fn handle_trace_alert(params: Map<String, Value>) -> ControllerFuture {
+    Box::pin(async move {
+        let config = config_rpc::load_config_with_timeout().await?;
+        let payload = deserialize_params::<TraceAlertRpcParams>(params)?;
+        to_json(crate::openhuman::youpet::get_alert_trace(&config, payload).await?)
+    })
+}
+
 fn deserialize_params<T: DeserializeOwned>(params: Map<String, Value>) -> Result<T, String> {
     serde_json::from_value(Value::Object(params)).map_err(|e| format!("invalid params: {e}"))
 }
@@ -119,14 +138,18 @@ fn optional_string(name: &'static str, comment: &'static str) -> FieldSchema {
     }
 }
 
+fn required_string(name: &'static str, comment: &'static str) -> FieldSchema {
+    FieldSchema {
+        name,
+        ty: TypeSchema::String,
+        comment,
+        required: true,
+    }
+}
+
 fn alert_action_inputs(optional_text_name: &'static str) -> Vec<FieldSchema> {
     vec![
-        FieldSchema {
-            name: "alertId",
-            ty: TypeSchema::String,
-            comment: "Alert id.",
-            required: true,
-        },
+        required_string("alertId", "Alert id."),
         optional_string(optional_text_name, "Optional action text."),
         optional_string(
             "idempotencyKey",
@@ -143,7 +166,7 @@ mod tests {
     #[test]
     fn schemas_and_controllers_match() {
         let controllers = all_internal_controllers();
-        assert_eq!(controllers.len(), 3);
+        assert_eq!(controllers.len(), 4);
         for controller in controllers {
             assert_eq!(
                 controller.schema,
@@ -197,5 +220,24 @@ mod tests {
             payload.status,
             crate::openhuman::youpet::types::CoreAlertStatusFilter::All
         );
+    }
+
+    #[test]
+    fn trace_schema_requires_only_alert_id() {
+        let schema = youpet_schemas("trace_alert");
+        assert_eq!(schema.function, "trace_alert");
+        assert_eq!(schema.inputs.len(), 1);
+        assert_eq!(schema.inputs[0].name, "alertId");
+        assert!(schema.inputs[0].required);
+        assert_eq!(schema.inputs[0].ty, TypeSchema::String);
+    }
+
+    #[test]
+    fn trace_params_parse_camel_case() {
+        let payload: TraceAlertRpcParams = serde_json::from_value(json!({
+            "alertId": "11111111-1111-4111-8111-111111111111"
+        }))
+        .unwrap();
+        assert_eq!(payload.alert_id, "11111111-1111-4111-8111-111111111111");
     }
 }

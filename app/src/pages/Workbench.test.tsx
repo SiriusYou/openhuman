@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +8,7 @@ const mockClient = vi.hoisted(() => ({
   listAlerts: vi.fn(),
   ackAlert: vi.fn(),
   resolveAlert: vi.fn(),
+  getAlertTrace: vi.fn(),
 }));
 
 vi.mock('../services/api/coreWorkbenchClient', () => ({
@@ -58,6 +59,29 @@ const baseAlert = {
   },
 } as const;
 
+const baseTrace = {
+  alert_id: 'alert-1',
+  partial: true,
+  warnings: [
+    { code: 'trace_truncated', message: 'Trace limited to 50 entries', source: 'event_outbox' },
+  ],
+  entries: [
+    {
+      id: 'alert:alert-1',
+      occurred_at: '2026-06-01T00:00:00Z',
+      kind: 'alert_created',
+      source: 'alerts',
+      title: 'Alert created',
+      detail: 'Critical missed check-in alert.',
+      actor: { type: 'system', id: 'core' },
+      related_type: 'task_instance',
+      related_id: 'task-1',
+      severity: 'critical',
+      metadata: { alert_type: 'missed_checkin', tags: ['late', 'critical'] },
+    },
+  ],
+};
+
 function storedIdempotencyKeys() {
   const raw = window.localStorage.getItem(workbenchIdempotencyStorageKey);
   return raw ? (JSON.parse(raw) as Record<string, string>) : {};
@@ -78,6 +102,7 @@ describe('Workbench', () => {
     mockClient.listAlerts.mockReset();
     mockClient.ackAlert.mockReset();
     mockClient.resolveAlert.mockReset();
+    mockClient.getAlertTrace.mockReset();
     window.localStorage.clear();
   });
 
@@ -305,6 +330,270 @@ describe('Workbench', () => {
     pendingResolve.resolve(resolvedSecond);
     await waitFor(() => expect(firstAckButton).not.toBeDisabled());
     await waitFor(() => expect(secondResolveButton).not.toBeDisabled());
+  });
+
+  it('opens trace drawer and renders timeline entries with warnings', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace.mockResolvedValueOnce(baseTrace);
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+
+    expect(mockClient.getAlertTrace).toHaveBeenCalledWith('alert-1');
+    const drawer = await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    expect(within(drawer).getByText('Alert created')).toBeInTheDocument();
+    expect(within(drawer).getByText('Critical missed check-in alert.')).toBeInTheDocument();
+    expect(within(drawer).getByText('Alert Created')).toBeInTheDocument();
+    expect(within(drawer).getByText('Alerts')).toBeInTheDocument();
+    expect(within(drawer).getByText('System · core')).toBeInTheDocument();
+    expect(within(drawer).getAllByText('task_instance / task-1')).toHaveLength(2);
+    expect(within(drawer).getByText('Trace Truncated')).toBeInTheDocument();
+    expect(within(drawer).getByText('Trace limited to 50 entries')).toBeInTheDocument();
+    expect(drawer).toHaveTextContent('alert_type: missed_checkin');
+  });
+
+  it('renders empty trace as an empty state', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace.mockResolvedValueOnce({
+      alert_id: 'alert-1',
+      partial: false,
+      warnings: [],
+      entries: [],
+    });
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+
+    expect(
+      await screen.findByText('No trace entries available for this alert.')
+    ).toBeInTheDocument();
+  });
+
+  it('renders generic trace errors without leaking backend text', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace.mockRejectedValueOnce(new Error('Bearer svc-token leaked'));
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+
+    expect(await screen.findByText('Trace request failed. Try again.')).toBeInTheDocument();
+    expect(screen.queryByText(/svc-token/)).not.toBeInTheDocument();
+  });
+
+  it('refreshes trace for the same alert only when requested', async () => {
+    const refreshedTrace = {
+      ...baseTrace,
+      entries: [{ ...baseTrace.entries[0], id: 'audit:audit-1', title: 'Operator acknowledged' }],
+    };
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace.mockResolvedValueOnce(baseTrace).mockResolvedValueOnce(refreshedTrace);
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+    await screen.findByText('Alert created');
+
+    await user.click(screen.getByRole('button', { name: 'Refresh trace' }));
+
+    await screen.findByText('Operator acknowledged');
+    expect(mockClient.getAlertTrace).toHaveBeenCalledTimes(2);
+    expect(mockClient.getAlertTrace).toHaveBeenNthCalledWith(2, 'alert-1');
+  });
+
+  it('keeps the last loaded trace visible when refresh fails', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace
+      .mockResolvedValueOnce(baseTrace)
+      .mockRejectedValueOnce(new Error('backend leaked svc-token'));
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+    await screen.findByText('Alert created');
+
+    await user.click(screen.getByRole('button', { name: 'Refresh trace' }));
+
+    expect(await screen.findByText('Trace request failed. Try again.')).toBeInTheDocument();
+    expect(screen.getByText('Alert created')).toBeInTheDocument();
+    expect(screen.queryByText(/svc-token/)).not.toBeInTheDocument();
+    expect(mockClient.getAlertTrace).toHaveBeenCalledTimes(2);
+  });
+
+  it('traps trace drawer focus, restores focus, and closes on Escape or backdrop', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace.mockResolvedValue(baseTrace);
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    const traceButton = screen.getByRole('button', { name: 'Trace' });
+    await user.click(traceButton);
+
+    const drawer = await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    expect(drawer).toHaveFocus();
+
+    await user.tab({ shift: true });
+    expect(within(drawer).getByRole('button', { name: 'Refresh trace' })).toHaveFocus();
+
+    await user.tab();
+    expect(within(drawer).getByRole('button', { name: 'Close' })).toHaveFocus();
+
+    await user.keyboard('{Escape}');
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('dialog', { name: 'Alert trace for alert-1' })
+      ).not.toBeInTheDocument()
+    );
+    expect(traceButton).toHaveFocus();
+
+    await user.click(traceButton);
+    const reopenedDrawer = await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    fireEvent.mouseDown(reopenedDrawer.parentElement as HTMLElement);
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('dialog', { name: 'Alert trace for alert-1' })
+      ).not.toBeInTheDocument()
+    );
+  });
+
+  it('keeps an open trace drawer through alert action refreshes without refetching trace', async () => {
+    const acknowledged = {
+      ...baseAlert,
+      status: 'acknowledged',
+      acknowledged_at: '2026-06-01T01:00:00Z',
+    } as const;
+    mockClient.listAlerts.mockResolvedValueOnce([baseAlert]).mockResolvedValueOnce([]);
+    mockClient.getAlertTrace.mockResolvedValueOnce(baseTrace);
+    mockClient.ackAlert.mockResolvedValueOnce(acknowledged);
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+    await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    await screen.findByText('Alert created');
+
+    await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
+
+    await waitFor(() => expect(mockClient.listAlerts).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('dialog', { name: 'Alert trace for alert-1' })).toBeInTheDocument();
+    expect(screen.getByText('Alert created')).toBeInTheDocument();
+    expect(mockClient.getAlertTrace).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens another row without rendering stale trace data from the first row', async () => {
+    const secondAlert = {
+      ...baseAlert,
+      id: 'alert-2',
+      related_id: 'task-2',
+      summary: 'Milo missed a check-in.',
+    } as const;
+    const firstTrace = deferred<typeof baseTrace>();
+    const secondTrace = {
+      ...baseTrace,
+      alert_id: 'alert-2',
+      entries: [{ ...baseTrace.entries[0], id: 'alert:alert-2', title: 'Second alert trace' }],
+    };
+    mockClient.listAlerts.mockResolvedValue([baseAlert, secondAlert]);
+    mockClient.getAlertTrace
+      .mockReturnValueOnce(firstTrace.promise)
+      .mockResolvedValueOnce(secondTrace);
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await screen.findByText('Milo missed a check-in.');
+
+    await user.click(
+      within(
+        screen.getByText('Buddy missed a check-in.').closest('article') as HTMLElement
+      ).getByRole('button', { name: 'Trace' })
+    );
+    await user.click(
+      within(
+        screen.getByText('Milo missed a check-in.').closest('article') as HTMLElement
+      ).getByRole('button', { name: 'Trace' })
+    );
+    firstTrace.resolve({
+      ...baseTrace,
+      entries: [{ ...baseTrace.entries[0], id: 'alert:alert-1', title: 'First stale trace' }],
+    });
+
+    const drawer = await screen.findByRole('dialog', { name: 'Alert trace for alert-2' });
+    expect(await within(drawer).findByText('Second alert trace')).toBeInTheDocument();
+    expect(within(drawer).queryByText('First stale trace')).not.toBeInTheDocument();
+  });
+
+  it('ignores trace responses that resolve after the drawer closes', async () => {
+    const pendingTrace = deferred<typeof baseTrace>();
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace.mockReturnValueOnce(pendingTrace.promise);
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+    await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+
+    pendingTrace.resolve(baseTrace);
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('dialog', { name: 'Alert trace for alert-1' })
+      ).not.toBeInTheDocument()
+    );
+    expect(screen.queryByText('Alert created')).not.toBeInTheDocument();
+  });
+
+  it('renders bounded deterministic metadata chips for nested values', async () => {
+    const longKey = `epsilon_${'very_long_metadata_key_'.repeat(4)}`;
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace.mockResolvedValueOnce({
+      ...baseTrace,
+      partial: false,
+      warnings: [],
+      entries: [
+        {
+          ...baseTrace.entries[0],
+          metadata: {
+            zeta: { b: 2, a: 1 },
+            alpha: ['one', 'two'],
+            beta: 'x'.repeat(120),
+            [longKey]: 'visible',
+            theta: null,
+            yotta: Object.fromEntries(
+              Array.from({ length: 40 }, (_, index) => [`key_${index}`, 'value'.repeat(40)])
+            ),
+            zz_overflow: 'hidden',
+          },
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+
+    const metadata = await screen.findByLabelText('Metadata');
+    expect(metadata).toHaveTextContent('alpha: ["one","two"]');
+    expect(metadata).toHaveTextContent('zeta: {"a":1,"b":2}');
+    expect(metadata).not.toHaveTextContent(longKey);
+    expect(metadata).toHaveTextContent(`${longKey.slice(0, 47)}…`);
+    expect(metadata.textContent).not.toContain('x'.repeat(100));
+    expect(metadata.textContent).not.toContain('value'.repeat(20));
+    expect(metadata).not.toHaveTextContent('zz_overflow');
   });
 
   it('keeps resolve key on failure and does not leak error details', async () => {

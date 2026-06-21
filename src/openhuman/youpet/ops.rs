@@ -10,6 +10,7 @@ use crate::rpc::{RpcOutcome, StructuredRpcError};
 
 use super::types::{
     AlertActionRpcParams, CoreWorkbenchAlert, CoreWorkbenchAlertsResponse, ListAlertsRpcParams,
+    TraceAlertRpcParams, WorkbenchAlertTrace,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -80,6 +81,25 @@ pub async fn resolve_alert(
     Ok(RpcOutcome::single_log(
         alert,
         "[youpet] resolved Core alert",
+    ))
+}
+
+pub async fn get_alert_trace(
+    config: &Config,
+    params: TraceAlertRpcParams,
+) -> Result<RpcOutcome<WorkbenchAlertTrace>, String> {
+    let client = youpet_client();
+    let url = build_url(
+        config,
+        &format!(
+            "/api/v1/workbench/alerts/{}/trace",
+            urlencoding::encode(&params.alert_id)
+        ),
+    )?;
+    let trace: WorkbenchAlertTrace = send_request(config, client.get(url)).await?;
+    Ok(RpcOutcome::single_log(
+        trace,
+        "[youpet] loaded Core workbench alert trace",
     ))
 }
 
@@ -424,6 +444,135 @@ mod tests {
         );
         assert_eq!(request.authorization.as_deref(), Some("Bearer svc-token"));
         assert_eq!(request.actor.as_deref(), Some("operator-workbench"));
+    }
+
+    #[tokio::test]
+    async fn get_alert_trace_sends_auth_actor_and_no_action_body() {
+        let requests: Requests = Default::default();
+        let route = format!("/api/v1/workbench/alerts/{TEST_ALERT_ID}/trace");
+        let app = Router::new()
+            .route(&route, get(capture_trace))
+            .with_state(requests.clone());
+        let base = spawn_mock(app).await;
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp, base);
+
+        let outcome = get_alert_trace(
+            &config,
+            TraceAlertRpcParams {
+                alert_id: TEST_ALERT_ID.into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.value.alert_id, TEST_ALERT_ID);
+        assert_eq!(
+            outcome.value.entries[0].id,
+            "alert:11111111-1111-4111-8111-111111111111"
+        );
+        let request = requests.lock().unwrap().pop().unwrap();
+        assert_eq!(request.method, Method::GET);
+        assert_eq!(request.path_and_query, route);
+        assert_eq!(request.authorization.as_deref(), Some("Bearer svc-token"));
+        assert_eq!(request.actor.as_deref(), Some("operator-workbench"));
+        assert_eq!(request.idempotency_key, None);
+        assert_eq!(request.body, Value::Null);
+    }
+
+    async fn capture_trace(
+        State(requests): State<Requests>,
+        method: Method,
+        uri: axum::http::Uri,
+        headers: HeaderMap,
+    ) -> impl IntoResponse {
+        requests.lock().unwrap().push(CapturedRequest {
+            method,
+            path_and_query: uri
+                .path_and_query()
+                .map(|v| v.as_str().to_string())
+                .unwrap_or_else(|| uri.path().to_string()),
+            authorization: headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            actor: headers
+                .get("x-actor-id")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            idempotency_key: headers
+                .get("idempotency-key")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            body: Value::Null,
+        });
+        axum::Json(json!({
+            "alert_id": TEST_ALERT_ID,
+            "partial": true,
+            "warnings": [{
+                "code": "trace_truncated",
+                "message": "Trace limited to 50 entries",
+                "source": "event_outbox"
+            }],
+            "entries": [{
+                "id": format!("alert:{TEST_ALERT_ID}"),
+                "occurred_at": "2026-06-01T00:00:00Z",
+                "kind": "alert_created",
+                "source": "alerts",
+                "title": "Alert created",
+                "detail": null,
+                "actor": null,
+                "related_type": "task_instance",
+                "related_id": "task-1",
+                "severity": "high",
+                "metadata": { "alert_type": "missed_checkin" }
+            }]
+        }))
+    }
+
+    #[tokio::test]
+    async fn trace_404_is_expected_user_state() {
+        let route = format!("/api/v1/workbench/alerts/{TEST_ALERT_ID}/trace");
+        let app = Router::new().route(
+            &route,
+            get(|| async {
+                (
+                    StatusCode::NOT_FOUND,
+                    axum::Json(json!({
+                        "detail": {
+                            "code": "not_found",
+                            "message": "secret missing alert body"
+                        }
+                    })),
+                )
+            }),
+        );
+        let base = spawn_mock(app).await;
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp, base);
+
+        let err = get_alert_trace(
+            &config,
+            TraceAlertRpcParams {
+                alert_id: TEST_ALERT_ID.into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        let structured = StructuredRpcError::decode(&err).expect("structured error");
+        assert_eq!(
+            structured.message,
+            "YouPet Core request failed with HTTP 404"
+        );
+        assert!(
+            structured.expected_user_state,
+            "Core 404 trace lookup should surface as expected user/config state"
+        );
+        let data = structured.data.unwrap();
+        assert_eq!(data["kind"], json!("YouPetCoreHttpError"));
+        assert_eq!(data["youpet"]["code"], json!("not_found"));
+        assert_eq!(data["youpet"]["http_status"], json!(404));
+        assert!(!data.to_string().contains("secret missing alert body"));
     }
 
     #[tokio::test]

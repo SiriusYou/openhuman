@@ -3,6 +3,30 @@ import { CORE_RPC_METHODS } from '../rpcMethods';
 
 export type CoreAlertSeverity = 'low' | 'medium' | 'high' | 'critical';
 export type CoreAlertStatus = 'open' | 'acknowledged' | 'resolved' | 'dismissed';
+type FutureCoreLiteral = string & {};
+export type CoreWorkbenchTraceEntryKind =
+  | 'alert_created'
+  | 'task_state'
+  | 'checkin_received'
+  | 'audit_action'
+  | 'outbox_event'
+  | 'outbox_delivery'
+  | FutureCoreLiteral;
+export type CoreWorkbenchTraceSource =
+  | 'alerts'
+  | 'task_instances'
+  | 'checkins'
+  | 'audit_logs'
+  | 'event_outbox'
+  | 'outbox_deliveries'
+  | FutureCoreLiteral;
+export type CoreWorkbenchTraceWarningCode =
+  | 'trace_truncated'
+  | 'unsupported_related_type'
+  | 'missing_related_task'
+  | 'missing_related_event'
+  | FutureCoreLiteral;
+export type CoreWorkbenchTraceSeverity = CoreAlertSeverity | FutureCoreLiteral;
 
 export interface CoreWorkbenchAlertContext {
   pet: { id: string; name: string; species: string; breed?: string | null; status: string };
@@ -43,6 +67,38 @@ export interface CoreWorkbenchAlert {
   acknowledged_at?: string | null;
   resolved_at?: string | null;
   context?: CoreWorkbenchAlertContext | null;
+}
+
+export interface CoreWorkbenchTraceActor {
+  type: string;
+  id?: string | null;
+}
+
+export interface CoreWorkbenchTraceEntry {
+  id: string;
+  occurred_at: string;
+  kind: CoreWorkbenchTraceEntryKind;
+  source: CoreWorkbenchTraceSource;
+  title: string;
+  detail?: string | null;
+  actor?: CoreWorkbenchTraceActor | null;
+  related_type?: string | null;
+  related_id?: string | null;
+  severity?: CoreWorkbenchTraceSeverity | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface CoreWorkbenchTraceWarning {
+  code: CoreWorkbenchTraceWarningCode;
+  message: string;
+  source?: CoreWorkbenchTraceSource | null;
+}
+
+export interface CoreWorkbenchAlertTrace {
+  alert_id: string;
+  partial: boolean;
+  warnings: CoreWorkbenchTraceWarning[];
+  entries: CoreWorkbenchTraceEntry[];
 }
 
 export interface ListCoreWorkbenchAlertsParams {
@@ -95,6 +151,15 @@ export class CoreWorkbenchClient {
     const raw = await callCoreRpc<CoreResult<CoreWorkbenchAlert>>({
       method: CORE_RPC_METHODS.youpetResolveAlert,
       params: { alertId, resolution: params.resolution, idempotencyKey: params.idempotencyKey },
+      timeoutMs: this.timeoutMs,
+    });
+    return unwrapCoreResult(raw);
+  }
+
+  async getAlertTrace(alertId: string): Promise<CoreWorkbenchAlertTrace> {
+    const raw = await callCoreRpc<CoreResult<CoreWorkbenchAlertTrace>>({
+      method: CORE_RPC_METHODS.youpetTraceAlert,
+      params: { alertId },
       timeoutMs: this.timeoutMs,
     });
     return unwrapCoreResult(raw);

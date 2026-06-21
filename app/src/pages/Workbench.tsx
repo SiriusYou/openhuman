@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useT } from '../lib/i18n/I18nContext';
 import {
   type CoreAlertSeverity,
   type CoreAlertStatus,
   type CoreWorkbenchAlert,
+  type CoreWorkbenchAlertTrace,
+  type CoreWorkbenchTraceActor,
+  type CoreWorkbenchTraceEntry,
+  type CoreWorkbenchTraceWarning,
   createCoreWorkbenchClient,
 } from '../services/api/coreWorkbenchClient';
 
@@ -30,6 +34,12 @@ const SEVERITY_LABEL_KEYS: Record<SeverityFilter, string> = {
   high: 'workbench.severity.high',
   critical: 'workbench.severity.critical',
 };
+const MAX_METADATA_CHIPS = 6;
+const MAX_METADATA_KEY_LENGTH = 48;
+const MAX_METADATA_VALUE_LENGTH = 80;
+const MAX_METADATA_COLLECTION_ITEMS = 8;
+const MAX_METADATA_DEPTH = 2;
+const MAX_METADATA_SERIALIZED_LENGTH = 512;
 
 export const workbenchIdempotencyStorageKey = IDEMPOTENCY_STORAGE_KEY;
 
@@ -89,6 +99,80 @@ function formatDate(value: string | null | undefined, noneLabel: string) {
 function formatOptional(value: string | null | undefined, noneLabel: string) {
   const trimmed = value?.trim();
   return trimmed ? trimmed : noneLabel;
+}
+
+function normalizeMetadataValue(value: unknown, depth = 0): unknown {
+  if (Array.isArray(value)) {
+    if (depth >= MAX_METADATA_DEPTH) return `[${value.length} items]`;
+    const normalized = value
+      .slice(0, MAX_METADATA_COLLECTION_ITEMS)
+      .map(nested => normalizeMetadataValue(nested, depth + 1));
+    return value.length > MAX_METADATA_COLLECTION_ITEMS
+      ? [...normalized, `… ${value.length - MAX_METADATA_COLLECTION_ITEMS} more`]
+      : normalized;
+  }
+  if (value && typeof value === 'object') {
+    if (depth >= MAX_METADATA_DEPTH) return '[object]';
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+      left.localeCompare(right)
+    );
+    const normalized = entries
+      .slice(0, MAX_METADATA_COLLECTION_ITEMS)
+      .map(([key, nested]) => [key, normalizeMetadataValue(nested, depth + 1)]);
+    if (entries.length > MAX_METADATA_COLLECTION_ITEMS) {
+      normalized.push(['…', `${entries.length - MAX_METADATA_COLLECTION_ITEMS} more keys`]);
+    }
+    return Object.fromEntries(normalized);
+  }
+  return value;
+}
+
+function stringifyMetadataValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (value === undefined) return '';
+  if (typeof value === 'string') return truncateText(value, MAX_METADATA_SERIALIZED_LENGTH);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return truncateText(
+      JSON.stringify(normalizeMetadataValue(value)),
+      MAX_METADATA_SERIALIZED_LENGTH
+    );
+  } catch {
+    return truncateText(String(value), MAX_METADATA_SERIALIZED_LENGTH);
+  }
+}
+
+function truncateText(value: string, limit = MAX_METADATA_VALUE_LENGTH): string {
+  return value.length > limit ? `${value.slice(0, limit - 1)}…` : value;
+}
+
+function metadataChips(metadata: Record<string, unknown> | undefined) {
+  if (!metadata || typeof metadata !== 'object') return [];
+  return Object.keys(metadata)
+    .sort((left, right) => left.localeCompare(right))
+    .slice(0, MAX_METADATA_CHIPS)
+    .map(
+      key =>
+        [
+          key,
+          truncateText(key, MAX_METADATA_KEY_LENGTH),
+          truncateText(stringifyMetadataValue(metadata[key])),
+        ] as const
+    )
+    .filter(([, , value]) => value.length > 0);
+}
+
+function labelFromLiteral(value: string): string {
+  return value
+    .split('_')
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function formatTraceActor(actor: CoreWorkbenchTraceActor | null | undefined, noneLabel: string) {
+  if (!actor) return noneLabel;
+  return actor.id ? `${labelFromLiteral(actor.type)} · ${actor.id}` : labelFromLiteral(actor.type);
 }
 
 function WorkbenchAlertContextPanel({
@@ -191,6 +275,259 @@ function WorkbenchAlertContextPanel({
   );
 }
 
+function WorkbenchTraceDrawer({
+  alert,
+  trace,
+  loading,
+  refreshing,
+  error,
+  onClose,
+  onRefresh,
+  t,
+}: {
+  alert: CoreWorkbenchAlert;
+  trace: CoreWorkbenchAlertTrace | null;
+  loading: boolean;
+  refreshing: boolean;
+  error: string | null;
+  onClose: () => void;
+  onRefresh: () => void;
+  t: (key: string, fallback?: string) => string;
+}) {
+  const none = t('workbench.none');
+  const drawerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    drawerRef.current?.focus();
+
+    const focusableSelector = [
+      'button:not([disabled])',
+      '[href]',
+      'input:not([disabled])',
+      'select:not([disabled])',
+      'textarea:not([disabled])',
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(',');
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+
+      if (event.key !== 'Tab' || !drawerRef.current) return;
+
+      const focusable = Array.from(
+        drawerRef.current.querySelectorAll<HTMLElement>(focusableSelector)
+      ).filter(
+        element =>
+          !element.hasAttribute('disabled') && element.getAttribute('aria-hidden') !== 'true'
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        drawerRef.current.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const activeElement =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      if (activeElement === drawerRef.current || !drawerRef.current.contains(activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      previousFocus?.focus();
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-40 flex justify-end bg-black/20"
+      role="presentation"
+      onMouseDown={event => {
+        if (event.target === event.currentTarget) onClose();
+      }}>
+      <aside
+        ref={drawerRef}
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+        aria-label={t('workbench.trace.dialogLabel', 'Alert trace for {alertId}').replace(
+          '{alertId}',
+          alert.id
+        )}
+        className="flex h-full w-full max-w-xl flex-col border-l border-stone-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-950">
+        <header className="border-b border-stone-200 p-4 dark:border-neutral-800">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary-600 dark:text-primary-400">
+                {t('workbench.trace.eyebrow', 'Trace')}
+              </p>
+              <h2 className="mt-1 break-words text-lg font-semibold">
+                {alert.summary || t('workbench.noSummary')}
+              </h2>
+              <p className="mt-1 break-all text-xs text-stone-500 dark:text-neutral-400">
+                {alert.related_type} / {alert.related_id}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="min-h-9 rounded-lg border border-stone-300 px-3 text-sm font-medium text-stone-700 hover:bg-stone-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-900">
+              {t('workbench.trace.close', 'Close')}
+            </button>
+          </div>
+          <div className="mt-3 flex justify-end">
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={loading || refreshing}
+              className="min-h-9 rounded-lg border border-stone-300 px-3 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-900">
+              {refreshing
+                ? t('workbench.trace.refreshing', 'Refreshing trace')
+                : t('workbench.trace.refresh', 'Refresh trace')}
+            </button>
+          </div>
+        </header>
+
+        <div className="flex-1 overflow-y-auto p-4">
+          {loading ? (
+            <p className="text-sm text-stone-500 dark:text-neutral-400">
+              {t('workbench.trace.loading', 'Loading trace')}
+            </p>
+          ) : (
+            <div className="space-y-4">
+              {error ? (
+                <div className="rounded-lg border border-coral-200 bg-coral-50 p-3 text-sm text-coral-700 dark:border-coral-500/30 dark:bg-coral-500/10 dark:text-coral-200">
+                  {error}
+                </div>
+              ) : null}
+
+              {trace ? (
+                <>
+                  {trace.partial && trace.warnings.length > 0 && (
+                    <div className="space-y-2">
+                      {trace.warnings.map(warning => (
+                        <TraceWarningNotice
+                          key={`${warning.code}:${warning.source ?? ''}`}
+                          warning={warning}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {trace.entries.length === 0 ? (
+                    <p className="rounded-lg border border-stone-200 p-4 text-sm text-stone-500 dark:border-neutral-800 dark:text-neutral-400">
+                      {t('workbench.trace.empty', 'No trace entries available for this alert.')}
+                    </p>
+                  ) : (
+                    <ol className="space-y-3">
+                      {trace.entries.map(entry => (
+                        <TraceEntryItem key={entry.id} entry={entry} none={none} t={t} />
+                      ))}
+                    </ol>
+                  )}
+                </>
+              ) : null}
+            </div>
+          )}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function TraceWarningNotice({ warning }: { warning: CoreWorkbenchTraceWarning }) {
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+      <p className="font-medium">{labelFromLiteral(warning.code)}</p>
+      <p>{warning.message}</p>
+      {warning.source ? (
+        <p className="text-xs opacity-80">{labelFromLiteral(warning.source)}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function TraceEntryItem({
+  entry,
+  none,
+  t,
+}: {
+  entry: CoreWorkbenchTraceEntry;
+  none: string;
+  t: (key: string, fallback?: string) => string;
+}) {
+  const chips = metadataChips(entry.metadata);
+
+  return (
+    <li className="rounded-lg border border-stone-200 p-3 text-sm dark:border-neutral-800">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-md bg-primary-50 px-2 py-1 text-xs font-semibold uppercase text-primary-700 dark:bg-primary-500/10 dark:text-primary-300">
+          {labelFromLiteral(entry.kind)}
+        </span>
+        <span className="rounded-md bg-stone-100 px-2 py-1 text-xs font-semibold uppercase text-stone-700 dark:bg-neutral-800 dark:text-neutral-200">
+          {labelFromLiteral(entry.source)}
+        </span>
+        {entry.severity ? (
+          <span className="rounded-md bg-coral-50 px-2 py-1 text-xs font-semibold uppercase text-coral-700 dark:bg-coral-500/10 dark:text-coral-200">
+            {labelFromLiteral(entry.severity)}
+          </span>
+        ) : null}
+      </div>
+      <p className="mt-2 font-medium text-stone-900 dark:text-neutral-100">{entry.title}</p>
+      <p className="text-xs text-stone-500 dark:text-neutral-400">
+        {formatDate(entry.occurred_at, none)}
+      </p>
+      {entry.detail ? (
+        <p className="mt-2 text-stone-700 dark:text-neutral-200">{entry.detail}</p>
+      ) : null}
+      <dl className="mt-3 grid gap-x-3 gap-y-1 text-xs text-stone-600 dark:text-neutral-300 sm:grid-cols-2">
+        <div>
+          <dt className="uppercase text-stone-400">{t('workbench.trace.actor', 'Actor')}</dt>
+          <dd className="break-all">{formatTraceActor(entry.actor, none)}</dd>
+        </div>
+        <div>
+          <dt className="uppercase text-stone-400">{t('workbench.trace.related', 'Related')}</dt>
+          <dd className="break-all">
+            {entry.related_type && entry.related_id
+              ? `${entry.related_type} / ${entry.related_id}`
+              : none}
+          </dd>
+        </div>
+      </dl>
+      {chips.length > 0 ? (
+        <div
+          className="mt-3 flex flex-wrap gap-2"
+          aria-label={t('workbench.trace.metadata', 'Metadata')}>
+          {chips.map(([key, displayKey, value]) => (
+            <span
+              key={key}
+              className="min-w-0 max-w-full break-all rounded-md bg-stone-100 px-2 py-1 text-xs text-stone-700 dark:bg-neutral-800 dark:text-neutral-200">
+              <span className="font-semibold">{displayKey}</span>: {value}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
 const Workbench = () => {
   const { t } = useT();
   const client = useMemo(() => createCoreWorkbenchClient({ timeoutMs: 15_000 }), []);
@@ -204,6 +541,14 @@ const Workbench = () => {
   const [pendingActions, setPendingActions] = useState<PendingActions>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [resolutions, setResolutions] = useState<Record<string, string>>({});
+  const [traceAlertId, setTraceAlertId] = useState<string | null>(null);
+  const [traceAlert, setTraceAlert] = useState<CoreWorkbenchAlert | null>(null);
+  const [trace, setTrace] = useState<CoreWorkbenchAlertTrace | null>(null);
+  const [traceLoading, setTraceLoading] = useState(false);
+  const [traceRefreshing, setTraceRefreshing] = useState(false);
+  const [traceError, setTraceError] = useState<string | null>(null);
+  const traceRequestSeq = useRef(0);
+  const activeTraceAlertRef = useRef<string | null>(null);
 
   const loadAlerts = useCallback(
     async (mode: 'initial' | 'refresh' = 'refresh') => {
@@ -269,6 +614,63 @@ const Workbench = () => {
       });
     }
   };
+
+  const loadTrace = useCallback(
+    async (alertId: string, mode: 'initial' | 'refresh' = 'initial') => {
+      const requestId = traceRequestSeq.current + 1;
+      traceRequestSeq.current = requestId;
+      activeTraceAlertRef.current = alertId;
+      if (mode === 'initial') {
+        setTraceLoading(true);
+        setTrace(null);
+      } else {
+        setTraceRefreshing(true);
+      }
+      setTraceError(null);
+      try {
+        const nextTrace = await client.getAlertTrace(alertId);
+        if (traceRequestSeq.current !== requestId || activeTraceAlertRef.current !== alertId) {
+          return;
+        }
+        setTrace(nextTrace);
+      } catch {
+        if (traceRequestSeq.current !== requestId || activeTraceAlertRef.current !== alertId) {
+          return;
+        }
+        setTraceError(t('workbench.trace.requestFailed', 'Trace request failed. Try again.'));
+      } finally {
+        if (traceRequestSeq.current === requestId && activeTraceAlertRef.current === alertId) {
+          setTraceLoading(false);
+          setTraceRefreshing(false);
+        }
+      }
+    },
+    [client, t]
+  );
+
+  const openTrace = (alert: CoreWorkbenchAlert) => {
+    setTraceAlertId(alert.id);
+    setTraceAlert(alert);
+    setTrace(null);
+    setTraceError(null);
+    void loadTrace(alert.id, 'initial');
+  };
+
+  const closeTrace = useCallback(() => {
+    traceRequestSeq.current += 1;
+    activeTraceAlertRef.current = null;
+    setTraceAlertId(null);
+    setTraceAlert(null);
+    setTrace(null);
+    setTraceError(null);
+    setTraceLoading(false);
+    setTraceRefreshing(false);
+  }, []);
+
+  const refreshTrace = useCallback(() => {
+    if (!traceAlertId) return;
+    void loadTrace(traceAlertId, 'refresh');
+  }, [loadTrace, traceAlertId]);
 
   const isAlertPending = (alertId: string) => Boolean(pendingActions[alertId]);
   const isActionPending = (alertId: string, action: AlertAction) =>
@@ -440,12 +842,30 @@ const Workbench = () => {
                         ? t('workbench.resolving')
                         : t('workbench.resolve')}
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => openTrace(alert)}
+                      className="min-h-10 rounded-lg border border-stone-300 px-3 text-sm font-medium text-stone-800 transition-colors hover:bg-stone-50 dark:border-neutral-700 dark:text-neutral-100 dark:hover:bg-neutral-800">
+                      {t('workbench.trace.button', 'Trace')}
+                    </button>
                   </div>
                 </article>
               ))}
             </div>
           )}
         </section>
+        {traceAlert ? (
+          <WorkbenchTraceDrawer
+            alert={traceAlert}
+            trace={trace}
+            loading={traceLoading}
+            refreshing={traceRefreshing}
+            error={traceError}
+            onClose={closeTrace}
+            onRefresh={refreshTrace}
+            t={t}
+          />
+        ) : null}
       </main>
     </div>
   );

@@ -1022,6 +1022,7 @@ async fn json_rpc_youpet_bridge_is_internal_only_but_routable() {
         authorization: Arc<Mutex<Option<String>>>,
         actor: Arc<Mutex<Option<String>>>,
         actions: Arc<Mutex<Vec<(String, Value, Option<String>)>>>,
+        traces: Arc<Mutex<Vec<(String, Option<String>, Option<String>)>>>,
     }
 
     async fn list_alerts_handler(
@@ -1084,13 +1085,55 @@ async fn json_rpc_youpet_bridge_is_internal_only_but_routable() {
         }))
     }
 
+    async fn trace_alert_handler(
+        State(capture): State<YouPetCapture>,
+        uri: Uri,
+        headers: HeaderMap,
+    ) -> Json<Value> {
+        capture.traces.lock().unwrap().push((
+            uri.path().to_string(),
+            headers
+                .get(AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            headers
+                .get("x-actor-id")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+        ));
+        Json(json!({
+            "alert_id": YOUPET_ALERT_ID,
+            "partial": true,
+            "warnings": [{
+                "code": "trace_truncated",
+                "message": "Trace limited to 50 entries",
+                "source": "event_outbox"
+            }],
+            "entries": [{
+                "id": format!("alert:{YOUPET_ALERT_ID}"),
+                "occurred_at": "2026-06-01T00:00:00Z",
+                "kind": "alert_created",
+                "source": "alerts",
+                "title": "Alert created",
+                "detail": null,
+                "actor": { "type": "system", "id": null },
+                "related_type": "task_instance",
+                "related_id": "task-json-rpc",
+                "severity": "high",
+                "metadata": { "alert_type": "missed_checkin" }
+            }]
+        }))
+    }
+
     let capture = YouPetCapture::default();
     let ack_route = format!("/api/v1/alerts/{YOUPET_ALERT_ID}/ack");
     let resolve_route = format!("/api/v1/alerts/{YOUPET_ALERT_ID}/resolve");
+    let trace_route = format!("/api/v1/workbench/alerts/{YOUPET_ALERT_ID}/trace");
     let youpet_app = Router::new()
         .route("/api/v1/workbench/alerts", get(list_alerts_handler))
         .route(&ack_route, post(alert_action_handler))
         .route(&resolve_route, post(alert_action_handler))
+        .route(&trace_route, get(trace_alert_handler))
         .with_state(capture.clone());
     let (youpet_addr, youpet_join) = serve_on_ephemeral(youpet_app).await;
     let _youpet_url_guard =
@@ -1143,6 +1186,20 @@ async fn json_rpc_youpet_bridge_is_internal_only_but_routable() {
     let resolve_result = assert_no_jsonrpc_error(&resolve, "youpet_resolve_alert");
     assert_eq!(resolve_result["result"]["status"], json!("resolved"));
 
+    let trace = post_json_rpc(
+        &rpc_base,
+        2026_4,
+        "openhuman.youpet_trace_alert",
+        json!({ "alertId": YOUPET_ALERT_ID }),
+    )
+    .await;
+    let trace_result = assert_no_jsonrpc_error(&trace, "youpet_trace_alert");
+    assert_eq!(trace_result["result"]["alert_id"], json!(YOUPET_ALERT_ID));
+    assert_eq!(
+        trace_result["result"]["entries"][0]["metadata"]["alert_type"],
+        json!("missed_checkin")
+    );
+
     let actions = capture.actions.lock().unwrap();
     assert_eq!(actions.len(), 2);
     let (ack_path, ack_body, ack_key) = &actions[0];
@@ -1170,7 +1227,15 @@ async fn json_rpc_youpet_bridge_is_internal_only_but_routable() {
     assert_eq!(resolve_key.as_deref(), Some("idem-json-rpc-resolve"));
     drop(actions);
 
-    let tools = post_json_rpc(&rpc_base, 2026_4, "openhuman.tool_registry_list", json!({})).await;
+    let traces = capture.traces.lock().unwrap();
+    assert_eq!(traces.len(), 1);
+    let (trace_path, trace_auth, trace_actor) = &traces[0];
+    assert_eq!(trace_path, &trace_route);
+    assert_eq!(trace_auth.as_deref(), Some("Bearer rpc-youpet-token"));
+    assert_eq!(trace_actor.as_deref(), Some("rpc-workbench-actor"));
+    drop(traces);
+
+    let tools = post_json_rpc(&rpc_base, 2026_5, "openhuman.tool_registry_list", json!({})).await;
     let tool_list = assert_no_jsonrpc_error(&tools, "tool_registry_list");
     let tool_ids = tool_list
         .get("tools")
