@@ -114,6 +114,19 @@ const baseTrace = {
     {
       id: 'audit:ack-1',
       occurred_at: '2026-06-01T00:02:00Z',
+      kind: 'delivery_succeeded',
+      source: 'audit_logs',
+      title: 'Delivery succeeded',
+      detail: null,
+      actor: { type: 'agent', id: 'openclaw-youpet-consumer' },
+      related_type: 'event_outbox',
+      related_id: 'event-2',
+      severity: null,
+      metadata: { consumer: 'openclaw', attempts: 0, recovered: false },
+    },
+    {
+      id: 'audit:ack-2',
+      occurred_at: '2026-06-01T00:03:00Z',
       kind: 'delivery_recovered',
       source: 'audit_logs',
       title: 'Delivery recovered',
@@ -404,8 +417,27 @@ describe('Workbench', () => {
     expect(within(drawer).getAllByText('Event').length).toBeGreaterThan(0);
     expect(within(drawer).getAllByText('Delivery').length).toBeGreaterThan(0);
     expect(within(drawer).getByText('Failed · Retry scheduled')).toBeInTheDocument();
+    const succeededEntry = within(drawer).getByText('Delivery succeeded').closest('li');
+    expect(succeededEntry).not.toBeNull();
+    expect(within(succeededEntry as HTMLElement).getByText('Delivery')).toBeInTheDocument();
+    expect(within(succeededEntry as HTMLElement).getByText('Succeeded')).toBeInTheDocument();
     expect(within(drawer).getByText('Recovered')).toBeInTheDocument();
     expect(drawer).toHaveTextContent('alert_type: missed_checkin');
+  });
+
+  it('renders an unavailable workflow identity when Core returns workflow null', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace.mockResolvedValueOnce({ ...baseTrace, workflow: null });
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+
+    const drawer = await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
+    expect(
+      within(drawer).getByText('Workflow identity is unavailable for this alert.')
+    ).toBeInTheDocument();
   });
 
   it('renders empty trace as an empty state', async () => {

@@ -610,23 +610,37 @@ mod tests {
                 "message": "Trace limited to 50 entries",
                 "source": "event_outbox"
             }],
-            "entries": [{
-                "id": "event:event-1",
-                "occurred_at": "2026-06-01T00:00:00Z",
-                "kind": "outbox_event",
-                "source": "event_outbox",
-                "title": "Event emitted",
-                "detail": null,
-                "actor": { "type": "system", "id": null },
-                "related_type": null,
-                "related_id": null,
-                "severity": null,
-                "metadata": {
-                    "event_type": "task.checkin_received",
-                    "delivery_state": ["pending", "acked"]
+            "entries": [
+                {
+                    "id": "event:event-1",
+                    "occurred_at": "2026-06-01T00:00:00Z",
+                    "kind": "outbox_event",
+                    "source": "event_outbox",
+                    "title": "Event emitted",
+                    "detail": null,
+                    "actor": { "type": "system", "id": null },
+                    "related_type": null,
+                    "related_id": null,
+                    "severity": null,
+                    "metadata": {
+                        "event_type": "task.checkin_received",
+                        "delivery_state": ["pending", "acked"]
+                    },
+                    "future_field": "tolerated"
                 },
-                "future_field": "tolerated"
-            }]
+                {
+                    "id": "audit:ack-1",
+                    "occurred_at": "2026-06-01T00:01:00Z",
+                    "kind": "delivery_succeeded",
+                    "source": "audit_logs",
+                    "title": "Delivery succeeded",
+                    "metadata": {
+                        "consumer": "openclaw",
+                        "attempts": 0,
+                        "recovered": false
+                    }
+                }
+            ]
         }))
         .unwrap();
         assert_eq!(
@@ -649,6 +663,16 @@ mod tests {
         assert_eq!(
             trace.entries[0].metadata["event_type"],
             json!("task.checkin_received")
+        );
+        assert_eq!(
+            trace.entries[1].kind,
+            WorkbenchTraceEntryKind::DeliverySucceeded
+        );
+        assert_eq!(trace.entries[1].source, WorkbenchTraceSource::AuditLogs);
+        assert_eq!(trace.entries[1].metadata["attempts"], json!(0));
+        assert_eq!(
+            serde_json::to_value(&trace.entries[1].kind).unwrap(),
+            json!("delivery_succeeded")
         );
     }
 
