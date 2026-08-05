@@ -468,6 +468,14 @@ mod tests {
 
         assert_eq!(outcome.value.alert_id, TEST_ALERT_ID);
         assert_eq!(
+            outcome
+                .value
+                .workflow
+                .as_ref()
+                .map(|workflow| workflow.id.as_str()),
+            Some("plan-1")
+        );
+        assert_eq!(
             outcome.value.entries[0].id,
             "alert:11111111-1111-4111-8111-111111111111"
         );
@@ -508,6 +516,12 @@ mod tests {
         });
         axum::Json(json!({
             "alert_id": TEST_ALERT_ID,
+            "workflow": {
+                "type": "health_plan",
+                "id": "plan-1",
+                "task_id": "task-1",
+                "openclaw_flow_id": "flow-plan-1"
+            },
             "partial": true,
             "warnings": [{
                 "code": "trace_truncated",

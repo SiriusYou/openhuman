@@ -175,6 +175,39 @@ function formatTraceActor(actor: CoreWorkbenchTraceActor | null | undefined, non
   return actor.id ? `${labelFromLiteral(actor.type)} · ${actor.id}` : labelFromLiteral(actor.type);
 }
 
+function traceLane(entry: CoreWorkbenchTraceEntry): 'Step' | 'Event' | 'Delivery' | 'Audit' {
+  if (
+    entry.kind === 'health_plan_state' ||
+    entry.kind === 'task_state' ||
+    entry.kind === 'checkin_received'
+  ) {
+    return 'Step';
+  }
+  if (
+    entry.kind === 'outbox_delivery' ||
+    entry.kind === 'delivery_failed' ||
+    entry.kind === 'delivery_succeeded' ||
+    entry.kind === 'delivery_recovered' ||
+    entry.kind === 'delivery_dead_lettered'
+  ) {
+    return 'Delivery';
+  }
+  if (entry.kind === 'audit_action' || entry.source === 'audit_logs') return 'Audit';
+  if (entry.source === 'health_plans' || entry.source === 'task_instances') return 'Step';
+  if (entry.source === 'outbox_deliveries') return 'Delivery';
+  return 'Event';
+}
+
+function traceDeliveryStatus(entry: CoreWorkbenchTraceEntry): string | null {
+  if (entry.kind === 'delivery_failed') return 'Failed · Retry scheduled';
+  if (entry.kind === 'delivery_recovered') return 'Recovered';
+  if (entry.kind === 'delivery_succeeded') return 'Succeeded';
+  if (entry.kind === 'delivery_dead_lettered') return 'Dead lettered';
+  if (entry.kind !== 'outbox_delivery') return null;
+  const state = entry.metadata?.state;
+  return typeof state === 'string' ? labelFromLiteral(state) : null;
+}
+
 function WorkbenchAlertContextPanel({
   alert,
   t,
@@ -367,7 +400,7 @@ function WorkbenchTraceDrawer({
         role="dialog"
         aria-modal="true"
         tabIndex={-1}
-        aria-label={t('workbench.trace.dialogLabel', 'Alert trace for {alertId}').replace(
+        aria-label={t('workbench.trace.dialogLabel', 'Workflow trace for {alertId}').replace(
           '{alertId}',
           alert.id
         )}
@@ -420,6 +453,44 @@ function WorkbenchTraceDrawer({
 
               {trace ? (
                 <>
+                  <section
+                    aria-label={t('workbench.trace.workflowSummary', 'Workflow summary')}
+                    className="rounded-lg border border-primary-200 bg-primary-50 p-3 text-sm dark:border-primary-500/30 dark:bg-primary-500/10">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-primary-700 dark:text-primary-300">
+                      {t('workbench.trace.workflowSummary', 'Workflow summary')}
+                    </p>
+                    {trace.workflow ? (
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <div>
+                          <p className="font-medium text-stone-900 dark:text-neutral-100">
+                            {alert.context?.health_plan.title ??
+                              t('workbench.trace.healthPlan', 'Health plan')}
+                          </p>
+                          <p className="break-all text-stone-600 dark:text-neutral-300">
+                            {trace.workflow.type} / {trace.workflow.id}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-stone-600 dark:text-neutral-300">
+                            {alert.context?.pet.name ??
+                              t('workbench.trace.unknownPet', 'Unknown pet')}
+                          </p>
+                          <p className="break-all text-stone-600 dark:text-neutral-300">
+                            {t('workbench.context.flowId', 'Flow ID')}:{' '}
+                            {formatOptional(trace.workflow.openclaw_flow_id, none)}
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-stone-600 dark:text-neutral-300">
+                        {t(
+                          'workbench.trace.workflowUnavailable',
+                          'Workflow identity is unavailable for this alert.'
+                        )}
+                      </p>
+                    )}
+                  </section>
+
                   {trace.partial && trace.warnings.length > 0 && (
                     <div className="space-y-2">
                       {trace.warnings.map(warning => (
@@ -474,10 +545,15 @@ function TraceEntryItem({
   t: (key: string, fallback?: string) => string;
 }) {
   const chips = metadataChips(entry.metadata);
+  const lane = traceLane(entry);
+  const deliveryStatus = traceDeliveryStatus(entry);
 
   return (
     <li className="rounded-lg border border-stone-200 p-3 text-sm dark:border-neutral-800">
       <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-md bg-sage-50 px-2 py-1 text-xs font-semibold uppercase text-sage-700 dark:bg-sage-500/10 dark:text-sage-300">
+          {lane}
+        </span>
         <span className="rounded-md bg-primary-50 px-2 py-1 text-xs font-semibold uppercase text-primary-700 dark:bg-primary-500/10 dark:text-primary-300">
           {labelFromLiteral(entry.kind)}
         </span>
@@ -487,6 +563,11 @@ function TraceEntryItem({
         {entry.severity ? (
           <span className="rounded-md bg-coral-50 px-2 py-1 text-xs font-semibold uppercase text-coral-700 dark:bg-coral-500/10 dark:text-coral-200">
             {labelFromLiteral(entry.severity)}
+          </span>
+        ) : null}
+        {deliveryStatus ? (
+          <span className="rounded-md bg-amber-50 px-2 py-1 text-xs font-semibold uppercase text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+            {deliveryStatus}
           </span>
         ) : null}
       </div>

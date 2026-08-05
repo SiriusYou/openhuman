@@ -168,11 +168,16 @@ pub struct CoreWorkbenchAlert {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkbenchTraceEntryKind {
     AlertCreated,
+    HealthPlanState,
     TaskState,
     CheckinReceived,
     AuditAction,
     OutboxEvent,
     OutboxDelivery,
+    DeliveryFailed,
+    DeliverySucceeded,
+    DeliveryRecovered,
+    DeliveryDeadLettered,
     Unknown(String),
 }
 
@@ -180,11 +185,16 @@ impl WorkbenchTraceEntryKind {
     fn as_str(&self) -> &str {
         match self {
             Self::AlertCreated => "alert_created",
+            Self::HealthPlanState => "health_plan_state",
             Self::TaskState => "task_state",
             Self::CheckinReceived => "checkin_received",
             Self::AuditAction => "audit_action",
             Self::OutboxEvent => "outbox_event",
             Self::OutboxDelivery => "outbox_delivery",
+            Self::DeliveryFailed => "delivery_failed",
+            Self::DeliverySucceeded => "delivery_succeeded",
+            Self::DeliveryRecovered => "delivery_recovered",
+            Self::DeliveryDeadLettered => "delivery_dead_lettered",
             Self::Unknown(value) => value.as_str(),
         }
     }
@@ -207,11 +217,16 @@ impl<'de> Deserialize<'de> for WorkbenchTraceEntryKind {
         let value = String::deserialize(deserializer)?;
         Ok(match value.as_str() {
             "alert_created" => Self::AlertCreated,
+            "health_plan_state" => Self::HealthPlanState,
             "task_state" => Self::TaskState,
             "checkin_received" => Self::CheckinReceived,
             "audit_action" => Self::AuditAction,
             "outbox_event" => Self::OutboxEvent,
             "outbox_delivery" => Self::OutboxDelivery,
+            "delivery_failed" => Self::DeliveryFailed,
+            "delivery_succeeded" => Self::DeliverySucceeded,
+            "delivery_recovered" => Self::DeliveryRecovered,
+            "delivery_dead_lettered" => Self::DeliveryDeadLettered,
             _ => Self::Unknown(value),
         })
     }
@@ -220,6 +235,7 @@ impl<'de> Deserialize<'de> for WorkbenchTraceEntryKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkbenchTraceSource {
     Alerts,
+    HealthPlans,
     TaskInstances,
     Checkins,
     AuditLogs,
@@ -232,6 +248,7 @@ impl WorkbenchTraceSource {
     fn as_str(&self) -> &str {
         match self {
             Self::Alerts => "alerts",
+            Self::HealthPlans => "health_plans",
             Self::TaskInstances => "task_instances",
             Self::Checkins => "checkins",
             Self::AuditLogs => "audit_logs",
@@ -259,6 +276,7 @@ impl<'de> Deserialize<'de> for WorkbenchTraceSource {
         let value = String::deserialize(deserializer)?;
         Ok(match value.as_str() {
             "alerts" => Self::Alerts,
+            "health_plans" => Self::HealthPlans,
             "task_instances" => Self::TaskInstances,
             "checkins" => Self::Checkins,
             "audit_logs" => Self::AuditLogs,
@@ -274,6 +292,7 @@ pub enum WorkbenchTraceWarningCode {
     TraceTruncated,
     UnsupportedRelatedType,
     MissingRelatedTask,
+    MissingRelatedPlan,
     MissingRelatedEvent,
     Unknown(String),
 }
@@ -284,6 +303,7 @@ impl WorkbenchTraceWarningCode {
             Self::TraceTruncated => "trace_truncated",
             Self::UnsupportedRelatedType => "unsupported_related_type",
             Self::MissingRelatedTask => "missing_related_task",
+            Self::MissingRelatedPlan => "missing_related_plan",
             Self::MissingRelatedEvent => "missing_related_event",
             Self::Unknown(value) => value.as_str(),
         }
@@ -309,6 +329,7 @@ impl<'de> Deserialize<'de> for WorkbenchTraceWarningCode {
             "trace_truncated" => Self::TraceTruncated,
             "unsupported_related_type" => Self::UnsupportedRelatedType,
             "missing_related_task" => Self::MissingRelatedTask,
+            "missing_related_plan" => Self::MissingRelatedPlan,
             "missing_related_event" => Self::MissingRelatedEvent,
             _ => Self::Unknown(value),
         })
@@ -398,9 +419,22 @@ pub struct WorkbenchTraceWarning {
     pub source: Option<WorkbenchTraceSource>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkbenchWorkflowIdentity {
+    #[serde(rename = "type")]
+    pub workflow_type: String,
+    pub id: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub openclaw_flow_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkbenchAlertTrace {
     pub alert_id: String,
+    #[serde(default)]
+    pub workflow: Option<WorkbenchWorkflowIdentity>,
     pub partial: bool,
     #[serde(default)]
     pub warnings: Vec<WorkbenchTraceWarning>,
@@ -564,6 +598,12 @@ mod tests {
     fn trace_shape_accepts_nullable_fields_warnings_metadata_and_unknowns() {
         let trace: WorkbenchAlertTrace = serde_json::from_value(json!({
             "alert_id": "alert-1",
+            "workflow": {
+                "type": "health_plan",
+                "id": "plan-1",
+                "task_id": "task-1",
+                "openclaw_flow_id": "flow-plan-1"
+            },
             "partial": true,
             "warnings": [{
                 "code": "trace_truncated",
@@ -589,6 +629,10 @@ mod tests {
             }]
         }))
         .unwrap();
+        assert_eq!(
+            trace.workflow.as_ref().map(|workflow| workflow.id.as_str()),
+            Some("plan-1")
+        );
 
         assert!(trace.partial);
         assert_eq!(

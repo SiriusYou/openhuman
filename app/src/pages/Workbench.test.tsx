@@ -61,11 +61,30 @@ const baseAlert = {
 
 const baseTrace = {
   alert_id: 'alert-1',
+  workflow: {
+    type: 'health_plan',
+    id: 'plan-1',
+    task_id: 'task-1',
+    openclaw_flow_id: 'flow-plan-1',
+  },
   partial: true,
   warnings: [
     { code: 'trace_truncated', message: 'Trace limited to 50 entries', source: 'event_outbox' },
   ],
   entries: [
+    {
+      id: 'health-plan:plan-1:state',
+      occurred_at: '2026-05-31T23:59:00Z',
+      kind: 'health_plan_state',
+      source: 'health_plans',
+      title: 'Health plan active',
+      detail: 'Daily check-in',
+      actor: null,
+      related_type: 'health_plan',
+      related_id: 'plan-1',
+      severity: null,
+      metadata: { status: 'active' },
+    },
     {
       id: 'alert:alert-1',
       occurred_at: '2026-06-01T00:00:00Z',
@@ -78,6 +97,32 @@ const baseTrace = {
       related_id: 'task-1',
       severity: 'critical',
       metadata: { alert_type: 'missed_checkin', tags: ['late', 'critical'] },
+    },
+    {
+      id: 'audit:nack-1',
+      occurred_at: '2026-06-01T00:01:00Z',
+      kind: 'delivery_failed',
+      source: 'audit_logs',
+      title: 'Delivery failed; retry scheduled',
+      detail: 'provider timeout',
+      actor: { type: 'agent', id: 'openclaw-youpet-consumer' },
+      related_type: 'event_outbox',
+      related_id: 'event-1',
+      severity: null,
+      metadata: { consumer: 'openclaw', attempts: 1 },
+    },
+    {
+      id: 'audit:ack-1',
+      occurred_at: '2026-06-01T00:02:00Z',
+      kind: 'delivery_recovered',
+      source: 'audit_logs',
+      title: 'Delivery recovered',
+      detail: null,
+      actor: { type: 'agent', id: 'openclaw-youpet-consumer' },
+      related_type: 'event_outbox',
+      related_id: 'event-1',
+      severity: null,
+      metadata: { consumer: 'openclaw', attempts: 1, recovered: true },
     },
   ],
 };
@@ -342,7 +387,11 @@ describe('Workbench', () => {
     await user.click(screen.getByRole('button', { name: 'Trace' }));
 
     expect(mockClient.getAlertTrace).toHaveBeenCalledWith('alert-1');
-    const drawer = await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    const drawer = await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
+    const workflowSummary = within(drawer).getByRole('region', { name: 'Workflow summary' });
+    expect(workflowSummary).toBeInTheDocument();
+    expect(within(drawer).getAllByText('Daily check-in').length).toBeGreaterThan(0);
+    expect(workflowSummary).toHaveTextContent('flow-plan-1');
     expect(within(drawer).getByText('Alert created')).toBeInTheDocument();
     expect(within(drawer).getByText('Critical missed check-in alert.')).toBeInTheDocument();
     expect(within(drawer).getByText('Alert Created')).toBeInTheDocument();
@@ -351,6 +400,11 @@ describe('Workbench', () => {
     expect(within(drawer).getAllByText('task_instance / task-1')).toHaveLength(2);
     expect(within(drawer).getByText('Trace Truncated')).toBeInTheDocument();
     expect(within(drawer).getByText('Trace limited to 50 entries')).toBeInTheDocument();
+    expect(within(drawer).getAllByText('Step').length).toBeGreaterThan(0);
+    expect(within(drawer).getAllByText('Event').length).toBeGreaterThan(0);
+    expect(within(drawer).getAllByText('Delivery').length).toBeGreaterThan(0);
+    expect(within(drawer).getByText('Failed · Retry scheduled')).toBeInTheDocument();
+    expect(within(drawer).getByText('Recovered')).toBeInTheDocument();
     expect(drawer).toHaveTextContent('alert_type: missed_checkin');
   });
 
@@ -437,7 +491,7 @@ describe('Workbench', () => {
     const traceButton = screen.getByRole('button', { name: 'Trace' });
     await user.click(traceButton);
 
-    const drawer = await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    const drawer = await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
     expect(drawer).toHaveFocus();
 
     await user.tab({ shift: true });
@@ -450,18 +504,20 @@ describe('Workbench', () => {
 
     await waitFor(() =>
       expect(
-        screen.queryByRole('dialog', { name: 'Alert trace for alert-1' })
+        screen.queryByRole('dialog', { name: 'Workflow trace for alert-1' })
       ).not.toBeInTheDocument()
     );
     expect(traceButton).toHaveFocus();
 
     await user.click(traceButton);
-    const reopenedDrawer = await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    const reopenedDrawer = await screen.findByRole('dialog', {
+      name: 'Workflow trace for alert-1',
+    });
     fireEvent.mouseDown(reopenedDrawer.parentElement as HTMLElement);
 
     await waitFor(() =>
       expect(
-        screen.queryByRole('dialog', { name: 'Alert trace for alert-1' })
+        screen.queryByRole('dialog', { name: 'Workflow trace for alert-1' })
       ).not.toBeInTheDocument()
     );
   });
@@ -480,13 +536,13 @@ describe('Workbench', () => {
     render(<Workbench />);
     await screen.findByText('Buddy missed a check-in.');
     await user.click(screen.getByRole('button', { name: 'Trace' }));
-    await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
     await screen.findByText('Alert created');
 
     await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
 
     await waitFor(() => expect(mockClient.listAlerts).toHaveBeenCalledTimes(2));
-    expect(screen.getByRole('dialog', { name: 'Alert trace for alert-1' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Workflow trace for alert-1' })).toBeInTheDocument();
     expect(screen.getByText('Alert created')).toBeInTheDocument();
     expect(mockClient.getAlertTrace).toHaveBeenCalledTimes(1);
   });
@@ -529,7 +585,7 @@ describe('Workbench', () => {
       entries: [{ ...baseTrace.entries[0], id: 'alert:alert-1', title: 'First stale trace' }],
     });
 
-    const drawer = await screen.findByRole('dialog', { name: 'Alert trace for alert-2' });
+    const drawer = await screen.findByRole('dialog', { name: 'Workflow trace for alert-2' });
     expect(await within(drawer).findByText('Second alert trace')).toBeInTheDocument();
     expect(within(drawer).queryByText('First stale trace')).not.toBeInTheDocument();
   });
@@ -543,14 +599,14 @@ describe('Workbench', () => {
     render(<Workbench />);
     await screen.findByText('Buddy missed a check-in.');
     await user.click(screen.getByRole('button', { name: 'Trace' }));
-    await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
     await user.click(screen.getByRole('button', { name: 'Close' }));
 
     pendingTrace.resolve(baseTrace);
 
     await waitFor(() =>
       expect(
-        screen.queryByRole('dialog', { name: 'Alert trace for alert-1' })
+        screen.queryByRole('dialog', { name: 'Workflow trace for alert-1' })
       ).not.toBeInTheDocument()
     );
     expect(screen.queryByText('Alert created')).not.toBeInTheDocument();

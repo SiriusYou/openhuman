@@ -6,14 +6,20 @@ export type CoreAlertStatus = 'open' | 'acknowledged' | 'resolved' | 'dismissed'
 type FutureCoreLiteral = string & {};
 export type CoreWorkbenchTraceEntryKind =
   | 'alert_created'
+  | 'health_plan_state'
   | 'task_state'
   | 'checkin_received'
   | 'audit_action'
   | 'outbox_event'
   | 'outbox_delivery'
+  | 'delivery_failed'
+  | 'delivery_succeeded'
+  | 'delivery_recovered'
+  | 'delivery_dead_lettered'
   | FutureCoreLiteral;
 export type CoreWorkbenchTraceSource =
   | 'alerts'
+  | 'health_plans'
   | 'task_instances'
   | 'checkins'
   | 'audit_logs'
@@ -24,6 +30,7 @@ export type CoreWorkbenchTraceWarningCode =
   | 'trace_truncated'
   | 'unsupported_related_type'
   | 'missing_related_task'
+  | 'missing_related_plan'
   | 'missing_related_event'
   | FutureCoreLiteral;
 export type CoreWorkbenchTraceSeverity = CoreAlertSeverity | FutureCoreLiteral;
@@ -94,8 +101,16 @@ export interface CoreWorkbenchTraceWarning {
   source?: CoreWorkbenchTraceSource | null;
 }
 
+export interface CoreWorkbenchWorkflowIdentity {
+  type: 'health_plan' | FutureCoreLiteral;
+  id: string;
+  task_id?: string | null;
+  openclaw_flow_id?: string | null;
+}
+
 export interface CoreWorkbenchAlertTrace {
   alert_id: string;
+  workflow: CoreWorkbenchWorkflowIdentity | null;
   partial: boolean;
   warnings: CoreWorkbenchTraceWarning[];
   entries: CoreWorkbenchTraceEntry[];

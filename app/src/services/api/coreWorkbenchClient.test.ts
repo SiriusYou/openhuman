@@ -24,6 +24,12 @@ const alert = (overrides = {}) => ({
 
 const trace = (overrides = {}) => ({
   alert_id: 'alert-1',
+  workflow: {
+    type: 'health_plan',
+    id: 'plan-1',
+    task_id: 'task-1',
+    openclaw_flow_id: 'flow-plan-1',
+  },
   partial: true,
   warnings: [
     { code: 'trace_truncated', message: 'Trace limited to 50 entries', source: 'event_outbox' },
@@ -175,6 +181,7 @@ describe('coreWorkbenchClient', () => {
     const loaded = await client.getAlertTrace('alert-1');
 
     expect(loaded.partial).toBe(true);
+    expect(loaded.workflow?.id).toBe('plan-1');
     expect(loaded.warnings[0]?.code).toBe('trace_truncated');
     expect(loaded.entries[0]?.kind).toBe('outbox_event');
     expect(loaded.entries[0]?.metadata).toEqual({
