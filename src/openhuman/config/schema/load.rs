@@ -1419,6 +1419,14 @@ impl Config {
                 Some(trimmed.to_string())
             };
         }
+        if let Some(tenant) = env.get("YOUPET_TENANT_ID") {
+            let trimmed = tenant.trim();
+            self.youpet.tenant_id = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+        }
 
         if let Some(flag) = env.get_any(&["OPENHUMAN_REASONING_ENABLED", "REASONING_ENABLED"]) {
             let normalized = flag.trim().to_ascii_lowercase();

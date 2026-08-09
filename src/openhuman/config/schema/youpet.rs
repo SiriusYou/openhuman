@@ -18,6 +18,8 @@ pub struct YouPetConfig {
     pub workbench_actor_id: String,
     /// Core users.id UUID for the operator performing workbench actions.
     pub operator_user_id: Option<String>,
+    /// Default Core tenant UUID for ActionRequest list/get scope.
+    pub tenant_id: Option<String>,
 }
 
 impl fmt::Debug for YouPetConfig {
@@ -34,6 +36,7 @@ impl fmt::Debug for YouPetConfig {
             )
             .field("workbench_actor_id", &self.workbench_actor_id)
             .field("operator_user_id", &self.operator_user_id)
+            .field("tenant_id", &self.tenant_id)
             .finish()
     }
 }
@@ -45,6 +48,7 @@ impl Default for YouPetConfig {
             service_token: None,
             workbench_actor_id: DEFAULT_YOUPET_WORKBENCH_ACTOR_ID.to_string(),
             operator_user_id: None,
+            tenant_id: None,
         }
     }
 }
@@ -81,6 +85,13 @@ impl YouPetConfig {
             .map(str::trim)
             .filter(|operator| !operator.is_empty())
     }
+
+    pub fn tenant_id(&self) -> Option<&str> {
+        self.tenant_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|tenant| !tenant.is_empty())
+    }
 }
 
 #[cfg(test)]
@@ -114,11 +125,16 @@ mod tests {
             service_token: Some("  tok  ".into()),
             workbench_actor_id: "   ".into(),
             operator_user_id: Some("  operator-1  ".into()),
+            tenant_id: Some("  20000000-0000-0000-0000-000000000001  ".into()),
         };
         assert_eq!(cfg.normalized_core_api_url(), "https://core.example.test");
         assert_eq!(cfg.service_token(), Some("tok"));
         assert_eq!(cfg.workbench_actor_id(), DEFAULT_YOUPET_WORKBENCH_ACTOR_ID);
         assert_eq!(cfg.operator_user_id(), Some("operator-1"));
+        assert_eq!(
+            cfg.tenant_id(),
+            Some("20000000-0000-0000-0000-000000000001")
+        );
 
         let blank_operator = YouPetConfig {
             operator_user_id: Some("   ".into()),

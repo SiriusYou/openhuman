@@ -196,6 +196,9 @@ const messages: TranslationMap = {
   'home.routinesActive': '{count} 个运行中',
   'home.youpetWorkbench': 'YouPet Workbench',
   'home.youpetWorkbenchDescription': 'Review Core alerts and operator actions.',
+  'home.youpetActionRequests': 'Action Request Inbox',
+  'home.youpetActionRequestsDescription':
+    'Approve or reject pending Core ActionRequests as the operator.',
   'workbench.eyebrow': 'YouPet Core',
   'workbench.title': 'Workbench',
   'workbench.refresh': 'Refresh',

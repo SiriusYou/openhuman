@@ -22,6 +22,7 @@ import Skills from './pages/Skills';
 import SkillsRun from './pages/SkillsRun';
 import WebCallbackPage from './pages/WebCallbackPage';
 import Welcome from './pages/Welcome';
+import ActionRequestInbox from './pages/ActionRequestInbox';
 import Workbench from './pages/Workbench';
 
 const AppRoutes = () => {
@@ -190,6 +191,15 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute requireAuth={true}>
             <Workbench />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/action-requests"
+        element={
+          <ProtectedRoute requireAuth={true}>
+            <ActionRequestInbox />
           </ProtectedRoute>
         }
       />

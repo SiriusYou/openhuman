@@ -224,6 +224,9 @@ const en: TranslationMap = {
   'home.routinesActive': '{count} active',
   'home.youpetWorkbench': 'YouPet Workbench',
   'home.youpetWorkbenchDescription': 'Review Core alerts and operator actions.',
+  'home.youpetActionRequests': 'Action Request Inbox',
+  'home.youpetActionRequestsDescription':
+    'Approve or reject pending Core ActionRequests as the operator.',
   'workbench.eyebrow': 'YouPet Core',
   'workbench.title': 'Workbench',
   'workbench.refresh': 'Refresh',
@@ -269,6 +272,49 @@ const en: TranslationMap = {
   'workbench.resolutionFor': 'Resolution for {alertId}',
   'workbench.resolve': 'Resolve',
   'workbench.resolving': 'Resolving',
+
+  // ActionRequest approval inbox (AOS-S1.M1.2.3)
+  'actionRequest.eyebrow': 'YouPet Core',
+  'actionRequest.title': 'Action Request Inbox',
+  'actionRequest.subtitle':
+    'Review pending Core ActionRequests and approve or reject with an operator reason.',
+  'actionRequest.filterLabel': 'Approval filter',
+  'actionRequest.filter.pending': 'Pending',
+  'actionRequest.filter.all': 'All',
+  'actionRequest.refresh': 'Refresh',
+  'actionRequest.refreshing': 'Refreshing',
+  'actionRequest.loading': 'Loading action requests…',
+  'actionRequest.empty': 'No action requests match the current filter.',
+  'actionRequest.selectPrompt': 'Select an action request to inspect.',
+  'actionRequest.rowVersion': 'Row version',
+  'actionRequest.approval': 'Approval',
+  'actionRequest.execution': 'Execution',
+  'actionRequest.actionType': 'Action type',
+  'actionRequest.risk': 'Risk',
+  'actionRequest.proposer': 'Proposer',
+  'actionRequest.target': 'Target',
+  'actionRequest.policyOutcome': 'Policy outcome',
+  'actionRequest.correlation': 'Correlation',
+  'actionRequest.updated': 'Updated',
+  'actionRequest.reasons': 'Policy reasons',
+  'actionRequest.obligations': 'Obligations',
+  'actionRequest.payload': 'Payload',
+  'actionRequest.none': 'None',
+  'actionRequest.reasonLabel': 'Operator reason',
+  'actionRequest.reasonRequired': 'A non-empty operator reason is required.',
+  'actionRequest.approve': 'Approve',
+  'actionRequest.approving': 'Approving…',
+  'actionRequest.reject': 'Reject',
+  'actionRequest.rejecting': 'Rejecting…',
+  'actionRequest.terminalReadOnly':
+    'This request is no longer pending and is read-only.',
+  'actionRequest.requestFailed':
+    'Action request failed. Check Core configuration and try again.',
+  'actionRequest.errorWithCode': 'Action request failed ({code}).',
+  'actionRequest.conflictRefresh':
+    'State changed ({code}). Reloaded from Core: {state} v{version}.',
+  'actionRequest.conflictRefreshFailed':
+    'State conflict ({code}), and refresh from Core failed.',
 
   // Routines
   'routines.title': 'Your Routines',

@@ -6,7 +6,10 @@ use crate::core::{ControllerSchema, FieldSchema, TypeSchema};
 use crate::openhuman::config::rpc as config_rpc;
 use crate::rpc::RpcOutcome;
 
-use super::types::{AlertActionRpcParams, ListAlertsRpcParams, TraceAlertRpcParams};
+use super::types::{
+    ActionRequestDecisionRpcParams, AlertActionRpcParams, GetActionRequestRpcParams,
+    ListActionRequestsRpcParams, ListAlertsRpcParams, TraceAlertRpcParams,
+};
 
 pub fn all_internal_controllers() -> Vec<RegisteredController> {
     vec![
@@ -25,6 +28,22 @@ pub fn all_internal_controllers() -> Vec<RegisteredController> {
         RegisteredController {
             schema: youpet_schemas("trace_alert"),
             handler: handle_trace_alert,
+        },
+        RegisteredController {
+            schema: youpet_schemas("list_action_requests"),
+            handler: handle_list_action_requests,
+        },
+        RegisteredController {
+            schema: youpet_schemas("get_action_request"),
+            handler: handle_get_action_request,
+        },
+        RegisteredController {
+            schema: youpet_schemas("approve_action_request"),
+            handler: handle_approve_action_request,
+        },
+        RegisteredController {
+            schema: youpet_schemas("reject_action_request"),
+            handler: handle_reject_action_request,
         },
     ]
 }
@@ -64,6 +83,45 @@ pub fn youpet_schemas(function: &str) -> ControllerSchema {
             description: "Load a read-only YouPet Core workbench alert trace.",
             inputs: vec![required_string("alertId", "Alert id.")],
             outputs: vec![json_output("trace", "Core workbench alert trace.")],
+        },
+        "list_action_requests" => ControllerSchema {
+            namespace: "youpet",
+            function: "list_action_requests",
+            description: "List YouPet Core ActionRequests for the operator inbox.",
+            inputs: vec![
+                optional_string(
+                    "tenantId",
+                    "Tenant UUID. Omitted -> youpet.tenant_id / YOUPET_TENANT_ID config.",
+                ),
+                optional_string("approvalState", "Optional approval_state filter."),
+                optional_string("executionState", "Optional execution_state filter."),
+                optional_string("limit", "Optional list limit (1-200)."),
+            ],
+            outputs: vec![json_output("items", "Core ActionRequest lifecycle envelopes.")],
+        },
+        "get_action_request" => ControllerSchema {
+            namespace: "youpet",
+            function: "get_action_request",
+            description: "Get one YouPet Core ActionRequest by id.",
+            inputs: vec![required_string(
+                "actionRequestId",
+                "ActionRequest id (UUID).",
+            )],
+            outputs: vec![json_output("item", "Core ActionRequest lifecycle envelope.")],
+        },
+        "approve_action_request" => ControllerSchema {
+            namespace: "youpet",
+            function: "approve_action_request",
+            description: "Approve a pending Core ActionRequest as the configured operator user.",
+            inputs: action_request_decision_inputs(),
+            outputs: vec![json_output("item", "Updated Core ActionRequest envelope.")],
+        },
+        "reject_action_request" => ControllerSchema {
+            namespace: "youpet",
+            function: "reject_action_request",
+            description: "Reject a pending Core ActionRequest as the configured operator user.",
+            inputs: action_request_decision_inputs(),
+            outputs: vec![json_output("item", "Updated Core ActionRequest envelope.")],
         },
         _ => ControllerSchema {
             namespace: "youpet",
@@ -109,6 +167,38 @@ fn handle_trace_alert(params: Map<String, Value>) -> ControllerFuture {
         let config = config_rpc::load_config_with_timeout().await?;
         let payload = deserialize_params::<TraceAlertRpcParams>(params)?;
         to_json(crate::openhuman::youpet::get_alert_trace(&config, payload).await?)
+    })
+}
+
+fn handle_list_action_requests(params: Map<String, Value>) -> ControllerFuture {
+    Box::pin(async move {
+        let config = config_rpc::load_config_with_timeout().await?;
+        let payload = deserialize_params::<ListActionRequestsRpcParams>(params)?;
+        to_json(crate::openhuman::youpet::list_action_requests(&config, payload).await?)
+    })
+}
+
+fn handle_get_action_request(params: Map<String, Value>) -> ControllerFuture {
+    Box::pin(async move {
+        let config = config_rpc::load_config_with_timeout().await?;
+        let payload = deserialize_params::<GetActionRequestRpcParams>(params)?;
+        to_json(crate::openhuman::youpet::get_action_request(&config, payload).await?)
+    })
+}
+
+fn handle_approve_action_request(params: Map<String, Value>) -> ControllerFuture {
+    Box::pin(async move {
+        let config = config_rpc::load_config_with_timeout().await?;
+        let payload = deserialize_params::<ActionRequestDecisionRpcParams>(params)?;
+        to_json(crate::openhuman::youpet::approve_action_request(&config, payload).await?)
+    })
+}
+
+fn handle_reject_action_request(params: Map<String, Value>) -> ControllerFuture {
+    Box::pin(async move {
+        let config = config_rpc::load_config_with_timeout().await?;
+        let payload = deserialize_params::<ActionRequestDecisionRpcParams>(params)?;
+        to_json(crate::openhuman::youpet::reject_action_request(&config, payload).await?)
     })
 }
 
@@ -158,6 +248,21 @@ fn alert_action_inputs(optional_text_name: &'static str) -> Vec<FieldSchema> {
     ]
 }
 
+fn action_request_decision_inputs() -> Vec<FieldSchema> {
+    vec![
+        required_string("actionRequestId", "ActionRequest id (UUID)."),
+        required_string("reason", "Non-empty operator decision reason."),
+        required_string(
+            "expectedRowVersion",
+            "Current Core row_version for optimistic concurrency.",
+        ),
+        optional_string(
+            "idempotencyKey",
+            "Stable per-intent Idempotency-Key. Required for retry-safe UI; omitted/blank -> fresh UUID (not retry-safe).",
+        ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,7 +271,7 @@ mod tests {
     #[test]
     fn schemas_and_controllers_match() {
         let controllers = all_internal_controllers();
-        assert_eq!(controllers.len(), 4);
+        assert_eq!(controllers.len(), 8);
         for controller in controllers {
             assert_eq!(
                 controller.schema,
