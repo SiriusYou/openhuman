@@ -285,12 +285,18 @@ export const userScopedStorage = {
  * - no authenticated user ⇒ fail closed (no shared fallback namespace)
  * - writes are round-trip verified so silent no-ops cannot pretend durability
  *
+ * Read outcomes are distinct (critical for retry-key identity):
+ * - `null` means a successful read that found no value
+ * - backend/read exceptions throw `user_scoped_storage_read_failed`
+ *   (never collapsed into `null`, which would look like “no prior intent”)
+ *
  * Unlike `userScopedStorage` (async, swallows write errors for redux-persist),
  * this adapter throws when durability cannot be guaranteed so callers can
  * block side-effecting mutations.
  */
 export interface VerifiedUserScopedStorage {
   hasActiveUser(): boolean;
+  /** `null` only when the key is absent after a successful read. */
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
@@ -316,11 +322,18 @@ export function createVerifiedUserScopedStorage(options?: {
     },
     getItem(key) {
       const userId = resolveUserId();
-      if (!userId || !userId.trim()) return null;
+      if (!userId || !userId.trim()) {
+        throw new Error('user_scoped_storage_no_active_user');
+      }
       try {
         return backend.getItem(`${userId}:${key}`);
-      } catch {
-        return null;
+      } catch (err) {
+        // Distinguish "key absent" (null) from "storage unreadable" (throw).
+        // Collapsing both into null would rotate idempotency keys on retry.
+        if (err instanceof Error && err.message === 'user_scoped_storage_read_failed') {
+          throw err;
+        }
+        throw new Error('user_scoped_storage_read_failed');
       }
     },
     setItem(key, value) {

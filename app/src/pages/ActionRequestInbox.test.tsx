@@ -507,6 +507,44 @@ describe('ActionRequestInbox', () => {
     expect(mockClient.reject).not.toHaveBeenCalled();
   });
 
+  it('fails closed on retry when storage read throws without rotating the prior key', async () => {
+    mockClient.list.mockResolvedValue([pendingItem]);
+    mockClient.approve.mockRejectedValue(new Error('ambiguous network'));
+    const user = userEvent.setup();
+
+    render(<ActionRequestInbox />);
+    await screen.findByTestId(`action-request-row-${PENDING_ID}`);
+    await user.type(screen.getByTestId('action-request-reason'), 'keep key');
+    await user.click(screen.getByTestId('action-request-approve'));
+    await waitFor(() => expect(mockClient.approve).toHaveBeenCalledTimes(1));
+    const firstKey = mockClient.approve.mock.calls[0]?.[1]?.idempotencyKey as string;
+    const before = window.localStorage.getItem(physicalStorageKey());
+    expect(before).toContain(firstKey);
+
+    let writeCount = 0;
+    setActionRequestIntentStorageAdapter({
+      getItem() {
+        throw new Error('transient storage read failure');
+      },
+      setItem() {
+        writeCount += 1;
+      },
+      removeItem() {
+        // no-op
+      },
+    });
+
+    await user.click(screen.getByTestId('action-request-approve'));
+    expect(await screen.findByTestId('action-request-error')).toHaveTextContent(
+      'retry-key storage'
+    );
+    expect(mockClient.approve).toHaveBeenCalledTimes(1);
+    expect(writeCount).toBe(0);
+
+    setActionRequestIntentStorageAdapter(null);
+    expect(window.localStorage.getItem(physicalStorageKey())).toBe(before);
+  });
+
   it('fails closed when no authenticated active user is in scope', async () => {
     setActiveUserId(null);
     mockClient.list.mockResolvedValue([pendingItem]);
@@ -698,6 +736,39 @@ describe('action request idempotency helpers', () => {
     });
     const result = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'x', 1, defaultScope());
     expect(result.persisted).toBe(false);
+  });
+
+  it('does not rotate an existing retry key when storage read throws', () => {
+    const scope = defaultScope();
+    const first = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'same intent', 2, scope);
+    expect(first.persisted).toBe(true);
+    const before = window.localStorage.getItem(physicalStorageKey());
+    expect(before).toContain(first.key);
+
+    let writeCount = 0;
+    setActionRequestIntentStorageAdapter({
+      getItem() {
+        throw new Error('transient storage read failure');
+      },
+      setItem() {
+        writeCount += 1;
+      },
+      removeItem() {
+        // no-op
+      },
+    });
+
+    const retry = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'same intent', 2, scope);
+    expect(retry.persisted).toBe(false);
+    expect(retry.key).toBe('');
+    expect(writeCount).toBe(0);
+
+    // Prior durable intent must remain untouched under the real user-scoped path.
+    setActionRequestIntentStorageAdapter(null);
+    expect(window.localStorage.getItem(physicalStorageKey())).toBe(before);
+    const recovered = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'same intent', 2, scope);
+    expect(recovered.persisted).toBe(true);
+    expect(recovered.key).toBe(first.key);
   });
 
   it('returns persisted=false without an active user scope', () => {

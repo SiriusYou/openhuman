@@ -3,10 +3,10 @@
  * ActionRequest inbox E2E (M1.2.3 / #18) — bounded user-visible route smoke.
  *
  * Full approve/reject + storage fail-closed + Core refresh + pending-filter
- * behavior is covered by the Vitest bridge suite
- * (`app/src/pages/ActionRequestInbox.bridge.test.tsx`) against the same
- * client seam the desktop shell uses. This Appium spec verifies the protected
- * route mounts the inbox shell end-to-end through Tauri/CEF.
+ * behavior is covered by the Vitest UI integration suite
+ * (`app/src/pages/ActionRequestInbox.bridge.test.tsx`) against a mocked
+ * client interface. This Appium spec verifies the protected route mounts the
+ * inbox shell end-to-end through Tauri/CEF.
  *
  * Decision mutations against a live Core ActionRequest catalog are not
  * exercised here (require configured YOUPET_TENANT_ID + Core fixtures);

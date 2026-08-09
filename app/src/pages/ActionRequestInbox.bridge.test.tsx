@@ -1,10 +1,12 @@
 /**
- * Bounded bridge/UI scenario for M1.2.3 ActionRequest inbox.
+ * Bounded UI integration scenario for M1.2.3 ActionRequest inbox.
  *
- * Covers the cross-layer user-visible path in one journey:
- * approve + reject, storage fail-closed, authoritative Core get, and
- * pending-filter removal. Uses the real page + client boundary with a
- * mocked Core RPC surface (same seam the desktop shell uses).
+ * Covers the user-visible path in one journey: approve + reject, storage
+ * fail-closed, authoritative Core get, and pending-filter removal.
+ *
+ * This is the real page against a mocked `createCoreActionRequestClient`
+ * interface — not a bridge/client contract proof (the Core RPC client is
+ * fully replaced in this suite).
  */
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';

@@ -74,11 +74,6 @@ export function resolveActiveUserScope(): string | null {
   return id;
 }
 
-/** @deprecated Use resolveActiveUserScope — this never was Core operator_user_id. */
-export function resolveOperatorScope(): string | null {
-  return resolveActiveUserScope();
-}
-
 interface StoredIntent {
   key: string;
   action: DecisionAction;
