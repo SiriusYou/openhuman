@@ -95,7 +95,7 @@ pub fn youpet_schemas(function: &str) -> ControllerSchema {
                 ),
                 optional_string("approvalState", "Optional approval_state filter."),
                 optional_string("executionState", "Optional execution_state filter."),
-                optional_string("limit", "Optional list limit (1-200)."),
+                optional_i64("limit", "Optional list limit (1-200)."),
             ],
             outputs: vec![json_output("items", "Core ActionRequest lifecycle envelopes.")],
         },
@@ -252,15 +252,33 @@ fn action_request_decision_inputs() -> Vec<FieldSchema> {
     vec![
         required_string("actionRequestId", "ActionRequest id (UUID)."),
         required_string("reason", "Non-empty operator decision reason."),
-        required_string(
+        required_i64(
             "expectedRowVersion",
             "Current Core row_version for optimistic concurrency.",
         ),
-        optional_string(
+        required_string(
             "idempotencyKey",
-            "Stable per-intent Idempotency-Key. Required for retry-safe UI; omitted/blank -> fresh UUID (not retry-safe).",
+            "Stable per-intent Idempotency-Key. Required so retries cannot mint a new UUID.",
         ),
     ]
+}
+
+fn optional_i64(name: &'static str, comment: &'static str) -> FieldSchema {
+    FieldSchema {
+        name,
+        ty: TypeSchema::Option(Box::new(TypeSchema::I64)),
+        comment,
+        required: false,
+    }
+}
+
+fn required_i64(name: &'static str, comment: &'static str) -> FieldSchema {
+    FieldSchema {
+        name,
+        ty: TypeSchema::I64,
+        comment,
+        required: true,
+    }
 }
 
 #[cfg(test)]

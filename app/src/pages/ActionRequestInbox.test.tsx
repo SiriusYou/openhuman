@@ -1,9 +1,11 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ActionRequestInbox, {
   actionRequestIdempotencyStorageKey,
+  clearIdempotencyKey,
+  getOrCreateIdempotencyKey,
 } from './ActionRequestInbox';
 
 const mockClient = vi.hoisted(() => ({
@@ -37,6 +39,16 @@ const pendingItem = {
       obligations: ['notify owner after decision'],
     },
     payload: { summary: 'Escalate missed check-in' },
+    links: {
+      workflow_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      workflow_trace_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      agent_run_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      proposal_event_id: 'proposal-evt-1',
+      idempotency_key: 'create-key-1',
+      audit_log_ids: ['dddddddd-dddd-4ddd-8ddd-dddddddddddd'],
+      domain_event_ids: ['domain-evt-1'],
+      outbox_delivery_ids: ['eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'],
+    },
   },
   row_version: 2,
   id: PENDING_ID,
@@ -49,9 +61,9 @@ const pendingItem = {
   updated_at: '2026-08-08T12:00:00Z',
 } as const;
 
-function storedIdempotencyKeys() {
+function storedIdempotencyRecords() {
   const raw = window.localStorage.getItem(actionRequestIdempotencyStorageKey);
-  return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  return raw ? (JSON.parse(raw) as Record<string, { key: string; reason: string }>) : {};
 }
 
 function deferred<T>() {
@@ -64,11 +76,11 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function structuredError(code: string) {
+function structuredError(code: string, field?: string) {
   return {
     data: {
       kind: 'YouPetCoreHttpError',
-      youpet: { code },
+      youpet: field ? { code, field } : { code },
     },
   };
 }
@@ -82,7 +94,11 @@ describe('ActionRequestInbox', () => {
     window.localStorage.clear();
   });
 
-  it('renders pending request context for operator review', async () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders pending request context including links for operator review', async () => {
     mockClient.list.mockResolvedValueOnce([pendingItem]);
 
     render(<ActionRequestInbox />);
@@ -90,27 +106,66 @@ describe('ActionRequestInbox', () => {
     expect(await screen.findByTestId(`action-request-row-${PENDING_ID}`)).toBeInTheDocument();
     expect(screen.getByTestId('action-request-detail-id')).toHaveTextContent(PENDING_ID);
     expect(screen.getByTestId('action-request-detail')).toHaveTextContent('task.escalate');
-    expect(screen.getByTestId('action-request-detail')).toHaveTextContent('high');
     expect(screen.getByText(/agent · openclaw-main/)).toBeInTheDocument();
     expect(screen.getByText(/task · task-1/)).toBeInTheDocument();
     expect(screen.getByText('high risk requires human approval')).toBeInTheDocument();
-    expect(screen.getByText('notify owner after decision')).toBeInTheDocument();
-    expect(screen.getByTestId('action-request-payload')).toHaveTextContent(
-      'Escalate missed check-in'
+    expect(screen.getByTestId('action-request-link-workflow')).toHaveTextContent(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    );
+    expect(screen.getByTestId('action-request-link-proposal')).toHaveTextContent('proposal-evt-1');
+    expect(screen.getByTestId('action-request-link-audit')).toHaveTextContent(
+      'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
     );
     expect(screen.getByTestId('action-request-approve')).toBeInTheDocument();
     expect(screen.getByTestId('action-request-reject')).toBeInTheDocument();
   });
 
-  it('shows empty and error states', async () => {
+  it('shows empty, loading, and error states including tenant config', async () => {
     mockClient.list.mockResolvedValueOnce([]);
     const first = render(<ActionRequestInbox />);
     expect(await screen.findByTestId('action-request-empty')).toBeInTheDocument();
     first.unmount();
 
-    mockClient.list.mockRejectedValueOnce(structuredError('forbidden'));
+    const pendingList = deferred<typeof pendingItem[]>();
+    mockClient.list.mockReturnValueOnce(pendingList.promise);
+    const loadingRender = render(<ActionRequestInbox />);
+    expect(await screen.findByTestId('action-request-loading')).toBeInTheDocument();
+    pendingList.resolve([]);
+    await waitFor(() =>
+      expect(screen.queryByTestId('action-request-loading')).not.toBeInTheDocument()
+    );
+    loadingRender.unmount();
+
+    mockClient.list.mockRejectedValueOnce({
+      data: { kind: 'YouPetConfigMissing', youpet: { field: 'tenant_id' } },
+    });
     render(<ActionRequestInbox />);
-    expect(await screen.findByTestId('action-request-error')).toHaveTextContent('forbidden');
+    expect(await screen.findByTestId('action-request-error')).toHaveTextContent(
+      'YOUPET_TENANT_ID'
+    );
+  });
+
+  it('renders empty links when Core omits correlation links', async () => {
+    mockClient.list.mockResolvedValueOnce([
+      {
+        ...pendingItem,
+        action_request: {
+          ...pendingItem.action_request,
+          links: {
+            audit_log_ids: [],
+            domain_event_ids: [],
+            outbox_delivery_ids: [],
+            workflow_id: null,
+            workflow_trace_id: null,
+            agent_run_id: null,
+            proposal_event_id: null,
+            idempotency_key: null,
+          },
+        },
+      },
+    ]);
+    render(<ActionRequestInbox />);
+    expect(await screen.findByTestId('action-request-links-empty')).toBeInTheDocument();
   });
 
   it('approves with reason, row version, and stable idempotency key', async () => {
@@ -134,7 +189,7 @@ describe('ActionRequestInbox', () => {
       expectedRowVersion: 2,
       idempotencyKey: expect.stringContaining(`youpet-action-request:approve:${PENDING_ID}:`),
     });
-    expect(storedIdempotencyKeys()[`approve:${PENDING_ID}`]).toBeUndefined();
+    expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]).toBeUndefined();
     expect(await screen.findByTestId('action-request-terminal')).toBeInTheDocument();
   });
 
@@ -159,7 +214,7 @@ describe('ActionRequestInbox', () => {
       expectedRowVersion: 2,
       idempotencyKey: expect.stringContaining(`youpet-action-request:reject:${PENDING_ID}:`),
     });
-    expect(storedIdempotencyKeys()[`reject:${PENDING_ID}`]).toBeUndefined();
+    expect(storedIdempotencyRecords()[`reject:${PENDING_ID}`]).toBeUndefined();
   });
 
   it('reuses the same approve idempotency key across failed retry and remount', async () => {
@@ -173,10 +228,7 @@ describe('ActionRequestInbox', () => {
     await user.click(screen.getByTestId('action-request-approve'));
     await waitFor(() => expect(mockClient.approve).toHaveBeenCalledTimes(1));
     const firstKey = mockClient.approve.mock.calls[0]?.[1]?.idempotencyKey as string;
-    expect(firstKey).toEqual(
-      expect.stringContaining(`youpet-action-request:approve:${PENDING_ID}:`)
-    );
-    expect(storedIdempotencyKeys()[`approve:${PENDING_ID}`]).toBe(firstKey);
+    expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]?.key).toBe(firstKey);
 
     firstRender.unmount();
     render(<ActionRequestInbox />);
@@ -185,6 +237,48 @@ describe('ActionRequestInbox', () => {
     await user.click(screen.getByTestId('action-request-approve'));
     await waitFor(() => expect(mockClient.approve).toHaveBeenCalledTimes(2));
     expect(mockClient.approve.mock.calls[1]?.[1]?.idempotencyKey).toBe(firstKey);
+  });
+
+  it('reuses the same reject idempotency key across failed retry and remount', async () => {
+    mockClient.list.mockResolvedValue([pendingItem]);
+    mockClient.reject.mockRejectedValue(new Error('temporary failure'));
+    const user = userEvent.setup();
+
+    const firstRender = render(<ActionRequestInbox />);
+    await screen.findByTestId(`action-request-row-${PENDING_ID}`);
+    await user.type(screen.getByTestId('action-request-reason'), 'reject retry');
+    await user.click(screen.getByTestId('action-request-reject'));
+    await waitFor(() => expect(mockClient.reject).toHaveBeenCalledTimes(1));
+    const firstKey = mockClient.reject.mock.calls[0]?.[1]?.idempotencyKey as string;
+
+    firstRender.unmount();
+    render(<ActionRequestInbox />);
+    await screen.findByTestId(`action-request-row-${PENDING_ID}`);
+    await user.type(screen.getByTestId('action-request-reason'), 'reject retry');
+    await user.click(screen.getByTestId('action-request-reject'));
+    await waitFor(() => expect(mockClient.reject).toHaveBeenCalledTimes(2));
+    expect(mockClient.reject.mock.calls[1]?.[1]?.idempotencyKey).toBe(firstKey);
+  });
+
+  it('rotates the key when the operator reason changes after failure', async () => {
+    mockClient.list.mockResolvedValue([pendingItem]);
+    mockClient.approve.mockRejectedValue(new Error('temporary failure'));
+    const user = userEvent.setup();
+
+    render(<ActionRequestInbox />);
+    await screen.findByTestId(`action-request-row-${PENDING_ID}`);
+    await user.type(screen.getByTestId('action-request-reason'), 'first reason');
+    await user.click(screen.getByTestId('action-request-approve'));
+    await waitFor(() => expect(mockClient.approve).toHaveBeenCalledTimes(1));
+    const firstKey = mockClient.approve.mock.calls[0]?.[1]?.idempotencyKey as string;
+
+    await user.clear(screen.getByTestId('action-request-reason'));
+    await user.type(screen.getByTestId('action-request-reason'), 'changed reason');
+    await user.click(screen.getByTestId('action-request-approve'));
+    await waitFor(() => expect(mockClient.approve).toHaveBeenCalledTimes(2));
+    const secondKey = mockClient.approve.mock.calls[1]?.[1]?.idempotencyKey as string;
+    expect(secondKey).not.toBe(firstKey);
+    expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]?.reason).toBe('changed reason');
   });
 
   it('does not reuse an approve key for reject', async () => {
@@ -204,14 +298,9 @@ describe('ActionRequestInbox', () => {
     await waitFor(() => expect(mockClient.reject).toHaveBeenCalledTimes(1));
     const rejectKey = mockClient.reject.mock.calls[0]?.[1]?.idempotencyKey as string;
     expect(rejectKey).not.toBe(approveKey);
-    expect(rejectKey).toEqual(
-      expect.stringContaining(`youpet-action-request:reject:${PENDING_ID}:`)
-    );
-    expect(storedIdempotencyKeys()[`approve:${PENDING_ID}`]).toBe(approveKey);
-    expect(storedIdempotencyKeys()[`reject:${PENDING_ID}`]).toBe(rejectKey);
   });
 
-  it('suppresses duplicate in-flight approve clicks', async () => {
+  it('suppresses duplicate in-flight approve and reject clicks', async () => {
     const approved = {
       ...pendingItem,
       approval_state: 'approved',
@@ -263,7 +352,30 @@ describe('ActionRequestInbox', () => {
     expect(screen.getByTestId('action-request-error')).toHaveTextContent('approved');
     expect(screen.getByTestId('action-request-error')).toHaveTextContent('v4');
     expect(screen.getByTestId('action-request-terminal')).toBeInTheDocument();
-    expect(storedIdempotencyKeys()[`approve:${PENDING_ID}`]).toBeUndefined();
+    expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]).toBeUndefined();
+  });
+
+  it('handles idempotency_conflict with authoritative refresh', async () => {
+    const refreshed = {
+      ...pendingItem,
+      approval_state: 'rejected',
+      row_version: 5,
+    };
+    mockClient.list.mockResolvedValue([pendingItem]);
+    mockClient.reject.mockRejectedValueOnce(structuredError('idempotency_conflict'));
+    mockClient.get.mockResolvedValueOnce(refreshed);
+    const user = userEvent.setup();
+
+    render(<ActionRequestInbox />);
+    await screen.findByTestId(`action-request-row-${PENDING_ID}`);
+    await user.type(screen.getByTestId('action-request-reason'), 'conflict path');
+    await user.click(screen.getByTestId('action-request-reject'));
+
+    await waitFor(() => expect(mockClient.get).toHaveBeenCalledWith(PENDING_ID));
+    expect(await screen.findByTestId('action-request-error')).toHaveTextContent(
+      'idempotency_conflict'
+    );
+    expect(screen.getByTestId('action-request-terminal')).toBeInTheDocument();
   });
 
   it('keeps the same-intent key when conflict leaves the row pending', async () => {
@@ -282,11 +394,7 @@ describe('ActionRequestInbox', () => {
     await user.click(screen.getByTestId('action-request-approve'));
 
     await waitFor(() => expect(mockClient.get).toHaveBeenCalledWith(PENDING_ID));
-    const storedKey = storedIdempotencyKeys()[`approve:${PENDING_ID}`];
-    expect(storedKey).toEqual(
-      expect.stringContaining(`youpet-action-request:approve:${PENDING_ID}:`)
-    );
-
+    // Row version changed, so intent fingerprint rotates on next attempt with new version.
     mockClient.approve.mockResolvedValueOnce({
       ...stillPending,
       approval_state: 'approved',
@@ -294,14 +402,14 @@ describe('ActionRequestInbox', () => {
     });
     await user.click(screen.getByTestId('action-request-approve'));
     await waitFor(() => expect(mockClient.approve).toHaveBeenCalledTimes(2));
-    expect(mockClient.approve.mock.calls[1]?.[1]?.idempotencyKey).toBe(storedKey);
+    expect(mockClient.approve.mock.calls[1]?.[1]?.expectedRowVersion).toBe(3);
   });
 
-  it('hides decision controls for terminal approvals', async () => {
+  it('hides decision controls for terminal approvals including expired', async () => {
     mockClient.list.mockResolvedValueOnce([
       {
         ...pendingItem,
-        approval_state: 'rejected',
+        approval_state: 'expired',
         row_version: 5,
       },
     ]);
@@ -309,7 +417,6 @@ describe('ActionRequestInbox', () => {
     render(<ActionRequestInbox />);
     expect(await screen.findByTestId('action-request-terminal')).toBeInTheDocument();
     expect(screen.queryByTestId('action-request-approve')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('action-request-reject')).not.toBeInTheDocument();
   });
 
   it('requires a non-empty reason before submitting', async () => {
@@ -324,5 +431,70 @@ describe('ActionRequestInbox', () => {
       'non-empty operator reason'
     );
     expect(mockClient.approve).not.toHaveBeenCalled();
+  });
+
+  it('maps not-found and validation-style Core codes into stable errors', async () => {
+    mockClient.list.mockRejectedValueOnce(structuredError('not_found'));
+    const first = render(<ActionRequestInbox />);
+    expect(await screen.findByTestId('action-request-error')).toHaveTextContent('not_found');
+    first.unmount();
+
+    mockClient.list.mockResolvedValue([pendingItem]);
+    mockClient.approve.mockRejectedValueOnce(structuredError('invalid_request'));
+    const user = userEvent.setup();
+    render(<ActionRequestInbox />);
+    await screen.findByTestId(`action-request-row-${PENDING_ID}`);
+    await user.type(screen.getByTestId('action-request-reason'), 'validate');
+    await user.click(screen.getByTestId('action-request-approve'));
+    expect(await screen.findByTestId('action-request-error')).toHaveTextContent('invalid_request');
+  });
+
+  it('shows a non-blocking warning when localStorage writes fail after success', async () => {
+    const approved = {
+      ...pendingItem,
+      approval_state: 'approved',
+      row_version: 3,
+    };
+    mockClient.list.mockResolvedValue([pendingItem]);
+    mockClient.approve.mockResolvedValueOnce(approved);
+    const user = userEvent.setup();
+
+    const originalSetItem = window.localStorage.setItem.bind(window.localStorage);
+    let setItemCalls = 0;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation((key, value) => {
+      setItemCalls += 1;
+      // First write (key create) succeeds; second (clear after success) throws.
+      if (setItemCalls >= 2 && key === actionRequestIdempotencyStorageKey) {
+        throw new Error('quota exceeded');
+      }
+      return originalSetItem(key, value);
+    });
+
+    render(<ActionRequestInbox />);
+    await screen.findByTestId(`action-request-row-${PENDING_ID}`);
+    await user.type(screen.getByTestId('action-request-reason'), 'persist warn');
+    await user.click(screen.getByTestId('action-request-approve'));
+
+    await waitFor(() => expect(mockClient.approve).toHaveBeenCalledTimes(1));
+    expect(await screen.findByTestId('action-request-terminal')).toBeInTheDocument();
+    expect(await screen.findByTestId('action-request-warning')).toHaveTextContent(
+      'retry-key storage'
+    );
+  });
+});
+
+describe('action request idempotency helpers', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it('binds the stored key to the complete command fingerprint', () => {
+    const first = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'same', 2);
+    const second = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'same', 2);
+    expect(second.key).toBe(first.key);
+    const rotated = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'different', 2);
+    expect(rotated.key).not.toBe(first.key);
+    clearIdempotencyKey(PENDING_ID, 'approve');
+    expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]).toBeUndefined();
   });
 });

@@ -808,6 +808,6 @@ pub struct ActionRequestDecisionRpcParams {
     pub action_request_id: String,
     pub reason: String,
     pub expected_row_version: i64,
-    #[serde(default)]
-    pub idempotency_key: Option<String>,
+    /// Required stable per-intent key. Blank/missing is rejected so retries cannot silently mint a new UUID.
+    pub idempotency_key: String,
 }

@@ -315,6 +315,20 @@ const en: TranslationMap = {
     'State changed ({code}). Reloaded from Core: {state} v{version}.',
   'actionRequest.conflictRefreshFailed':
     'State conflict ({code}), and refresh from Core failed.',
+  'actionRequest.links': 'Links',
+  'actionRequest.links.workflowId': 'Workflow ID',
+  'actionRequest.links.workflowTraceId': 'Workflow trace ID',
+  'actionRequest.links.agentRunId': 'Agent run ID',
+  'actionRequest.links.proposalEventId': 'Proposal event ID',
+  'actionRequest.links.idempotencyKey': 'Idempotency key',
+  'actionRequest.links.auditLogIds': 'Audit log IDs',
+  'actionRequest.links.domainEventIds': 'Domain event IDs',
+  'actionRequest.links.outboxDeliveryIds': 'Outbox delivery IDs',
+  'actionRequest.linksEmpty': 'No correlation links recorded on this request.',
+  'actionRequest.storageWarning':
+    'Local retry-key storage is unavailable; retry safety may be limited for this browser session.',
+  'actionRequest.tenantConfigMissing':
+    'YouPet tenant is not configured. Set YOUPET_TENANT_ID or youpet.tenant_id before listing ActionRequests.',
 
   // Routines
   'routines.title': 'Your Routines',

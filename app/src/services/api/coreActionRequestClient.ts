@@ -41,7 +41,8 @@ export interface ListCoreActionRequestsParams {
 export interface CoreActionRequestDecisionParams {
   reason: string;
   expectedRowVersion: number;
-  idempotencyKey?: string;
+  /** Required stable per-intent key so retries are replay-safe. */
+  idempotencyKey: string;
 }
 
 export interface CoreActionRequestClientOptions {
@@ -81,6 +82,7 @@ export class CoreActionRequestClient {
     actionRequestId: string,
     params: CoreActionRequestDecisionParams
   ): Promise<CoreActionRequestLifecycleEnvelope> {
+    assertDecisionParams(params);
     const raw = await callCoreRpc<CoreResult<CoreActionRequestLifecycleEnvelope>>({
       method: CORE_RPC_METHODS.youpetApproveActionRequest,
       params: {
@@ -98,6 +100,7 @@ export class CoreActionRequestClient {
     actionRequestId: string,
     params: CoreActionRequestDecisionParams
   ): Promise<CoreActionRequestLifecycleEnvelope> {
+    assertDecisionParams(params);
     const raw = await callCoreRpc<CoreResult<CoreActionRequestLifecycleEnvelope>>({
       method: CORE_RPC_METHODS.youpetRejectActionRequest,
       params: {
@@ -109,6 +112,18 @@ export class CoreActionRequestClient {
       timeoutMs: this.timeoutMs,
     });
     return unwrapCoreResult(raw);
+  }
+}
+
+function assertDecisionParams(params: CoreActionRequestDecisionParams) {
+  if (!params.reason?.trim()) {
+    throw new Error('reason is required for ActionRequest decisions');
+  }
+  if (!Number.isFinite(params.expectedRowVersion) || params.expectedRowVersion < 1) {
+    throw new Error('expectedRowVersion must be >= 1');
+  }
+  if (!params.idempotencyKey?.trim()) {
+    throw new Error('idempotencyKey is required for ActionRequest decisions');
   }
 }
 
@@ -127,13 +142,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** Extract a stable Core lifecycle error code from structured RPC failures when present. */
-export function extractYoupetErrorCode(error: unknown): string | null {
+function youpetPayload(error: unknown): Record<string, unknown> | null {
   if (!error || typeof error !== 'object') return null;
   const data = (error as { data?: unknown }).data;
   if (!isRecord(data)) return null;
   const youpet = data.youpet;
-  if (!isRecord(youpet)) return null;
+  return isRecord(youpet) ? youpet : null;
+}
+
+/** Extract a stable Core lifecycle error code from structured RPC failures when present. */
+export function extractYoupetErrorCode(error: unknown): string | null {
+  const youpet = youpetPayload(error);
+  if (!youpet) return null;
   const code = youpet.code;
   return typeof code === 'string' && code.trim() ? code : null;
+}
+
+/** Extract a structured config/request field marker (e.g. tenant_id) when present. */
+export function extractYoupetErrorField(error: unknown): string | null {
+  const youpet = youpetPayload(error);
+  if (!youpet) return null;
+  const field = youpet.field;
+  return typeof field === 'string' && field.trim() ? field : null;
 }

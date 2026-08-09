@@ -4,6 +4,7 @@ import { CORE_RPC_METHODS } from '../rpcMethods';
 import {
   createCoreActionRequestClient,
   extractYoupetErrorCode,
+  extractYoupetErrorField,
 } from './coreActionRequestClient';
 
 const callCoreRpc = vi.hoisted(() => vi.fn());
@@ -17,6 +18,12 @@ const SAMPLE = {
     id: '33333333-3333-4333-8333-333333333333',
     action_type: 'task.escalate',
     risk: 'high',
+    links: {
+      workflow_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      audit_log_ids: [],
+      domain_event_ids: [],
+      outbox_delivery_ids: [],
+    },
   },
   row_version: 2,
   id: '33333333-3333-4333-8333-333333333333',
@@ -40,6 +47,7 @@ describe('CoreActionRequestClient', () => {
     const items = await client.list({
       tenantId: '20000000-0000-0000-0000-000000000001',
       approvalState: 'pending',
+      executionState: 'not_started',
       limit: 25,
     });
     expect(items).toEqual([SAMPLE]);
@@ -48,6 +56,7 @@ describe('CoreActionRequestClient', () => {
       params: {
         tenantId: '20000000-0000-0000-0000-000000000001',
         approvalState: 'pending',
+        executionState: 'not_started',
         limit: 25,
       },
       timeoutMs: undefined,
@@ -66,7 +75,7 @@ describe('CoreActionRequestClient', () => {
     });
   });
 
-  it('approves with reason, row version, and stable idempotency key', async () => {
+  it('approves with required reason, row version, and idempotency key', async () => {
     callCoreRpc.mockResolvedValueOnce({
       ...SAMPLE,
       approval_state: 'approved',
@@ -90,7 +99,7 @@ describe('CoreActionRequestClient', () => {
     });
   });
 
-  it('rejects with reason and expected row version', async () => {
+  it('rejects with required reason and expected row version', async () => {
     callCoreRpc.mockResolvedValueOnce({
       ...SAMPLE,
       approval_state: 'rejected',
@@ -114,12 +123,29 @@ describe('CoreActionRequestClient', () => {
     });
   });
 
-  it('extracts youpet error codes from structured RPC failures', () => {
+  it('rejects blank idempotency keys before RPC dispatch', async () => {
+    const client = createCoreActionRequestClient();
+    await expect(
+      client.approve(SAMPLE.id, {
+        reason: 'x',
+        expectedRowVersion: 1,
+        idempotencyKey: '   ',
+      })
+    ).rejects.toThrow(/idempotencyKey is required/);
+    expect(callCoreRpc).not.toHaveBeenCalled();
+  });
+
+  it('extracts youpet error codes and fields from structured RPC failures', () => {
     expect(
       extractYoupetErrorCode({
         data: { kind: 'YouPetCoreHttpError', youpet: { code: 'concurrency_conflict' } },
       })
     ).toBe('concurrency_conflict');
+    expect(
+      extractYoupetErrorField({
+        data: { kind: 'YouPetConfigMissing', youpet: { field: 'tenant_id' } },
+      })
+    ).toBe('tenant_id');
     expect(extractYoupetErrorCode(new Error('nope'))).toBeNull();
   });
 });

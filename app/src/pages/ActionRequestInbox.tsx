@@ -5,39 +5,84 @@ import {
   type CoreActionRequestLifecycleEnvelope,
   createCoreActionRequestClient,
   extractYoupetErrorCode,
+  extractYoupetErrorField,
 } from '../services/api/coreActionRequestClient';
 
 type DecisionAction = 'approve' | 'reject';
 type PendingDecisions = Record<string, DecisionAction>;
 
-const IDEMPOTENCY_STORAGE_KEY = 'openhuman.youpet.action_request.idempotency.v1';
+const IDEMPOTENCY_STORAGE_KEY = 'openhuman.youpet.action_request.idempotency.v2';
 const DEFAULT_FILTER = 'pending';
 
 export const actionRequestIdempotencyStorageKey = IDEMPOTENCY_STORAGE_KEY;
 
-function readIdempotencyStore(): Record<string, string> {
+interface StoredIntent {
+  key: string;
+  action: DecisionAction;
+  actionRequestId: string;
+  reason: string;
+  expectedRowVersion: number;
+}
+
+type IntentStore = Record<string, StoredIntent>;
+
+function isStoredIntent(value: unknown): value is StoredIntent {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.key === 'string' &&
+    record.key.trim().length > 0 &&
+    (record.action === 'approve' || record.action === 'reject') &&
+    typeof record.actionRequestId === 'string' &&
+    typeof record.reason === 'string' &&
+    typeof record.expectedRowVersion === 'number' &&
+    Number.isFinite(record.expectedRowVersion)
+  );
+}
+
+function readIdempotencyStore(): IntentStore {
   try {
     const raw = window.localStorage.getItem(IDEMPOTENCY_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    return Object.fromEntries(
-      Object.entries(parsed).filter((entry): entry is [string, string] => {
-        const [key, value] = entry;
-        return typeof key === 'string' && typeof value === 'string' && value.trim().length > 0;
-      })
-    );
+    const next: IntentStore = {};
+    for (const [id, value] of Object.entries(parsed)) {
+      if (typeof id === 'string' && isStoredIntent(value)) {
+        next[id] = value;
+      }
+    }
+    return next;
   } catch {
     return {};
   }
 }
 
-function writeIdempotencyStore(store: Record<string, string>) {
-  window.localStorage.setItem(IDEMPOTENCY_STORAGE_KEY, JSON.stringify(store));
+/** Persist intent store without throwing (storage may be blocked). */
+function writeIdempotencyStore(store: IntentStore): boolean {
+  try {
+    window.localStorage.setItem(IDEMPOTENCY_STORAGE_KEY, JSON.stringify(store));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function makeIdempotencyStorageId(actionRequestId: string, action: DecisionAction) {
   return `${action}:${actionRequestId}`;
+}
+
+function normalizeReason(reason: string) {
+  return reason.trim();
+}
+
+function commandFingerprint(
+  action: DecisionAction,
+  actionRequestId: string,
+  reason: string,
+  expectedRowVersion: number
+) {
+  return `${action}|${actionRequestId}|${normalizeReason(reason)}|${expectedRowVersion}`;
 }
 
 function generateIdempotencyKey(actionRequestId: string, action: DecisionAction) {
@@ -45,20 +90,45 @@ function generateIdempotencyKey(actionRequestId: string, action: DecisionAction)
   return `youpet-action-request:${action}:${actionRequestId}:${random}`;
 }
 
-function getOrCreateIdempotencyKey(actionRequestId: string, action: DecisionAction) {
+/**
+ * Return a stable idempotency key for the same complete operator intent.
+ * Rotates when reason or expected row version changes.
+ */
+export function getOrCreateIdempotencyKey(
+  actionRequestId: string,
+  action: DecisionAction,
+  reason: string,
+  expectedRowVersion: number
+): { key: string; storageOk: boolean } {
   const store = readIdempotencyStore();
   const id = makeIdempotencyStorageId(actionRequestId, action);
-  if (store[id]) return store[id];
+  const normalized = normalizeReason(reason);
+  const existing = store[id];
+  if (
+    existing &&
+    existing.reason === normalized &&
+    existing.expectedRowVersion === expectedRowVersion &&
+    existing.action === action &&
+    existing.actionRequestId === actionRequestId
+  ) {
+    return { key: existing.key, storageOk: true };
+  }
   const key = generateIdempotencyKey(actionRequestId, action);
-  store[id] = key;
-  writeIdempotencyStore(store);
-  return key;
+  store[id] = {
+    key,
+    action,
+    actionRequestId,
+    reason: normalized,
+    expectedRowVersion,
+  };
+  const storageOk = writeIdempotencyStore(store);
+  return { key, storageOk };
 }
 
-function clearIdempotencyKey(actionRequestId: string, action: DecisionAction) {
+export function clearIdempotencyKey(actionRequestId: string, action: DecisionAction): boolean {
   const store = readIdempotencyStore();
   delete store[makeIdempotencyStorageId(actionRequestId, action)];
-  writeIdempotencyStore(store);
+  return writeIdempotencyStore(store);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -68,6 +138,20 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function readIdList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(item => {
+      if (typeof item === 'string' && item.trim()) return item;
+      if (item && typeof item === 'object' && 'toString' in item) {
+        const text = String(item);
+        return text.trim() ? text : null;
+      }
+      return null;
+    })
+    .filter((item): item is string => Boolean(item));
 }
 
 function formatDate(value: string | null | undefined, noneLabel: string) {
@@ -82,7 +166,12 @@ function isPending(item: CoreActionRequestLifecycleEnvelope) {
 }
 
 function isTerminalApproval(item: CoreActionRequestLifecycleEnvelope) {
-  return item.approval_state === 'approved' || item.approval_state === 'rejected';
+  return (
+    item.approval_state === 'approved' ||
+    item.approval_state === 'rejected' ||
+    item.approval_state === 'expired' ||
+    item.approval_state === 'not_required'
+  );
 }
 
 export default function ActionRequestInbox() {
@@ -93,18 +182,45 @@ export default function ActionRequestInbox() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [reasonById, setReasonById] = useState<Record<string, string>>({});
   const [pending, setPending] = useState<PendingDecisions>({});
   const [filter, setFilter] = useState<'pending' | 'all'>(DEFAULT_FILTER);
   const inFlightRef = useRef<Set<string>>(new Set());
+  const loadSeqRef = useRef(0);
 
   const selected = useMemo(
     () => items.find(item => item.id === selectedId) ?? null,
     [items, selectedId]
   );
 
+  const mapError = useCallback(
+    (err: unknown): string => {
+      const code = extractYoupetErrorCode(err);
+      const field = extractYoupetErrorField(err);
+      if (field === 'tenant_id' || code === 'tenant_config_missing') {
+        return t(
+          'actionRequest.tenantConfigMissing',
+          'YouPet tenant is not configured. Set YOUPET_TENANT_ID or youpet.tenant_id before listing ActionRequests.'
+        );
+      }
+      if (code) {
+        return t('actionRequest.errorWithCode', 'Action request failed ({code}).').replace(
+          '{code}',
+          code
+        );
+      }
+      return t(
+        'actionRequest.requestFailed',
+        'Action request failed. Check Core configuration and try again.'
+      );
+    },
+    [t]
+  );
+
   const load = useCallback(
     async (mode: 'initial' | 'refresh' = 'initial') => {
+      const seq = ++loadSeqRef.current;
       if (mode === 'initial') setLoading(true);
       else setRefreshing(true);
       setError(null);
@@ -113,30 +229,23 @@ export default function ActionRequestInbox() {
           approvalState: filter === 'pending' ? 'pending' : undefined,
           limit: 50,
         });
+        if (seq !== loadSeqRef.current) return;
         setItems(listed);
         setSelectedId(current => {
           if (current && listed.some(item => item.id === current)) return current;
           return listed[0]?.id ?? null;
         });
       } catch (err) {
-        const code = extractYoupetErrorCode(err);
-        setError(
-          code
-            ? t('actionRequest.errorWithCode', 'Action request failed ({code}).').replace(
-                '{code}',
-                code
-              )
-            : t(
-                'actionRequest.requestFailed',
-                'Action request failed. Check Core configuration and try again.'
-              )
-        );
+        if (seq !== loadSeqRef.current) return;
+        setError(mapError(err));
       } finally {
-        setLoading(false);
-        setRefreshing(false);
+        if (seq === loadSeqRef.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     },
-    [client, filter, t]
+    [client, filter, mapError]
   );
 
   useEffect(() => {
@@ -166,16 +275,39 @@ export default function ActionRequestInbox() {
         );
         return;
       }
-      const reason = (reasonById[item.id] ?? '').trim();
+      const reason = normalizeReason(reasonById[item.id] ?? '');
       if (!reason) {
         setError(t('actionRequest.reasonRequired', 'A non-empty operator reason is required.'));
         return;
       }
 
+      // Acquire intent key before marking pending so storage failures do not
+      // freeze controls after Core commits.
+      let idempotencyKey: string;
+      let storageOk: boolean;
+      try {
+        ({ key: idempotencyKey, storageOk } = getOrCreateIdempotencyKey(
+          item.id,
+          action,
+          reason,
+          item.row_version
+        ));
+      } catch {
+        setError(mapError(new Error('idempotency key acquisition failed')));
+        return;
+      }
+      if (!storageOk) {
+        setWarning(
+          t(
+            'actionRequest.storageWarning',
+            'Local retry-key storage is unavailable; retry safety may be limited for this browser session.'
+          )
+        );
+      }
+
       inFlightRef.current.add(flightKey);
       setPending(current => ({ ...current, [item.id]: action }));
       setError(null);
-      const idempotencyKey = getOrCreateIdempotencyKey(item.id, action);
 
       try {
         const params = {
@@ -187,13 +319,22 @@ export default function ActionRequestInbox() {
           action === 'approve'
             ? await client.approve(item.id, params)
             : await client.reject(item.id, params);
-        clearIdempotencyKey(item.id, action);
+        // Apply Core authority first, then best-effort local cleanup.
         setItems(current => current.map(row => (row.id === item.id ? updated : row)));
         setReasonById(current => {
           const next = { ...current };
           delete next[item.id];
           return next;
         });
+        const cleared = clearIdempotencyKey(item.id, action);
+        if (!cleared) {
+          setWarning(
+            t(
+              'actionRequest.storageWarning',
+              'Local retry-key storage is unavailable; retry safety may be limited for this browser session.'
+            )
+          );
+        }
       } catch (err) {
         const code = extractYoupetErrorCode(err);
         if (code === 'concurrency_conflict' || code === 'idempotency_conflict') {
@@ -208,8 +349,6 @@ export default function ActionRequestInbox() {
                 .replace('{state}', fresh.approval_state)
                 .replace('{version}', String(fresh.row_version))
             );
-            // Keep the same-intent key only while the row is still pending so a
-            // true network retry can reuse it. Clear both keys once terminal.
             if (isTerminalApproval(fresh)) {
               clearIdempotencyKey(item.id, 'approve');
               clearIdempotencyKey(item.id, 'reject');
@@ -223,17 +362,7 @@ export default function ActionRequestInbox() {
             );
           }
         } else {
-          setError(
-            code
-              ? t('actionRequest.errorWithCode', 'Action request failed ({code}).').replace(
-                  '{code}',
-                  code
-                )
-              : t(
-                  'actionRequest.requestFailed',
-                  'Action request failed. Check Core configuration and try again.'
-                )
-          );
+          setError(mapError(err));
         }
       } finally {
         inFlightRef.current.delete(flightKey);
@@ -244,20 +373,42 @@ export default function ActionRequestInbox() {
         });
       }
     },
-    [client, pending, reasonById, refreshOne, t]
+    [client, mapError, pending, reasonById, refreshOne, t]
   );
+
+  // Silence unused export warning for fingerprint helper used by tests.
+  void commandFingerprint;
 
   const doc = asRecord(selected?.action_request);
   const proposer = asRecord(doc?.proposer);
   const target = asRecord(doc?.target);
   const policy = asRecord(doc?.policy);
   const payload = asRecord(doc?.payload);
+  const links = asRecord(doc?.links);
   const reasons = Array.isArray(policy?.reasons)
     ? policy.reasons.filter((r): r is string => typeof r === 'string')
     : [];
   const obligations = Array.isArray(policy?.obligations)
     ? policy.obligations.filter((r): r is string => typeof r === 'string')
     : [];
+  const auditLogIds = readIdList(links?.audit_log_ids);
+  const domainEventIds = readIdList(links?.domain_event_ids);
+  const outboxDeliveryIds = readIdList(links?.outbox_delivery_ids);
+  const workflowId = readString(links?.workflow_id);
+  const workflowTraceId = readString(links?.workflow_trace_id);
+  const agentRunId = readString(links?.agent_run_id);
+  const proposalEventId = readString(links?.proposal_event_id);
+  const linksIdempotencyKey = readString(links?.idempotency_key);
+  const hasLinks =
+    Boolean(links) &&
+    (auditLogIds.length > 0 ||
+      domainEventIds.length > 0 ||
+      outboxDeliveryIds.length > 0 ||
+      Boolean(workflowId) ||
+      Boolean(workflowTraceId) ||
+      Boolean(agentRunId) ||
+      Boolean(proposalEventId) ||
+      Boolean(linksIdempotencyKey));
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 p-6" data-testid="action-request-inbox">
@@ -302,6 +453,16 @@ export default function ActionRequestInbox() {
           role="alert"
         >
           {error}
+        </div>
+      ) : null}
+
+      {warning ? (
+        <div
+          className="rounded border border-zinc-600/60 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-200"
+          data-testid="action-request-warning"
+          role="status"
+        >
+          {warning}
         </div>
       ) : null}
 
@@ -414,6 +575,91 @@ export default function ActionRequestInbox() {
                   </ul>
                 </div>
               ) : null}
+
+              <div data-testid="action-request-links">
+                <h3 className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+                  {t('actionRequest.links', 'Links')}
+                </h3>
+                {hasLinks ? (
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                    {workflowId ? (
+                      <>
+                        <dt className="text-zinc-500">
+                          {t('actionRequest.links.workflowId', 'Workflow ID')}
+                        </dt>
+                        <dd data-testid="action-request-link-workflow">{workflowId}</dd>
+                      </>
+                    ) : null}
+                    {workflowTraceId ? (
+                      <>
+                        <dt className="text-zinc-500">
+                          {t('actionRequest.links.workflowTraceId', 'Workflow trace ID')}
+                        </dt>
+                        <dd data-testid="action-request-link-workflow-trace">{workflowTraceId}</dd>
+                      </>
+                    ) : null}
+                    {agentRunId ? (
+                      <>
+                        <dt className="text-zinc-500">
+                          {t('actionRequest.links.agentRunId', 'Agent run ID')}
+                        </dt>
+                        <dd data-testid="action-request-link-agent-run">{agentRunId}</dd>
+                      </>
+                    ) : null}
+                    {proposalEventId ? (
+                      <>
+                        <dt className="text-zinc-500">
+                          {t('actionRequest.links.proposalEventId', 'Proposal event ID')}
+                        </dt>
+                        <dd data-testid="action-request-link-proposal">{proposalEventId}</dd>
+                      </>
+                    ) : null}
+                    {linksIdempotencyKey ? (
+                      <>
+                        <dt className="text-zinc-500">
+                          {t('actionRequest.links.idempotencyKey', 'Idempotency key')}
+                        </dt>
+                        <dd data-testid="action-request-link-idempotency">{linksIdempotencyKey}</dd>
+                      </>
+                    ) : null}
+                    {auditLogIds.length > 0 ? (
+                      <>
+                        <dt className="text-zinc-500">
+                          {t('actionRequest.links.auditLogIds', 'Audit log IDs')}
+                        </dt>
+                        <dd data-testid="action-request-link-audit">{auditLogIds.join(', ')}</dd>
+                      </>
+                    ) : null}
+                    {domainEventIds.length > 0 ? (
+                      <>
+                        <dt className="text-zinc-500">
+                          {t('actionRequest.links.domainEventIds', 'Domain event IDs')}
+                        </dt>
+                        <dd data-testid="action-request-link-domain">
+                          {domainEventIds.join(', ')}
+                        </dd>
+                      </>
+                    ) : null}
+                    {outboxDeliveryIds.length > 0 ? (
+                      <>
+                        <dt className="text-zinc-500">
+                          {t('actionRequest.links.outboxDeliveryIds', 'Outbox delivery IDs')}
+                        </dt>
+                        <dd data-testid="action-request-link-outbox">
+                          {outboxDeliveryIds.join(', ')}
+                        </dd>
+                      </>
+                    ) : null}
+                  </dl>
+                ) : (
+                  <p className="text-xs text-zinc-500" data-testid="action-request-links-empty">
+                    {t(
+                      'actionRequest.linksEmpty',
+                      'No correlation links recorded on this request.'
+                    )}
+                  </p>
+                )}
+              </div>
 
               {payload ? (
                 <div>
