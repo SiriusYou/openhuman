@@ -2,14 +2,16 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { setActiveUserId } from '../store/userScopedStorage';
 import ActionRequestInbox, {
   actionRequestIdempotencyStorageKey,
   clearAllDecisionIdempotencyKeys,
   clearIdempotencyKey,
   fingerprintReason,
   getOrCreateIdempotencyKey,
+  type IntentScope,
   type IntentStorageAdapter,
-  resolveOperatorScope,
+  resolveActiveUserScope,
   setActionRequestIntentStorageAdapter,
 } from './ActionRequestInbox';
 
@@ -29,6 +31,7 @@ vi.mock('../services/api/coreActionRequestClient', async () => {
 
 const PENDING_ID = '33333333-3333-4333-8333-333333333333';
 const TENANT_ID = '20000000-0000-0000-0000-000000000001';
+const ACTIVE_USER = 'test-active-user';
 
 const pendingItem = {
   action_request: {
@@ -64,17 +67,17 @@ const pendingItem = {
   updated_at: '2026-08-08T12:00:00Z',
 } as const;
 
-function defaultScope() {
-  return { tenantId: TENANT_ID, operatorId: resolveOperatorScope() };
+function defaultScope(): IntentScope {
+  return { tenantId: TENANT_ID, activeUserId: ACTIVE_USER };
 }
 
-function storageKeyForScope() {
-  const scope = defaultScope();
-  return actionRequestIdempotencyStorageKey(scope.tenantId, scope.operatorId);
+/** Physical key under default user-scoped verified adapter. */
+function physicalStorageKey(tenantId = TENANT_ID, userId = ACTIVE_USER) {
+  return `${userId}:${actionRequestIdempotencyStorageKey(tenantId)}`;
 }
 
 function storedIdempotencyRecords() {
-  const raw = window.localStorage.getItem(storageKeyForScope());
+  const raw = window.localStorage.getItem(physicalStorageKey());
   return raw
     ? (JSON.parse(raw) as Record<
         string,
@@ -120,10 +123,12 @@ describe('ActionRequestInbox', () => {
     mockClient.reject.mockReset();
     window.localStorage.clear();
     setActionRequestIntentStorageAdapter(null);
+    setActiveUserId(ACTIVE_USER);
   });
 
   afterEach(() => {
     setActionRequestIntentStorageAdapter(null);
+    setActiveUserId(null);
     vi.restoreAllMocks();
   });
 
@@ -216,7 +221,6 @@ describe('ActionRequestInbox', () => {
     await waitFor(() => expect(mockClient.get).toHaveBeenCalledWith(PENDING_ID));
     expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]).toBeUndefined();
     expect(storedIdempotencyRecords()[`reject:${PENDING_ID}`]).toBeUndefined();
-    // Default filter is pending — approved item must leave the list.
     expect(await screen.findByTestId('action-request-empty')).toBeInTheDocument();
     expect(screen.queryByTestId(`action-request-row-${PENDING_ID}`)).not.toBeInTheDocument();
   });
@@ -378,7 +382,6 @@ describe('ActionRequestInbox', () => {
     );
     expect(screen.getByTestId('action-request-error')).toHaveTextContent('approved');
     expect(screen.getByTestId('action-request-error')).toHaveTextContent('v4');
-    // Pending filter drops the terminal row after authoritative refresh.
     await waitFor(() =>
       expect(screen.queryByTestId(`action-request-row-${PENDING_ID}`)).not.toBeInTheDocument()
     );
@@ -504,6 +507,22 @@ describe('ActionRequestInbox', () => {
     expect(mockClient.reject).not.toHaveBeenCalled();
   });
 
+  it('fails closed when no authenticated active user is in scope', async () => {
+    setActiveUserId(null);
+    mockClient.list.mockResolvedValue([pendingItem]);
+    const user = userEvent.setup();
+
+    render(<ActionRequestInbox />);
+    await screen.findByTestId(`action-request-row-${PENDING_ID}`);
+    await user.type(screen.getByTestId('action-request-reason'), 'no user');
+    await user.click(screen.getByTestId('action-request-approve'));
+
+    expect(await screen.findByTestId('action-request-error')).toHaveTextContent(
+      'retry-key storage'
+    );
+    expect(mockClient.approve).not.toHaveBeenCalled();
+  });
+
   it('shows a non-blocking warning when cleanup after success cannot rewrite storage', async () => {
     const approved = { ...pendingItem, approval_state: 'approved', row_version: 3 };
     mockClient.list.mockResolvedValue([pendingItem]);
@@ -519,7 +538,6 @@ describe('ActionRequestInbox', () => {
       },
       setItem(key, value) {
         writeCount += 1;
-        // First write (create key) succeeds; later clears fail.
         if (writeCount >= 2) {
           throw new Error('quota exceeded');
         }
@@ -541,7 +559,7 @@ describe('ActionRequestInbox', () => {
     );
   });
 
-  it('invalidates a stale in-flight list after mutation so it cannot resurrect the row', async () => {
+  it('invalidates a stale in-flight list after mutation without leaving refresh stuck', async () => {
     const approved = { ...pendingItem, approval_state: 'approved', row_version: 3 };
     const slowList = deferred<(typeof pendingItem)[]>();
     mockClient.list
@@ -554,9 +572,10 @@ describe('ActionRequestInbox', () => {
     render(<ActionRequestInbox />);
     await screen.findByTestId(`action-request-row-${PENDING_ID}`);
 
-    // Kick a refresh that will resolve after the mutation with stale pending data.
-    await user.click(screen.getByTestId('action-request-refresh'));
+    const refreshButton = screen.getByTestId('action-request-refresh');
+    await user.click(refreshButton);
     await waitFor(() => expect(mockClient.list).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(refreshButton).toBeDisabled());
 
     await user.type(screen.getByTestId('action-request-reason'), 'stale race');
     await user.click(screen.getByTestId('action-request-approve'));
@@ -568,8 +587,9 @@ describe('ActionRequestInbox', () => {
 
     // Stale list must not reintroduce the pending row after mutation invalidation.
     slowList.resolve([pendingItem]);
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await waitFor(() => expect(refreshButton).not.toBeDisabled());
     expect(screen.queryByTestId(`action-request-row-${PENDING_ID}`)).not.toBeInTheDocument();
+    expect(refreshButton).toHaveTextContent(/Refresh/i);
   });
 
   it('keeps terminal rows when filter is all after approve', async () => {
@@ -596,10 +616,12 @@ describe('action request idempotency helpers', () => {
   beforeEach(() => {
     window.localStorage.clear();
     setActionRequestIntentStorageAdapter(null);
+    setActiveUserId(ACTIVE_USER);
   });
 
   afterEach(() => {
     setActionRequestIntentStorageAdapter(null);
+    setActiveUserId(null);
   });
 
   it('binds the stored key to the complete command fingerprint without raw reason', () => {
@@ -610,9 +632,7 @@ describe('action request idempotency helpers', () => {
     expect(second.key).toBe(first.key);
     const rotated = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'different', 2, scope);
     expect(rotated.key).not.toBe(first.key);
-    const raw = window.localStorage.getItem(
-      actionRequestIdempotencyStorageKey(scope.tenantId, scope.operatorId)
-    );
+    const raw = window.localStorage.getItem(physicalStorageKey());
     expect(raw).toBeTruthy();
     expect(raw).not.toContain('different');
     expect(raw).not.toContain('same');
@@ -620,27 +640,52 @@ describe('action request idempotency helpers', () => {
     expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]).toBeUndefined();
   });
 
-  it('scopes intent stores by tenant and operator', () => {
+  it('separates equal-length FNV-colliding reasons with SHA-256 fingerprints', () => {
+    // Known 32-bit FNV-1a collision pair (len 8) reported by ac-codex review.
+    const a = 'tgvipcjq';
+    const b = 'tonydgba';
+    expect(fingerprintReason(a)).not.toBe(fingerprintReason(b));
+    expect(fingerprintReason(a)).toMatch(/^sha256:[0-9a-f]{64}$/);
+
+    const scope = defaultScope();
+    const first = getOrCreateIdempotencyKey(PENDING_ID, 'approve', a, 1, scope);
+    const second = getOrCreateIdempotencyKey(PENDING_ID, 'approve', b, 1, scope);
+    expect(first.persisted).toBe(true);
+    expect(second.persisted).toBe(true);
+    expect(second.key).not.toBe(first.key);
+  });
+
+  it('scopes intent stores by tenant under the active user namespace', () => {
     const a = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'reason', 1, {
       tenantId: 'tenant-a',
-      operatorId: 'op-a',
+      activeUserId: ACTIVE_USER,
     });
     const b = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'reason', 1, {
       tenantId: 'tenant-b',
-      operatorId: 'op-a',
-    });
-    const c = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'reason', 1, {
-      tenantId: 'tenant-a',
-      operatorId: 'op-b',
+      activeUserId: ACTIVE_USER,
     });
     expect(a.key).not.toBe(b.key);
-    expect(a.key).not.toBe(c.key);
-    expect(
-      window.localStorage.getItem(actionRequestIdempotencyStorageKey('tenant-a', 'op-a'))
-    ).toContain(a.key);
-    expect(
-      window.localStorage.getItem(actionRequestIdempotencyStorageKey('tenant-b', 'op-a'))
-    ).toContain(b.key);
+    expect(window.localStorage.getItem(physicalStorageKey('tenant-a'))).toContain(a.key);
+    expect(window.localStorage.getItem(physicalStorageKey('tenant-b'))).toContain(b.key);
+  });
+
+  it('does not share intent storage across active users', () => {
+    const first = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'reason', 1, defaultScope());
+    expect(first.persisted).toBe(true);
+
+    setActiveUserId('other-user');
+    const second = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'reason', 1, {
+      tenantId: TENANT_ID,
+      activeUserId: 'other-user',
+    });
+    expect(second.persisted).toBe(true);
+    expect(second.key).not.toBe(first.key);
+    expect(window.localStorage.getItem(physicalStorageKey(TENANT_ID, ACTIVE_USER))).toContain(
+      first.key
+    );
+    expect(window.localStorage.getItem(physicalStorageKey(TENANT_ID, 'other-user'))).toContain(
+      second.key
+    );
   });
 
   it('returns persisted=false when the initial write fails', () => {
@@ -652,6 +697,16 @@ describe('action request idempotency helpers', () => {
       removeItem: () => undefined,
     });
     const result = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'x', 1, defaultScope());
+    expect(result.persisted).toBe(false);
+  });
+
+  it('returns persisted=false without an active user scope', () => {
+    setActiveUserId(null);
+    expect(resolveActiveUserScope()).toBeNull();
+    const result = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'x', 1, {
+      tenantId: TENANT_ID,
+      activeUserId: '',
+    });
     expect(result.persisted).toBe(false);
   });
 
@@ -669,7 +724,7 @@ describe('action request idempotency helpers', () => {
   it('accepts an injected adapter for deterministic storage tests', () => {
     const adapter = memoryStorageAdapter();
     setActionRequestIntentStorageAdapter(adapter);
-    const scope = { tenantId: 't', operatorId: 'o' };
+    const scope = { tenantId: 't', activeUserId: ACTIVE_USER };
     const first = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'memo', 9, scope);
     expect(first.persisted).toBe(true);
     const second = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'memo', 9, scope);

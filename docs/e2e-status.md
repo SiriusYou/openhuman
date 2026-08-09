@@ -14,7 +14,7 @@ specs are added, fixed, or start failing.
 | Category      | Specs | Known issues |
 |---------------|-------|--------------|
 | auth          | 6     | Hardcoded pauses replaced with condition waits (2026-05-20) |
-| navigation    | 6     | channels-smoke and insights-dashboard are shallow/smoke only |
+| navigation    | 7     | channels-smoke, action-request-inbox, and insights-dashboard are shallow/smoke only |
 | chat          | 10    | chat-harness-wallet-flow has 6 sequential 30s waits |
 | skills        | 6     | skill-execution-flow is RC-7 (ghost RPCs); 4 specs are shallow stubs |
 | notifications | 4     | memory-roundtrip has async indexing race |
@@ -51,7 +51,7 @@ L = Linux-only spec
 | onboarding-modes.spec.ts | Onboarding step sequence | moderate | config.toml write race on slow CI |
 | runtime-picker-login.spec.ts | Core mode selection + login | moderate | Deep-link bootstrap race |
 
-### Navigation (6 specs)
+### Navigation (7 specs)
 
 | Spec | Feature covered | Coverage depth | Known issues |
 |------|----------------|----------------|--------------|
@@ -60,6 +60,7 @@ L = Linux-only spec
 | navigation-settings-panels.spec.ts | Settings panel routing | moderate | |
 | command-palette.spec.ts | Command search | moderate | |
 | channels-smoke.spec.ts | Channels surface mount | shallow | No channel feature validation |
+| action-request-inbox.spec.ts | ActionRequest inbox route mount (M1.2.3) | shallow | Decision mutations covered by Vitest bridge suite; live Core fixtures not wired |
 | insights-dashboard.spec.ts | Insights panel | shallow | No data validation |
 
 ### Chat (10 specs)

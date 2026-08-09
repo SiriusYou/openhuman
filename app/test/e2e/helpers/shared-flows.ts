@@ -144,6 +144,7 @@ function routeReadySelector(hash) {
     '/settings/voice': '[data-testid="voice-providers-section"]',
     '/settings/memory-data': '[data-testid="memory-workspace"]',
     '/intelligence': '[data-testid="memory-workspace"]',
+    '/action-requests': '[data-testid="action-request-inbox"]',
   };
   return selectors[path] || null;
 }

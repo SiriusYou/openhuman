@@ -1,3 +1,5 @@
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useT } from '../lib/i18n/I18nContext';
@@ -7,14 +9,18 @@ import {
   extractYoupetErrorCode,
   extractYoupetErrorField,
 } from '../services/api/coreActionRequestClient';
-import { getActiveUserId } from '../store/userScopedStorage';
+import {
+  createVerifiedUserScopedStorage,
+  getActiveUserId,
+  type VerifiedUserScopedStorage,
+} from '../store/userScopedStorage';
 
 type DecisionAction = 'approve' | 'reject';
 type PendingDecisions = Record<string, DecisionAction>;
 
-const IDEMPOTENCY_STORAGE_PREFIX = 'openhuman.youpet.action_request.idempotency.v3';
+/** Logical key (physical path is user-scoped via verified storage). */
+const IDEMPOTENCY_STORAGE_PREFIX = 'openhuman.youpet.action_request.idempotency.v4';
 const DEFAULT_FILTER = 'pending';
-const DEFAULT_OPERATOR_SCOPE = 'local-operator';
 
 export interface IntentStorageAdapter {
   getItem(key: string): string | null;
@@ -22,38 +28,62 @@ export interface IntentStorageAdapter {
   removeItem(key: string): void;
 }
 
-const browserStorageAdapter: IntentStorageAdapter = {
+export interface IntentScope {
+  tenantId: string;
+  /** OpenHuman active user id — never Core operator_user_id. */
+  activeUserId: string;
+}
+
+const defaultVerifiedStorage: VerifiedUserScopedStorage = createVerifiedUserScopedStorage();
+
+/**
+ * Default adapter: repository user-scoping + verified durable writes.
+ * Fail closed when no authenticated active user is set.
+ */
+const defaultUserScopedAdapter: IntentStorageAdapter = {
   getItem(key) {
-    return window.localStorage.getItem(key);
+    return defaultVerifiedStorage.getItem(key);
   },
   setItem(key, value) {
-    window.localStorage.setItem(key, value);
+    defaultVerifiedStorage.setItem(key, value);
   },
   removeItem(key) {
-    window.localStorage.removeItem(key);
+    defaultVerifiedStorage.removeItem(key);
   },
 };
 
 /** Overridable for deterministic fault-injection in tests. */
-let storageAdapter: IntentStorageAdapter = browserStorageAdapter;
+let storageAdapter: IntentStorageAdapter = defaultUserScopedAdapter;
 
 export function setActionRequestIntentStorageAdapter(adapter: IntentStorageAdapter | null): void {
-  storageAdapter = adapter ?? browserStorageAdapter;
+  storageAdapter = adapter ?? defaultUserScopedAdapter;
 }
 
-export function actionRequestIdempotencyStorageKey(tenantId: string, operatorId: string): string {
-  return `${IDEMPOTENCY_STORAGE_PREFIX}:${tenantId}:${operatorId}`;
+/** Logical storage key partitioned by tenant (user partition is physical). */
+export function actionRequestIdempotencyStorageKey(tenantId: string): string {
+  return `${IDEMPOTENCY_STORAGE_PREFIX}:${tenantId}`;
 }
 
-export function resolveOperatorScope(): string {
-  return getActiveUserId() ?? DEFAULT_OPERATOR_SCOPE;
+/**
+ * Active OpenHuman user used for durable intent scoping.
+ * Returns null when unauthenticated — callers must fail closed (no shared fallback).
+ */
+export function resolveActiveUserScope(): string | null {
+  const id = getActiveUserId();
+  if (!id || !id.trim()) return null;
+  return id;
+}
+
+/** @deprecated Use resolveActiveUserScope — this never was Core operator_user_id. */
+export function resolveOperatorScope(): string | null {
+  return resolveActiveUserScope();
 }
 
 interface StoredIntent {
   key: string;
   action: DecisionAction;
   actionRequestId: string;
-  /** Fingerprint of the operator reason — never the raw reason text. */
+  /** SHA-256 fingerprint of the operator reason — never the raw reason text. */
   reasonFingerprint: string;
   expectedRowVersion: number;
 }
@@ -83,15 +113,14 @@ function normalizeReason(reason: string) {
   return reason.trim();
 }
 
-/** Stable non-cryptographic fingerprint so raw operator intent is not persisted. */
+/**
+ * Collision-resistant fingerprint so raw operator intent is not persisted,
+ * while distinct reasons never share an idempotency identity.
+ */
 export function fingerprintReason(reason: string): string {
   const normalized = normalizeReason(reason);
-  let hash = 2166136261;
-  for (let i = 0; i < normalized.length; i += 1) {
-    hash ^= normalized.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `fnv1a:${(hash >>> 0).toString(16)}:len:${normalized.length}`;
+  const digest = sha256(new TextEncoder().encode(normalized));
+  return `sha256:${bytesToHex(digest)}`;
 }
 
 function generateIdempotencyKey(actionRequestId: string, action: DecisionAction) {
@@ -99,8 +128,8 @@ function generateIdempotencyKey(actionRequestId: string, action: DecisionAction)
   return `youpet-action-request:${action}:${actionRequestId}:${random}`;
 }
 
-function readIdempotencyStore(tenantId: string, operatorId: string): IntentStore {
-  const storageKey = actionRequestIdempotencyStorageKey(tenantId, operatorId);
+function readIdempotencyStore(tenantId: string): IntentStore {
+  const storageKey = actionRequestIdempotencyStorageKey(tenantId);
   try {
     const raw = storageAdapter.getItem(storageKey);
     if (!raw) return {};
@@ -119,13 +148,14 @@ function readIdempotencyStore(tenantId: string, operatorId: string): IntentStore
 }
 
 /** Persist intent store; returns false when the adapter cannot durable-write. */
-function writeIdempotencyStore(tenantId: string, operatorId: string, store: IntentStore): boolean {
-  const storageKey = actionRequestIdempotencyStorageKey(tenantId, operatorId);
+function writeIdempotencyStore(tenantId: string, store: IntentStore): boolean {
+  const storageKey = actionRequestIdempotencyStorageKey(tenantId);
+  const serialized = JSON.stringify(store);
   try {
-    storageAdapter.setItem(storageKey, JSON.stringify(store));
+    storageAdapter.setItem(storageKey, serialized);
     // Verify round-trip so silent no-op adapters still fail closed.
     const roundTrip = storageAdapter.getItem(storageKey);
-    if (roundTrip !== JSON.stringify(store)) {
+    if (roundTrip !== serialized) {
       return false;
     }
     return true;
@@ -140,24 +170,48 @@ export interface IdempotencyKeyResult {
   persisted: boolean;
 }
 
+function requireScope(scope?: IntentScope): IntentScope | null {
+  if (scope?.tenantId && scope.activeUserId) return scope;
+  const activeUserId = resolveActiveUserScope();
+  if (!activeUserId) return null;
+  if (scope?.tenantId) {
+    return { tenantId: scope.tenantId, activeUserId };
+  }
+  return null;
+}
+
 /**
  * Return a stable idempotency key for the same complete operator intent.
  * Rotates when reason fingerprint or expected row version changes.
  * Callers must fail closed (do not call Core) when `persisted` is false.
+ *
+ * Requires an authenticated active-user scope; no shared `local-operator` fallback.
  */
 export function getOrCreateIdempotencyKey(
   actionRequestId: string,
   action: DecisionAction,
   reason: string,
   expectedRowVersion: number,
-  scope: { tenantId: string; operatorId: string } = {
-    tenantId: 'unknown-tenant',
-    operatorId: resolveOperatorScope(),
-  }
+  scope: IntentScope
 ): IdempotencyKeyResult {
+  const resolved = requireScope(scope);
+  if (!resolved) {
+    return { key: '', persisted: false };
+  }
+  // Enforce that helper calls cannot write under a mismatched user identity
+  // when using the default user-scoped adapter (active user drives the namespace).
+  const liveUser = resolveActiveUserScope();
+  if (
+    liveUser &&
+    liveUser !== resolved.activeUserId &&
+    storageAdapter === defaultUserScopedAdapter
+  ) {
+    return { key: '', persisted: false };
+  }
+
   let store: IntentStore;
   try {
-    store = readIdempotencyStore(scope.tenantId, scope.operatorId);
+    store = readIdempotencyStore(resolved.tenantId);
   } catch {
     return { key: '', persisted: false };
   }
@@ -178,44 +232,45 @@ export function getOrCreateIdempotencyKey(
     ...store,
     [id]: { key, action, actionRequestId, reasonFingerprint, expectedRowVersion },
   };
-  const persisted = writeIdempotencyStore(scope.tenantId, scope.operatorId, nextStore);
+  const persisted = writeIdempotencyStore(resolved.tenantId, nextStore);
   return { key, persisted };
 }
 
 export function clearIdempotencyKey(
   actionRequestId: string,
   action: DecisionAction,
-  scope: { tenantId: string; operatorId: string } = {
-    tenantId: 'unknown-tenant',
-    operatorId: resolveOperatorScope(),
-  }
+  scope: IntentScope
 ): boolean {
+  const resolved = requireScope(scope);
+  if (!resolved) return false;
   let store: IntentStore;
   try {
-    store = readIdempotencyStore(scope.tenantId, scope.operatorId);
+    store = readIdempotencyStore(resolved.tenantId);
   } catch {
     return false;
   }
   const next = { ...store };
   delete next[makeIdempotencyStorageId(actionRequestId, action)];
-  return writeIdempotencyStore(scope.tenantId, scope.operatorId, next);
+  return writeIdempotencyStore(resolved.tenantId, next);
 }
 
 /** Clear both approve and reject intent keys for a request (terminal cleanup). */
 export function clearAllDecisionIdempotencyKeys(
   actionRequestId: string,
-  scope: { tenantId: string; operatorId: string }
+  scope: IntentScope
 ): boolean {
+  const resolved = requireScope(scope);
+  if (!resolved) return false;
   let store: IntentStore;
   try {
-    store = readIdempotencyStore(scope.tenantId, scope.operatorId);
+    store = readIdempotencyStore(resolved.tenantId);
   } catch {
     return false;
   }
   const next = { ...store };
   delete next[makeIdempotencyStorageId(actionRequestId, 'approve')];
   delete next[makeIdempotencyStorageId(actionRequestId, 'reject')];
-  return writeIdempotencyStore(scope.tenantId, scope.operatorId, next);
+  return writeIdempotencyStore(resolved.tenantId, next);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -282,8 +337,16 @@ export default function ActionRequestInbox() {
   const [pending, setPending] = useState<PendingDecisions>({});
   const [filter, setFilter] = useState<'pending' | 'all'>(DEFAULT_FILTER);
   const inFlightRef = useRef<Set<string>>(new Set());
-  /** Sequence for list loads AND mutation invalidation of outstanding reads. */
-  const loadSeqRef = useRef(0);
+  /**
+   * Data epoch: discard stale list *results* when a newer load or mutation
+   * supersedes them. Intentionally separate from loading/refresh flag ownership
+   * so invalidation never leaves the UI stuck refreshing.
+   */
+  const dataEpochRef = useRef(0);
+  /** Owner token for the initial-load spinner. */
+  const loadingOwnerRef = useRef(0);
+  /** Owner token for the refresh button busy state. */
+  const refreshingOwnerRef = useRef(0);
   const filterRef = useRef(filter);
   filterRef.current = filter;
 
@@ -334,7 +397,10 @@ export default function ActionRequestInbox() {
 
   const load = useCallback(
     async (mode: 'initial' | 'refresh' = 'initial') => {
-      const seq = ++loadSeqRef.current;
+      const dataEpoch = ++dataEpochRef.current;
+      const loadOwner = mode === 'initial' ? ++loadingOwnerRef.current : loadingOwnerRef.current;
+      const refreshOwner =
+        mode === 'refresh' ? ++refreshingOwnerRef.current : refreshingOwnerRef.current;
       if (mode === 'initial') setLoading(true);
       else setRefreshing(true);
       setError(null);
@@ -343,18 +409,22 @@ export default function ActionRequestInbox() {
           approvalState: filter === 'pending' ? 'pending' : undefined,
           limit: 50,
         });
-        if (seq !== loadSeqRef.current) return;
+        // Stale data only — cleanup still runs in finally via owner tokens.
+        if (dataEpoch !== dataEpochRef.current) return;
         setItems(listed);
         setSelectedId(current => {
           if (current && listed.some(item => item.id === current)) return current;
           return listed[0]?.id ?? null;
         });
       } catch (err) {
-        if (seq !== loadSeqRef.current) return;
+        if (dataEpoch !== dataEpochRef.current) return;
         setError(mapError(err));
       } finally {
-        if (seq === loadSeqRef.current) {
+        // Generation counters discard stale data, not stale cleanup.
+        if (mode === 'initial' && loadOwner === loadingOwnerRef.current) {
           setLoading(false);
+        }
+        if (mode === 'refresh' && refreshOwner === refreshingOwnerRef.current) {
           setRefreshing(false);
         }
       }
@@ -391,7 +461,17 @@ export default function ActionRequestInbox() {
         return;
       }
 
-      const scope = { tenantId: item.tenant_id, operatorId: resolveOperatorScope() };
+      const activeUserId = resolveActiveUserScope();
+      if (!activeUserId) {
+        setError(
+          t(
+            'actionRequest.storageUnavailable',
+            'Local retry-key storage is unavailable. Decision blocked until storage works so retries stay idempotent.'
+          )
+        );
+        return;
+      }
+      const scope: IntentScope = { tenantId: item.tenant_id, activeUserId };
 
       // Fail closed: only call Core when the intent key is durably persisted.
       let idempotencyKey: string;
@@ -428,8 +508,9 @@ export default function ActionRequestInbox() {
       setError(null);
       setWarning(null);
 
-      // Invalidate any outstanding list reads so they cannot overwrite mutation results.
-      loadSeqRef.current += 1;
+      // Invalidate outstanding list *data* only. Do not steal loading/refresh
+      // owner tokens — those finally blocks still clear their own busy flags.
+      dataEpochRef.current += 1;
 
       try {
         const params = { reason, expectedRowVersion: item.row_version, idempotencyKey };
@@ -514,10 +595,9 @@ export default function ActionRequestInbox() {
   // Clear both action keys when loading a terminal request (stale intent hygiene).
   useEffect(() => {
     if (!selected || !isTerminalApproval(selected)) return;
-    clearAllDecisionIdempotencyKeys(selected.id, {
-      tenantId: selected.tenant_id,
-      operatorId: resolveOperatorScope(),
-    });
+    const activeUserId = resolveActiveUserScope();
+    if (!activeUserId) return;
+    clearAllDecisionIdempotencyKeys(selected.id, { tenantId: selected.tenant_id, activeUserId });
   }, [selected]);
 
   const doc = asRecord(selected?.action_request);
