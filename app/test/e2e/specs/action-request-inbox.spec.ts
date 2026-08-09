@@ -20,9 +20,13 @@ import { startMockServer, stopMockServer } from '../mock-server';
 
 const USER_ID = 'e2e-action-request-inbox';
 
-describe('ActionRequest inbox route', () => {
+describe('ActionRequest inbox route', function () {
+  // WDIO captures the Mocha runnable timeout before entering wrapped hooks,
+  // so this budget must be set at suite definition time rather than inside
+  // the `before` callback.
+  this.timeout(90_000);
+
   before(async function beforeSuite() {
-    this.timeout(90_000);
     await startMockServer();
     await waitForApp();
     await resetApp(USER_ID);
