@@ -1253,35 +1253,36 @@ mod tests {
     #[tokio::test]
     async fn list_action_requests_sends_tenant_and_auth() {
         let requests: Requests = Default::default();
-        let app = Router::new()
-            .route(
-                "/api/v1/action-requests",
-                get(
-                    |State(requests): State<Requests>,
-                     uri: axum::http::Uri,
-                     headers: HeaderMap| async move {
-                        requests.lock().unwrap().push(CapturedRequest {
-                            method: Method::GET,
-                            path_and_query: uri.path_and_query().unwrap().as_str().to_string(),
-                            authorization: headers
-                                .get("authorization")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_string),
-                            actor: headers
-                                .get("x-actor-id")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_string),
-                            idempotency_key: None,
-                            body: Value::Null,
-                        });
-                        axum::Json(json!({
-                            "items": [sample_action_request_envelope()],
-                            "count": 1
-                        }))
-                    },
-                ),
-            )
-            .with_state(requests.clone());
+        let app =
+            Router::new()
+                .route(
+                    "/api/v1/action-requests",
+                    get(
+                        |State(requests): State<Requests>,
+                         uri: axum::http::Uri,
+                         headers: HeaderMap| async move {
+                            requests.lock().unwrap().push(CapturedRequest {
+                                method: Method::GET,
+                                path_and_query: uri.path_and_query().unwrap().as_str().to_string(),
+                                authorization: headers
+                                    .get("authorization")
+                                    .and_then(|v| v.to_str().ok())
+                                    .map(str::to_string),
+                                actor: headers
+                                    .get("x-actor-id")
+                                    .and_then(|v| v.to_str().ok())
+                                    .map(str::to_string),
+                                idempotency_key: None,
+                                body: Value::Null,
+                            });
+                            axum::Json(json!({
+                                "items": [sample_action_request_envelope()],
+                                "count": 1
+                            }))
+                        },
+                    ),
+                )
+                .with_state(requests.clone());
         let base = spawn_mock(app).await;
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp, base);
@@ -1306,7 +1307,9 @@ mod tests {
         assert!(captured[0]
             .path_and_query
             .contains("tenant_id=20000000-0000-0000-0000-000000000001"));
-        assert!(captured[0].path_and_query.contains("approval_state=pending"));
+        assert!(captured[0]
+            .path_and_query
+            .contains("approval_state=pending"));
         assert_eq!(
             captured[0].authorization.as_deref(),
             Some("Bearer svc-token")
@@ -1391,32 +1394,33 @@ mod tests {
     async fn get_action_request_sends_get_path() {
         let requests: Requests = Default::default();
         let route = format!("/api/v1/action-requests/{TEST_ACTION_REQUEST_ID}");
-        let app = Router::new()
-            .route(
-                &route,
-                get(
-                    |State(requests): State<Requests>,
-                     uri: axum::http::Uri,
-                     headers: HeaderMap| async move {
-                        requests.lock().unwrap().push(CapturedRequest {
-                            method: Method::GET,
-                            path_and_query: uri.path_and_query().unwrap().as_str().to_string(),
-                            authorization: headers
-                                .get("authorization")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_string),
-                            actor: headers
-                                .get("x-actor-id")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_string),
-                            idempotency_key: None,
-                            body: Value::Null,
-                        });
-                        axum::Json(sample_action_request_envelope())
-                    },
-                ),
-            )
-            .with_state(requests.clone());
+        let app =
+            Router::new()
+                .route(
+                    &route,
+                    get(
+                        |State(requests): State<Requests>,
+                         uri: axum::http::Uri,
+                         headers: HeaderMap| async move {
+                            requests.lock().unwrap().push(CapturedRequest {
+                                method: Method::GET,
+                                path_and_query: uri.path_and_query().unwrap().as_str().to_string(),
+                                authorization: headers
+                                    .get("authorization")
+                                    .and_then(|v| v.to_str().ok())
+                                    .map(str::to_string),
+                                actor: headers
+                                    .get("x-actor-id")
+                                    .and_then(|v| v.to_str().ok())
+                                    .map(str::to_string),
+                                idempotency_key: None,
+                                body: Value::Null,
+                            });
+                            axum::Json(sample_action_request_envelope())
+                        },
+                    ),
+                )
+                .with_state(requests.clone());
         let base = spawn_mock(app).await;
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp, base);
@@ -1644,35 +1648,36 @@ mod tests {
     #[tokio::test]
     async fn list_action_requests_forwards_all_query_params() {
         let requests: Requests = Default::default();
-        let app = Router::new()
-            .route(
-                "/api/v1/action-requests",
-                get(
-                    |State(requests): State<Requests>,
-                     uri: axum::http::Uri,
-                     headers: HeaderMap| async move {
-                        requests.lock().unwrap().push(CapturedRequest {
-                            method: Method::GET,
-                            path_and_query: uri.path_and_query().unwrap().as_str().to_string(),
-                            authorization: headers
-                                .get("authorization")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_string),
-                            actor: headers
-                                .get("x-actor-id")
-                                .and_then(|v| v.to_str().ok())
-                                .map(str::to_string),
-                            idempotency_key: None,
-                            body: Value::Null,
-                        });
-                        axum::Json(json!({
-                            "items": [sample_action_request_envelope()],
-                            "count": 1
-                        }))
-                    },
-                ),
-            )
-            .with_state(requests.clone());
+        let app =
+            Router::new()
+                .route(
+                    "/api/v1/action-requests",
+                    get(
+                        |State(requests): State<Requests>,
+                         uri: axum::http::Uri,
+                         headers: HeaderMap| async move {
+                            requests.lock().unwrap().push(CapturedRequest {
+                                method: Method::GET,
+                                path_and_query: uri.path_and_query().unwrap().as_str().to_string(),
+                                authorization: headers
+                                    .get("authorization")
+                                    .and_then(|v| v.to_str().ok())
+                                    .map(str::to_string),
+                                actor: headers
+                                    .get("x-actor-id")
+                                    .and_then(|v| v.to_str().ok())
+                                    .map(str::to_string),
+                                idempotency_key: None,
+                                body: Value::Null,
+                            });
+                            axum::Json(json!({
+                                "items": [sample_action_request_envelope()],
+                                "count": 1
+                            }))
+                        },
+                    ),
+                )
+                .with_state(requests.clone());
         let base = spawn_mock(app).await;
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp, base);

@@ -4,8 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ActionRequestInbox, {
   actionRequestIdempotencyStorageKey,
+  clearAllDecisionIdempotencyKeys,
   clearIdempotencyKey,
+  fingerprintReason,
   getOrCreateIdempotencyKey,
+  type IntentStorageAdapter,
+  resolveOperatorScope,
+  setActionRequestIntentStorageAdapter,
 } from './ActionRequestInbox';
 
 const mockClient = vi.hoisted(() => ({
@@ -19,13 +24,11 @@ vi.mock('../services/api/coreActionRequestClient', async () => {
   const actual = await vi.importActual<typeof import('../services/api/coreActionRequestClient')>(
     '../services/api/coreActionRequestClient'
   );
-  return {
-    ...actual,
-    createCoreActionRequestClient: () => mockClient,
-  };
+  return { ...actual, createCoreActionRequestClient: () => mockClient };
 });
 
 const PENDING_ID = '33333333-3333-4333-8333-333333333333';
+const TENANT_ID = '20000000-0000-0000-0000-000000000001';
 
 const pendingItem = {
   action_request: {
@@ -52,7 +55,7 @@ const pendingItem = {
   },
   row_version: 2,
   id: PENDING_ID,
-  tenant_id: '20000000-0000-0000-0000-000000000001',
+  tenant_id: TENANT_ID,
   approval_state: 'pending',
   execution_state: 'not_started',
   policy_outcome: 'require_approval',
@@ -61,9 +64,23 @@ const pendingItem = {
   updated_at: '2026-08-08T12:00:00Z',
 } as const;
 
+function defaultScope() {
+  return { tenantId: TENANT_ID, operatorId: resolveOperatorScope() };
+}
+
+function storageKeyForScope() {
+  const scope = defaultScope();
+  return actionRequestIdempotencyStorageKey(scope.tenantId, scope.operatorId);
+}
+
 function storedIdempotencyRecords() {
-  const raw = window.localStorage.getItem(actionRequestIdempotencyStorageKey);
-  return raw ? (JSON.parse(raw) as Record<string, { key: string; reason: string }>) : {};
+  const raw = window.localStorage.getItem(storageKeyForScope());
+  return raw
+    ? (JSON.parse(raw) as Record<
+        string,
+        { key: string; reasonFingerprint?: string; reason?: string }
+      >)
+    : {};
 }
 
 function deferred<T>() {
@@ -77,10 +94,20 @@ function deferred<T>() {
 }
 
 function structuredError(code: string, field?: string) {
+  return { data: { kind: 'YouPetCoreHttpError', youpet: field ? { code, field } : { code } } };
+}
+
+function memoryStorageAdapter(initial: Record<string, string> = {}): IntentStorageAdapter {
+  const map = new Map<string, string>(Object.entries(initial));
   return {
-    data: {
-      kind: 'YouPetCoreHttpError',
-      youpet: field ? { code, field } : { code },
+    getItem(key) {
+      return map.has(key) ? (map.get(key) as string) : null;
+    },
+    setItem(key, value) {
+      map.set(key, value);
+    },
+    removeItem(key) {
+      map.delete(key);
     },
   };
 }
@@ -92,9 +119,11 @@ describe('ActionRequestInbox', () => {
     mockClient.approve.mockReset();
     mockClient.reject.mockReset();
     window.localStorage.clear();
+    setActionRequestIntentStorageAdapter(null);
   });
 
   afterEach(() => {
+    setActionRequestIntentStorageAdapter(null);
     vi.restoreAllMocks();
   });
 
@@ -126,7 +155,7 @@ describe('ActionRequestInbox', () => {
     expect(await screen.findByTestId('action-request-empty')).toBeInTheDocument();
     first.unmount();
 
-    const pendingList = deferred<typeof pendingItem[]>();
+    const pendingList = deferred<(typeof pendingItem)[]>();
     mockClient.list.mockReturnValueOnce(pendingList.promise);
     const loadingRender = render(<ActionRequestInbox />);
     expect(await screen.findByTestId('action-request-loading')).toBeInTheDocument();
@@ -140,9 +169,7 @@ describe('ActionRequestInbox', () => {
       data: { kind: 'YouPetConfigMissing', youpet: { field: 'tenant_id' } },
     });
     render(<ActionRequestInbox />);
-    expect(await screen.findByTestId('action-request-error')).toHaveTextContent(
-      'YOUPET_TENANT_ID'
-    );
+    expect(await screen.findByTestId('action-request-error')).toHaveTextContent('YOUPET_TENANT_ID');
   });
 
   it('renders empty links when Core omits correlation links', async () => {
@@ -168,14 +195,11 @@ describe('ActionRequestInbox', () => {
     expect(await screen.findByTestId('action-request-links-empty')).toBeInTheDocument();
   });
 
-  it('approves with reason, row version, and stable idempotency key', async () => {
-    const approved = {
-      ...pendingItem,
-      approval_state: 'approved',
-      row_version: 3,
-    };
+  it('approves with reason, row version, stable key, Core refresh, and pending-filter removal', async () => {
+    const approved = { ...pendingItem, approval_state: 'approved', row_version: 3 };
     mockClient.list.mockResolvedValue([pendingItem]);
     mockClient.approve.mockResolvedValueOnce(approved);
+    mockClient.get.mockResolvedValueOnce(approved);
     const user = userEvent.setup();
 
     render(<ActionRequestInbox />);
@@ -189,18 +213,19 @@ describe('ActionRequestInbox', () => {
       expectedRowVersion: 2,
       idempotencyKey: expect.stringContaining(`youpet-action-request:approve:${PENDING_ID}:`),
     });
+    await waitFor(() => expect(mockClient.get).toHaveBeenCalledWith(PENDING_ID));
     expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]).toBeUndefined();
-    expect(await screen.findByTestId('action-request-terminal')).toBeInTheDocument();
+    expect(storedIdempotencyRecords()[`reject:${PENDING_ID}`]).toBeUndefined();
+    // Default filter is pending — approved item must leave the list.
+    expect(await screen.findByTestId('action-request-empty')).toBeInTheDocument();
+    expect(screen.queryByTestId(`action-request-row-${PENDING_ID}`)).not.toBeInTheDocument();
   });
 
-  it('rejects with reason and expected row version', async () => {
-    const rejected = {
-      ...pendingItem,
-      approval_state: 'rejected',
-      row_version: 3,
-    };
+  it('rejects with reason, expected row version, and Core refresh', async () => {
+    const rejected = { ...pendingItem, approval_state: 'rejected', row_version: 3 };
     mockClient.list.mockResolvedValue([pendingItem]);
     mockClient.reject.mockResolvedValueOnce(rejected);
+    mockClient.get.mockResolvedValueOnce(rejected);
     const user = userEvent.setup();
 
     render(<ActionRequestInbox />);
@@ -214,6 +239,7 @@ describe('ActionRequestInbox', () => {
       expectedRowVersion: 2,
       idempotencyKey: expect.stringContaining(`youpet-action-request:reject:${PENDING_ID}:`),
     });
+    await waitFor(() => expect(mockClient.get).toHaveBeenCalledWith(PENDING_ID));
     expect(storedIdempotencyRecords()[`reject:${PENDING_ID}`]).toBeUndefined();
   });
 
@@ -229,6 +255,10 @@ describe('ActionRequestInbox', () => {
     await waitFor(() => expect(mockClient.approve).toHaveBeenCalledTimes(1));
     const firstKey = mockClient.approve.mock.calls[0]?.[1]?.idempotencyKey as string;
     expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]?.key).toBe(firstKey);
+    expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]?.reasonFingerprint).toBe(
+      fingerprintReason('retry me')
+    );
+    expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]?.reason).toBeUndefined();
 
     firstRender.unmount();
     render(<ActionRequestInbox />);
@@ -278,7 +308,9 @@ describe('ActionRequestInbox', () => {
     await waitFor(() => expect(mockClient.approve).toHaveBeenCalledTimes(2));
     const secondKey = mockClient.approve.mock.calls[1]?.[1]?.idempotencyKey as string;
     expect(secondKey).not.toBe(firstKey);
-    expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]?.reason).toBe('changed reason');
+    expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]?.reasonFingerprint).toBe(
+      fingerprintReason('changed reason')
+    );
   });
 
   it('does not reuse an approve key for reject', async () => {
@@ -301,14 +333,11 @@ describe('ActionRequestInbox', () => {
   });
 
   it('suppresses duplicate in-flight approve and reject clicks', async () => {
-    const approved = {
-      ...pendingItem,
-      approval_state: 'approved',
-      row_version: 3,
-    };
+    const approved = { ...pendingItem, approval_state: 'approved', row_version: 3 };
     const pendingApprove = deferred<typeof approved>();
     mockClient.list.mockResolvedValue([pendingItem]);
     mockClient.approve.mockReturnValueOnce(pendingApprove.promise);
+    mockClient.get.mockResolvedValue(approved);
     const user = userEvent.setup();
 
     render(<ActionRequestInbox />);
@@ -326,15 +355,13 @@ describe('ActionRequestInbox', () => {
     expect(mockClient.reject).not.toHaveBeenCalled();
 
     pendingApprove.resolve(approved);
-    await waitFor(() => expect(screen.getByTestId('action-request-terminal')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByTestId(`action-request-row-${PENDING_ID}`)).not.toBeInTheDocument()
+    );
   });
 
   it('reloads Core state on concurrency conflict and explains the conflict', async () => {
-    const refreshed = {
-      ...pendingItem,
-      approval_state: 'approved',
-      row_version: 4,
-    };
+    const refreshed = { ...pendingItem, approval_state: 'approved', row_version: 4 };
     mockClient.list.mockResolvedValue([pendingItem]);
     mockClient.approve.mockRejectedValueOnce(structuredError('concurrency_conflict'));
     mockClient.get.mockResolvedValueOnce(refreshed);
@@ -351,16 +378,15 @@ describe('ActionRequestInbox', () => {
     );
     expect(screen.getByTestId('action-request-error')).toHaveTextContent('approved');
     expect(screen.getByTestId('action-request-error')).toHaveTextContent('v4');
-    expect(screen.getByTestId('action-request-terminal')).toBeInTheDocument();
+    // Pending filter drops the terminal row after authoritative refresh.
+    await waitFor(() =>
+      expect(screen.queryByTestId(`action-request-row-${PENDING_ID}`)).not.toBeInTheDocument()
+    );
     expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]).toBeUndefined();
   });
 
   it('handles idempotency_conflict with authoritative refresh', async () => {
-    const refreshed = {
-      ...pendingItem,
-      approval_state: 'rejected',
-      row_version: 5,
-    };
+    const refreshed = { ...pendingItem, approval_state: 'rejected', row_version: 5 };
     mockClient.list.mockResolvedValue([pendingItem]);
     mockClient.reject.mockRejectedValueOnce(structuredError('idempotency_conflict'));
     mockClient.get.mockResolvedValueOnce(refreshed);
@@ -375,14 +401,10 @@ describe('ActionRequestInbox', () => {
     expect(await screen.findByTestId('action-request-error')).toHaveTextContent(
       'idempotency_conflict'
     );
-    expect(screen.getByTestId('action-request-terminal')).toBeInTheDocument();
   });
 
   it('keeps the same-intent key when conflict leaves the row pending', async () => {
-    const stillPending = {
-      ...pendingItem,
-      row_version: 3,
-    };
+    const stillPending = { ...pendingItem, row_version: 3 };
     mockClient.list.mockResolvedValue([pendingItem]);
     mockClient.approve.mockRejectedValueOnce(structuredError('concurrency_conflict'));
     mockClient.get.mockResolvedValueOnce(stillPending);
@@ -394,12 +416,9 @@ describe('ActionRequestInbox', () => {
     await user.click(screen.getByTestId('action-request-approve'));
 
     await waitFor(() => expect(mockClient.get).toHaveBeenCalledWith(PENDING_ID));
-    // Row version changed, so intent fingerprint rotates on next attempt with new version.
-    mockClient.approve.mockResolvedValueOnce({
-      ...stillPending,
-      approval_state: 'approved',
-      row_version: 4,
-    });
+    const approved = { ...stillPending, approval_state: 'approved', row_version: 4 };
+    mockClient.approve.mockResolvedValueOnce(approved);
+    mockClient.get.mockResolvedValueOnce(approved);
     await user.click(screen.getByTestId('action-request-approve'));
     await waitFor(() => expect(mockClient.approve).toHaveBeenCalledTimes(2));
     expect(mockClient.approve.mock.calls[1]?.[1]?.expectedRowVersion).toBe(3);
@@ -407,11 +426,7 @@ describe('ActionRequestInbox', () => {
 
   it('hides decision controls for terminal approvals including expired', async () => {
     mockClient.list.mockResolvedValueOnce([
-      {
-        ...pendingItem,
-        approval_state: 'expired',
-        row_version: 5,
-      },
+      { ...pendingItem, approval_state: 'expired', row_version: 5 },
     ]);
 
     render(<ActionRequestInbox />);
@@ -449,25 +464,70 @@ describe('ActionRequestInbox', () => {
     expect(await screen.findByTestId('action-request-error')).toHaveTextContent('invalid_request');
   });
 
-  it('shows a non-blocking warning when localStorage writes fail after success', async () => {
-    const approved = {
-      ...pendingItem,
-      approval_state: 'approved',
-      row_version: 3,
-    };
+  it('maps forbidden_consumer_operation Core responses into a stable error', async () => {
     mockClient.list.mockResolvedValue([pendingItem]);
-    mockClient.approve.mockResolvedValueOnce(approved);
+    mockClient.approve.mockRejectedValueOnce(structuredError('forbidden_consumer_operation'));
     const user = userEvent.setup();
 
-    const originalSetItem = window.localStorage.setItem.bind(window.localStorage);
-    let setItemCalls = 0;
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation((key, value) => {
-      setItemCalls += 1;
-      // First write (key create) succeeds; second (clear after success) throws.
-      if (setItemCalls >= 2 && key === actionRequestIdempotencyStorageKey) {
+    render(<ActionRequestInbox />);
+    await screen.findByTestId(`action-request-row-${PENDING_ID}`);
+    await user.type(screen.getByTestId('action-request-reason'), 'not allowed');
+    await user.click(screen.getByTestId('action-request-approve'));
+
+    expect(await screen.findByTestId('action-request-error')).toHaveTextContent(
+      'forbidden_consumer_operation'
+    );
+    expect(mockClient.get).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the initial idempotency key cannot be persisted', async () => {
+    mockClient.list.mockResolvedValue([pendingItem]);
+    const user = userEvent.setup();
+
+    setActionRequestIntentStorageAdapter({
+      getItem: () => null,
+      setItem: () => {
         throw new Error('quota exceeded');
-      }
-      return originalSetItem(key, value);
+      },
+      removeItem: () => undefined,
+    });
+
+    render(<ActionRequestInbox />);
+    await screen.findByTestId(`action-request-row-${PENDING_ID}`);
+    await user.type(screen.getByTestId('action-request-reason'), 'blocked write');
+    await user.click(screen.getByTestId('action-request-approve'));
+
+    expect(await screen.findByTestId('action-request-error')).toHaveTextContent(
+      'retry-key storage'
+    );
+    expect(mockClient.approve).not.toHaveBeenCalled();
+    expect(mockClient.reject).not.toHaveBeenCalled();
+  });
+
+  it('shows a non-blocking warning when cleanup after success cannot rewrite storage', async () => {
+    const approved = { ...pendingItem, approval_state: 'approved', row_version: 3 };
+    mockClient.list.mockResolvedValue([pendingItem]);
+    mockClient.approve.mockResolvedValueOnce(approved);
+    mockClient.get.mockResolvedValueOnce(approved);
+    const user = userEvent.setup();
+
+    const backing = new Map<string, string>();
+    let writeCount = 0;
+    setActionRequestIntentStorageAdapter({
+      getItem(key) {
+        return backing.has(key) ? (backing.get(key) as string) : null;
+      },
+      setItem(key, value) {
+        writeCount += 1;
+        // First write (create key) succeeds; later clears fail.
+        if (writeCount >= 2) {
+          throw new Error('quota exceeded');
+        }
+        backing.set(key, value);
+      },
+      removeItem(key) {
+        backing.delete(key);
+      },
     });
 
     render(<ActionRequestInbox />);
@@ -476,25 +536,143 @@ describe('ActionRequestInbox', () => {
     await user.click(screen.getByTestId('action-request-approve'));
 
     await waitFor(() => expect(mockClient.approve).toHaveBeenCalledTimes(1));
-    expect(await screen.findByTestId('action-request-terminal')).toBeInTheDocument();
     expect(await screen.findByTestId('action-request-warning')).toHaveTextContent(
       'retry-key storage'
     );
+  });
+
+  it('invalidates a stale in-flight list after mutation so it cannot resurrect the row', async () => {
+    const approved = { ...pendingItem, approval_state: 'approved', row_version: 3 };
+    const slowList = deferred<(typeof pendingItem)[]>();
+    mockClient.list
+      .mockResolvedValueOnce([pendingItem]) // initial
+      .mockReturnValueOnce(slowList.promise); // refresh started before approve settles
+    mockClient.approve.mockResolvedValueOnce(approved);
+    mockClient.get.mockResolvedValueOnce(approved);
+    const user = userEvent.setup();
+
+    render(<ActionRequestInbox />);
+    await screen.findByTestId(`action-request-row-${PENDING_ID}`);
+
+    // Kick a refresh that will resolve after the mutation with stale pending data.
+    await user.click(screen.getByTestId('action-request-refresh'));
+    await waitFor(() => expect(mockClient.list).toHaveBeenCalledTimes(2));
+
+    await user.type(screen.getByTestId('action-request-reason'), 'stale race');
+    await user.click(screen.getByTestId('action-request-approve'));
+    await waitFor(() => expect(mockClient.approve).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockClient.get).toHaveBeenCalledWith(PENDING_ID));
+    await waitFor(() =>
+      expect(screen.queryByTestId(`action-request-row-${PENDING_ID}`)).not.toBeInTheDocument()
+    );
+
+    // Stale list must not reintroduce the pending row after mutation invalidation.
+    slowList.resolve([pendingItem]);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(screen.queryByTestId(`action-request-row-${PENDING_ID}`)).not.toBeInTheDocument();
+  });
+
+  it('keeps terminal rows when filter is all after approve', async () => {
+    const approved = { ...pendingItem, approval_state: 'approved', row_version: 3 };
+    mockClient.list.mockResolvedValue([pendingItem]);
+    mockClient.approve.mockResolvedValueOnce(approved);
+    mockClient.get.mockResolvedValueOnce(approved);
+    const user = userEvent.setup();
+
+    render(<ActionRequestInbox />);
+    await screen.findByTestId(`action-request-row-${PENDING_ID}`);
+    await user.selectOptions(screen.getByTestId('action-request-filter'), 'all');
+    await waitFor(() => expect(mockClient.list).toHaveBeenCalledTimes(2));
+
+    await user.type(screen.getByTestId('action-request-reason'), 'keep visible');
+    await user.click(screen.getByTestId('action-request-approve'));
+    await waitFor(() => expect(mockClient.get).toHaveBeenCalledWith(PENDING_ID));
+    expect(await screen.findByTestId('action-request-terminal')).toBeInTheDocument();
+    expect(screen.getByTestId(`action-request-row-${PENDING_ID}`)).toBeInTheDocument();
   });
 });
 
 describe('action request idempotency helpers', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    setActionRequestIntentStorageAdapter(null);
   });
 
-  it('binds the stored key to the complete command fingerprint', () => {
-    const first = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'same', 2);
-    const second = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'same', 2);
+  afterEach(() => {
+    setActionRequestIntentStorageAdapter(null);
+  });
+
+  it('binds the stored key to the complete command fingerprint without raw reason', () => {
+    const scope = defaultScope();
+    const first = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'same', 2, scope);
+    expect(first.persisted).toBe(true);
+    const second = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'same', 2, scope);
     expect(second.key).toBe(first.key);
-    const rotated = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'different', 2);
+    const rotated = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'different', 2, scope);
     expect(rotated.key).not.toBe(first.key);
-    clearIdempotencyKey(PENDING_ID, 'approve');
+    const raw = window.localStorage.getItem(
+      actionRequestIdempotencyStorageKey(scope.tenantId, scope.operatorId)
+    );
+    expect(raw).toBeTruthy();
+    expect(raw).not.toContain('different');
+    expect(raw).not.toContain('same');
+    clearIdempotencyKey(PENDING_ID, 'approve', scope);
     expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]).toBeUndefined();
+  });
+
+  it('scopes intent stores by tenant and operator', () => {
+    const a = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'reason', 1, {
+      tenantId: 'tenant-a',
+      operatorId: 'op-a',
+    });
+    const b = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'reason', 1, {
+      tenantId: 'tenant-b',
+      operatorId: 'op-a',
+    });
+    const c = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'reason', 1, {
+      tenantId: 'tenant-a',
+      operatorId: 'op-b',
+    });
+    expect(a.key).not.toBe(b.key);
+    expect(a.key).not.toBe(c.key);
+    expect(
+      window.localStorage.getItem(actionRequestIdempotencyStorageKey('tenant-a', 'op-a'))
+    ).toContain(a.key);
+    expect(
+      window.localStorage.getItem(actionRequestIdempotencyStorageKey('tenant-b', 'op-a'))
+    ).toContain(b.key);
+  });
+
+  it('returns persisted=false when the initial write fails', () => {
+    setActionRequestIntentStorageAdapter({
+      getItem: () => null,
+      setItem: () => {
+        throw new Error('boom');
+      },
+      removeItem: () => undefined,
+    });
+    const result = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'x', 1, defaultScope());
+    expect(result.persisted).toBe(false);
+  });
+
+  it('clears both approve and reject keys on terminal cleanup', () => {
+    const scope = defaultScope();
+    getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'a', 1, scope);
+    getOrCreateIdempotencyKey(PENDING_ID, 'reject', 'b', 1, scope);
+    expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]).toBeDefined();
+    expect(storedIdempotencyRecords()[`reject:${PENDING_ID}`]).toBeDefined();
+    expect(clearAllDecisionIdempotencyKeys(PENDING_ID, scope)).toBe(true);
+    expect(storedIdempotencyRecords()[`approve:${PENDING_ID}`]).toBeUndefined();
+    expect(storedIdempotencyRecords()[`reject:${PENDING_ID}`]).toBeUndefined();
+  });
+
+  it('accepts an injected adapter for deterministic storage tests', () => {
+    const adapter = memoryStorageAdapter();
+    setActionRequestIntentStorageAdapter(adapter);
+    const scope = { tenantId: 't', operatorId: 'o' };
+    const first = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'memo', 9, scope);
+    expect(first.persisted).toBe(true);
+    const second = getOrCreateIdempotencyKey(PENDING_ID, 'approve', 'memo', 9, scope);
+    expect(second.key).toBe(first.key);
   });
 });

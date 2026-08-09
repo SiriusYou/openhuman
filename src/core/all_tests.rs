@@ -224,7 +224,10 @@ fn schema_for_rpc_method_finds_internal_youpet_methods() {
         ("openhuman.youpet_ack_alert", "ack_alert"),
         ("openhuman.youpet_resolve_alert", "resolve_alert"),
         ("openhuman.youpet_trace_alert", "trace_alert"),
-        ("openhuman.youpet_list_action_requests", "list_action_requests"),
+        (
+            "openhuman.youpet_list_action_requests",
+            "list_action_requests",
+        ),
         ("openhuman.youpet_get_action_request", "get_action_request"),
         (
             "openhuman.youpet_approve_action_request",

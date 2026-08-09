@@ -535,7 +535,10 @@ fn env_overlay_youpet_config_trims_and_ignores_blanks() {
             .with("YOUPET_SERVICE_TOKEN", "  svc-token  ")
             .with("YOUPET_WORKBENCH_ACTOR_ID", "  workbench-actor  ")
             .with("YOUPET_OPERATOR_USER_ID", "  operator-user-id  ")
-            .with("YOUPET_TENANT_ID", "  20000000-0000-0000-0000-000000000001  "),
+            .with(
+                "YOUPET_TENANT_ID",
+                "  20000000-0000-0000-0000-000000000001  ",
+            ),
     );
 
     assert_eq!(cfg.youpet.core_api_url, "https://core.example.test");

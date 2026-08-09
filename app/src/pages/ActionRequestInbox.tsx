@@ -7,20 +7,54 @@ import {
   extractYoupetErrorCode,
   extractYoupetErrorField,
 } from '../services/api/coreActionRequestClient';
+import { getActiveUserId } from '../store/userScopedStorage';
 
 type DecisionAction = 'approve' | 'reject';
 type PendingDecisions = Record<string, DecisionAction>;
 
-const IDEMPOTENCY_STORAGE_KEY = 'openhuman.youpet.action_request.idempotency.v2';
+const IDEMPOTENCY_STORAGE_PREFIX = 'openhuman.youpet.action_request.idempotency.v3';
 const DEFAULT_FILTER = 'pending';
+const DEFAULT_OPERATOR_SCOPE = 'local-operator';
 
-export const actionRequestIdempotencyStorageKey = IDEMPOTENCY_STORAGE_KEY;
+export interface IntentStorageAdapter {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
+const browserStorageAdapter: IntentStorageAdapter = {
+  getItem(key) {
+    return window.localStorage.getItem(key);
+  },
+  setItem(key, value) {
+    window.localStorage.setItem(key, value);
+  },
+  removeItem(key) {
+    window.localStorage.removeItem(key);
+  },
+};
+
+/** Overridable for deterministic fault-injection in tests. */
+let storageAdapter: IntentStorageAdapter = browserStorageAdapter;
+
+export function setActionRequestIntentStorageAdapter(adapter: IntentStorageAdapter | null): void {
+  storageAdapter = adapter ?? browserStorageAdapter;
+}
+
+export function actionRequestIdempotencyStorageKey(tenantId: string, operatorId: string): string {
+  return `${IDEMPOTENCY_STORAGE_PREFIX}:${tenantId}:${operatorId}`;
+}
+
+export function resolveOperatorScope(): string {
+  return getActiveUserId() ?? DEFAULT_OPERATOR_SCOPE;
+}
 
 interface StoredIntent {
   key: string;
   action: DecisionAction;
   actionRequestId: string;
-  reason: string;
+  /** Fingerprint of the operator reason — never the raw reason text. */
+  reasonFingerprint: string;
   expectedRowVersion: number;
 }
 
@@ -34,15 +68,41 @@ function isStoredIntent(value: unknown): value is StoredIntent {
     record.key.trim().length > 0 &&
     (record.action === 'approve' || record.action === 'reject') &&
     typeof record.actionRequestId === 'string' &&
-    typeof record.reason === 'string' &&
+    typeof record.reasonFingerprint === 'string' &&
+    record.reasonFingerprint.trim().length > 0 &&
     typeof record.expectedRowVersion === 'number' &&
     Number.isFinite(record.expectedRowVersion)
   );
 }
 
-function readIdempotencyStore(): IntentStore {
+function makeIdempotencyStorageId(actionRequestId: string, action: DecisionAction) {
+  return `${action}:${actionRequestId}`;
+}
+
+function normalizeReason(reason: string) {
+  return reason.trim();
+}
+
+/** Stable non-cryptographic fingerprint so raw operator intent is not persisted. */
+export function fingerprintReason(reason: string): string {
+  const normalized = normalizeReason(reason);
+  let hash = 2166136261;
+  for (let i = 0; i < normalized.length; i += 1) {
+    hash ^= normalized.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a:${(hash >>> 0).toString(16)}:len:${normalized.length}`;
+}
+
+function generateIdempotencyKey(actionRequestId: string, action: DecisionAction) {
+  const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+  return `youpet-action-request:${action}:${actionRequestId}:${random}`;
+}
+
+function readIdempotencyStore(tenantId: string, operatorId: string): IntentStore {
+  const storageKey = actionRequestIdempotencyStorageKey(tenantId, operatorId);
   try {
-    const raw = window.localStorage.getItem(IDEMPOTENCY_STORAGE_KEY);
+    const raw = storageAdapter.getItem(storageKey);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
@@ -54,81 +114,108 @@ function readIdempotencyStore(): IntentStore {
     }
     return next;
   } catch {
-    return {};
+    throw new Error('idempotency_storage_read_failed');
   }
 }
 
-/** Persist intent store without throwing (storage may be blocked). */
-function writeIdempotencyStore(store: IntentStore): boolean {
+/** Persist intent store; returns false when the adapter cannot durable-write. */
+function writeIdempotencyStore(tenantId: string, operatorId: string, store: IntentStore): boolean {
+  const storageKey = actionRequestIdempotencyStorageKey(tenantId, operatorId);
   try {
-    window.localStorage.setItem(IDEMPOTENCY_STORAGE_KEY, JSON.stringify(store));
+    storageAdapter.setItem(storageKey, JSON.stringify(store));
+    // Verify round-trip so silent no-op adapters still fail closed.
+    const roundTrip = storageAdapter.getItem(storageKey);
+    if (roundTrip !== JSON.stringify(store)) {
+      return false;
+    }
     return true;
   } catch {
     return false;
   }
 }
 
-function makeIdempotencyStorageId(actionRequestId: string, action: DecisionAction) {
-  return `${action}:${actionRequestId}`;
-}
-
-function normalizeReason(reason: string) {
-  return reason.trim();
-}
-
-function commandFingerprint(
-  action: DecisionAction,
-  actionRequestId: string,
-  reason: string,
-  expectedRowVersion: number
-) {
-  return `${action}|${actionRequestId}|${normalizeReason(reason)}|${expectedRowVersion}`;
-}
-
-function generateIdempotencyKey(actionRequestId: string, action: DecisionAction) {
-  const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
-  return `youpet-action-request:${action}:${actionRequestId}:${random}`;
+export interface IdempotencyKeyResult {
+  key: string;
+  /** True only when the key is durable in scoped storage. */
+  persisted: boolean;
 }
 
 /**
  * Return a stable idempotency key for the same complete operator intent.
- * Rotates when reason or expected row version changes.
+ * Rotates when reason fingerprint or expected row version changes.
+ * Callers must fail closed (do not call Core) when `persisted` is false.
  */
 export function getOrCreateIdempotencyKey(
   actionRequestId: string,
   action: DecisionAction,
   reason: string,
-  expectedRowVersion: number
-): { key: string; storageOk: boolean } {
-  const store = readIdempotencyStore();
+  expectedRowVersion: number,
+  scope: { tenantId: string; operatorId: string } = {
+    tenantId: 'unknown-tenant',
+    operatorId: resolveOperatorScope(),
+  }
+): IdempotencyKeyResult {
+  let store: IntentStore;
+  try {
+    store = readIdempotencyStore(scope.tenantId, scope.operatorId);
+  } catch {
+    return { key: '', persisted: false };
+  }
   const id = makeIdempotencyStorageId(actionRequestId, action);
-  const normalized = normalizeReason(reason);
+  const reasonFingerprint = fingerprintReason(reason);
   const existing = store[id];
   if (
     existing &&
-    existing.reason === normalized &&
+    existing.reasonFingerprint === reasonFingerprint &&
     existing.expectedRowVersion === expectedRowVersion &&
     existing.action === action &&
     existing.actionRequestId === actionRequestId
   ) {
-    return { key: existing.key, storageOk: true };
+    return { key: existing.key, persisted: true };
   }
   const key = generateIdempotencyKey(actionRequestId, action);
-  store[id] = {
-    key,
-    action,
-    actionRequestId,
-    reason: normalized,
-    expectedRowVersion,
+  const nextStore: IntentStore = {
+    ...store,
+    [id]: { key, action, actionRequestId, reasonFingerprint, expectedRowVersion },
   };
-  const storageOk = writeIdempotencyStore(store);
-  return { key, storageOk };
+  const persisted = writeIdempotencyStore(scope.tenantId, scope.operatorId, nextStore);
+  return { key, persisted };
 }
 
-export function clearIdempotencyKey(actionRequestId: string, action: DecisionAction): boolean {
-  const store = readIdempotencyStore();
-  delete store[makeIdempotencyStorageId(actionRequestId, action)];
-  return writeIdempotencyStore(store);
+export function clearIdempotencyKey(
+  actionRequestId: string,
+  action: DecisionAction,
+  scope: { tenantId: string; operatorId: string } = {
+    tenantId: 'unknown-tenant',
+    operatorId: resolveOperatorScope(),
+  }
+): boolean {
+  let store: IntentStore;
+  try {
+    store = readIdempotencyStore(scope.tenantId, scope.operatorId);
+  } catch {
+    return false;
+  }
+  const next = { ...store };
+  delete next[makeIdempotencyStorageId(actionRequestId, action)];
+  return writeIdempotencyStore(scope.tenantId, scope.operatorId, next);
+}
+
+/** Clear both approve and reject intent keys for a request (terminal cleanup). */
+export function clearAllDecisionIdempotencyKeys(
+  actionRequestId: string,
+  scope: { tenantId: string; operatorId: string }
+): boolean {
+  let store: IntentStore;
+  try {
+    store = readIdempotencyStore(scope.tenantId, scope.operatorId);
+  } catch {
+    return false;
+  }
+  const next = { ...store };
+  delete next[makeIdempotencyStorageId(actionRequestId, 'approve')];
+  delete next[makeIdempotencyStorageId(actionRequestId, 'reject')];
+  return writeIdempotencyStore(scope.tenantId, scope.operatorId, next);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -174,6 +261,14 @@ function isTerminalApproval(item: CoreActionRequestLifecycleEnvelope) {
   );
 }
 
+function matchesFilter(
+  item: CoreActionRequestLifecycleEnvelope,
+  filter: 'pending' | 'all'
+): boolean {
+  if (filter === 'all') return true;
+  return isPending(item);
+}
+
 export default function ActionRequestInbox() {
   const { t } = useT();
   const client = useMemo(() => createCoreActionRequestClient(), []);
@@ -187,7 +282,10 @@ export default function ActionRequestInbox() {
   const [pending, setPending] = useState<PendingDecisions>({});
   const [filter, setFilter] = useState<'pending' | 'all'>(DEFAULT_FILTER);
   const inFlightRef = useRef<Set<string>>(new Set());
+  /** Sequence for list loads AND mutation invalidation of outstanding reads. */
   const loadSeqRef = useRef(0);
+  const filterRef = useRef(filter);
+  filterRef.current = filter;
 
   const selected = useMemo(
     () => items.find(item => item.id === selectedId) ?? null,
@@ -216,6 +314,22 @@ export default function ActionRequestInbox() {
       );
     },
     [t]
+  );
+
+  const applyAuthoritativeItem = useCallback(
+    (item: CoreActionRequestLifecycleEnvelope, activeFilter: 'pending' | 'all') => {
+      if (!matchesFilter(item, activeFilter)) {
+        setItems(current => current.filter(row => row.id !== item.id));
+        setSelectedId(current => (current === item.id ? null : current));
+        return;
+      }
+      setItems(current => {
+        const exists = current.some(row => row.id === item.id);
+        if (!exists) return [item, ...current];
+        return current.map(row => (row.id === item.id ? item : row));
+      });
+    },
+    []
   );
 
   const load = useCallback(
@@ -255,14 +369,10 @@ export default function ActionRequestInbox() {
   const refreshOne = useCallback(
     async (actionRequestId: string) => {
       const fresh = await client.get(actionRequestId);
-      setItems(current => {
-        const exists = current.some(item => item.id === actionRequestId);
-        if (!exists) return [fresh, ...current];
-        return current.map(item => (item.id === actionRequestId ? fresh : item));
-      });
+      applyAuthoritativeItem(fresh, filterRef.current);
       return fresh;
     },
-    [client]
+    [applyAuthoritativeItem, client]
   );
 
   const submitDecision = useCallback(
@@ -281,59 +391,85 @@ export default function ActionRequestInbox() {
         return;
       }
 
-      // Acquire intent key before marking pending so storage failures do not
-      // freeze controls after Core commits.
+      const scope = { tenantId: item.tenant_id, operatorId: resolveOperatorScope() };
+
+      // Fail closed: only call Core when the intent key is durably persisted.
       let idempotencyKey: string;
-      let storageOk: boolean;
+      let persisted: boolean;
       try {
-        ({ key: idempotencyKey, storageOk } = getOrCreateIdempotencyKey(
+        ({ key: idempotencyKey, persisted } = getOrCreateIdempotencyKey(
           item.id,
           action,
           reason,
-          item.row_version
+          item.row_version,
+          scope
         ));
       } catch {
-        setError(mapError(new Error('idempotency key acquisition failed')));
-        return;
-      }
-      if (!storageOk) {
-        setWarning(
+        setError(
           t(
-            'actionRequest.storageWarning',
-            'Local retry-key storage is unavailable; retry safety may be limited for this browser session.'
+            'actionRequest.storageUnavailable',
+            'Local retry-key storage is unavailable. Decision blocked until storage works so retries stay idempotent.'
           )
         );
+        return;
+      }
+      if (!persisted || !idempotencyKey) {
+        setError(
+          t(
+            'actionRequest.storageUnavailable',
+            'Local retry-key storage is unavailable. Decision blocked until storage works so retries stay idempotent.'
+          )
+        );
+        return;
       }
 
       inFlightRef.current.add(flightKey);
       setPending(current => ({ ...current, [item.id]: action }));
       setError(null);
+      setWarning(null);
+
+      // Invalidate any outstanding list reads so they cannot overwrite mutation results.
+      loadSeqRef.current += 1;
 
       try {
-        const params = {
-          reason,
-          expectedRowVersion: item.row_version,
-          idempotencyKey,
-        };
+        const params = { reason, expectedRowVersion: item.row_version, idempotencyKey };
         const updated =
           action === 'approve'
             ? await client.approve(item.id, params)
             : await client.reject(item.id, params);
-        // Apply Core authority first, then best-effort local cleanup.
-        setItems(current => current.map(row => (row.id === item.id ? updated : row)));
+
+        // Immediate local apply for responsiveness, then authoritative Core get.
+        applyAuthoritativeItem(updated, filterRef.current);
         setReasonById(current => {
           const next = { ...current };
           delete next[item.id];
           return next;
         });
-        const cleared = clearIdempotencyKey(item.id, action);
-        if (!cleared) {
+
+        let authoritative = updated;
+        try {
+          authoritative = await client.get(item.id);
+          applyAuthoritativeItem(authoritative, filterRef.current);
+        } catch {
+          // Mutation already succeeded; keep the response snapshot.
           setWarning(
             t(
-              'actionRequest.storageWarning',
-              'Local retry-key storage is unavailable; retry safety may be limited for this browser session.'
+              'actionRequest.refreshAfterMutationFailed',
+              'Decision applied, but an authoritative Core refresh failed. Use Refresh to reload.'
             )
           );
+        }
+
+        if (isTerminalApproval(authoritative)) {
+          const cleared = clearAllDecisionIdempotencyKeys(item.id, scope);
+          if (!cleared) {
+            setWarning(
+              t(
+                'actionRequest.storageWarning',
+                'Local retry-key storage is unavailable; retry safety may be limited for this browser session.'
+              )
+            );
+          }
         }
       } catch (err) {
         const code = extractYoupetErrorCode(err);
@@ -350,8 +486,7 @@ export default function ActionRequestInbox() {
                 .replace('{version}', String(fresh.row_version))
             );
             if (isTerminalApproval(fresh)) {
-              clearIdempotencyKey(item.id, 'approve');
-              clearIdempotencyKey(item.id, 'reject');
+              clearAllDecisionIdempotencyKeys(item.id, scope);
             }
           } catch {
             setError(
@@ -373,11 +508,17 @@ export default function ActionRequestInbox() {
         });
       }
     },
-    [client, mapError, pending, reasonById, refreshOne, t]
+    [applyAuthoritativeItem, client, mapError, pending, reasonById, refreshOne, t]
   );
 
-  // Silence unused export warning for fingerprint helper used by tests.
-  void commandFingerprint;
+  // Clear both action keys when loading a terminal request (stale intent hygiene).
+  useEffect(() => {
+    if (!selected || !isTerminalApproval(selected)) return;
+    clearAllDecisionIdempotencyKeys(selected.id, {
+      tenantId: selected.tenant_id,
+      operatorId: resolveOperatorScope(),
+    });
+  }, [selected]);
 
   const doc = asRecord(selected?.action_request);
   const proposer = asRecord(doc?.proposer);
@@ -411,7 +552,9 @@ export default function ActionRequestInbox() {
       Boolean(linksIdempotencyKey));
 
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 p-6" data-testid="action-request-inbox">
+    <div
+      className="mx-auto flex w-full max-w-6xl flex-col gap-4 p-6"
+      data-testid="action-request-inbox">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-wide text-zinc-500">
@@ -429,8 +572,7 @@ export default function ActionRequestInbox() {
             className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-100"
             value={filter}
             onChange={event => setFilter(event.target.value as 'pending' | 'all')}
-            data-testid="action-request-filter"
-          >
+            data-testid="action-request-filter">
             <option value="pending">{t('actionRequest.filter.pending')}</option>
             <option value="all">{t('actionRequest.filter.all')}</option>
           </select>
@@ -439,8 +581,7 @@ export default function ActionRequestInbox() {
             className="rounded bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 hover:bg-zinc-700 disabled:opacity-50"
             onClick={() => void load('refresh')}
             disabled={loading || refreshing}
-            data-testid="action-request-refresh"
-          >
+            data-testid="action-request-refresh">
             {refreshing ? t('actionRequest.refreshing') : t('actionRequest.refresh')}
           </button>
         </div>
@@ -450,8 +591,7 @@ export default function ActionRequestInbox() {
         <div
           className="rounded border border-amber-700/60 bg-amber-950/40 px-3 py-2 text-sm text-amber-100"
           data-testid="action-request-error"
-          role="alert"
-        >
+          role="alert">
           {error}
         </div>
       ) : null}
@@ -460,8 +600,7 @@ export default function ActionRequestInbox() {
         <div
           className="rounded border border-zinc-600/60 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-200"
           data-testid="action-request-warning"
-          role="status"
-        >
+          role="status">
           {warning}
         </div>
       ) : null}
@@ -492,8 +631,7 @@ export default function ActionRequestInbox() {
                       : 'border-zinc-800 bg-zinc-900/60 text-zinc-200 hover:border-zinc-600'
                   }`}
                   onClick={() => setSelectedId(item.id)}
-                  data-testid={`action-request-row-${item.id}`}
-                >
+                  data-testid={`action-request-row-${item.id}`}>
                   <div className="font-medium">
                     {readString(asRecord(item.action_request)?.action_type) ?? item.id}
                   </div>
@@ -508,8 +646,7 @@ export default function ActionRequestInbox() {
 
         <section
           className="rounded border border-zinc-800 bg-zinc-950/50 p-4"
-          data-testid="action-request-detail"
-        >
+          data-testid="action-request-detail">
           {!selected ? (
             <p className="text-sm text-zinc-400">{t('actionRequest.selectPrompt')}</p>
           ) : (
@@ -668,8 +805,7 @@ export default function ActionRequestInbox() {
                   </h3>
                   <pre
                     className="max-h-48 overflow-auto rounded bg-zinc-900 p-2 text-xs text-zinc-300"
-                    data-testid="action-request-payload"
-                  >
+                    data-testid="action-request-payload">
                     {JSON.stringify(payload, null, 2)}
                   </pre>
                 </div>
@@ -685,10 +821,7 @@ export default function ActionRequestInbox() {
                     className="min-h-[72px] rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-100"
                     value={reasonById[selected.id] ?? ''}
                     onChange={event =>
-                      setReasonById(current => ({
-                        ...current,
-                        [selected.id]: event.target.value,
-                      }))
+                      setReasonById(current => ({ ...current, [selected.id]: event.target.value }))
                     }
                     data-testid="action-request-reason"
                   />
@@ -698,8 +831,7 @@ export default function ActionRequestInbox() {
                       className="rounded bg-emerald-700 px-3 py-1.5 text-sm text-white hover:bg-emerald-600 disabled:opacity-50"
                       disabled={Boolean(pending[selected.id])}
                       onClick={() => void submitDecision(selected, 'approve')}
-                      data-testid="action-request-approve"
-                    >
+                      data-testid="action-request-approve">
                       {pending[selected.id] === 'approve'
                         ? t('actionRequest.approving')
                         : t('actionRequest.approve')}
@@ -709,8 +841,7 @@ export default function ActionRequestInbox() {
                       className="rounded bg-rose-800 px-3 py-1.5 text-sm text-white hover:bg-rose-700 disabled:opacity-50"
                       disabled={Boolean(pending[selected.id])}
                       onClick={() => void submitDecision(selected, 'reject')}
-                      data-testid="action-request-reject"
-                    >
+                      data-testid="action-request-reject">
                       {pending[selected.id] === 'reject'
                         ? t('actionRequest.rejecting')
                         : t('actionRequest.reject')}

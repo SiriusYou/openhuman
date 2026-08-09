@@ -207,11 +207,11 @@ const messages: TranslationMap = {
   'home.youpetWorkbenchDescription': 'Review Core alerts and operator actions.',
   'home.youpetActionRequests': 'Action Request Inbox',
   'home.youpetActionRequestsDescription':
-  'Approve or reject pending Core ActionRequests as the operator.',
+    'Approve or reject pending Core ActionRequests as the operator.',
   'actionRequest.eyebrow': 'YouPet Core',
   'actionRequest.title': 'Action Request Inbox',
   'actionRequest.subtitle':
-  'Review pending Core ActionRequests and approve or reject with an operator reason.',
+    'Review pending Core ActionRequests and approve or reject with an operator reason.',
   'actionRequest.filterLabel': 'Approval filter',
   'actionRequest.filter.pending': 'Pending',
   'actionRequest.filter.all': 'All',
@@ -240,15 +240,12 @@ const messages: TranslationMap = {
   'actionRequest.approving': 'Approving…',
   'actionRequest.reject': 'Reject',
   'actionRequest.rejecting': 'Rejecting…',
-  'actionRequest.terminalReadOnly':
-  'This request is no longer pending and is read-only.',
-  'actionRequest.requestFailed':
-  'Action request failed. Check Core configuration and try again.',
+  'actionRequest.terminalReadOnly': 'This request is no longer pending and is read-only.',
+  'actionRequest.requestFailed': 'Action request failed. Check Core configuration and try again.',
   'actionRequest.errorWithCode': 'Action request failed ({code}).',
   'actionRequest.conflictRefresh':
-  'State changed ({code}). Reloaded from Core: {state} v{version}.',
-  'actionRequest.conflictRefreshFailed':
-  'State conflict ({code}), and refresh from Core failed.',
+    'State changed ({code}). Reloaded from Core: {state} v{version}.',
+  'actionRequest.conflictRefreshFailed': 'State conflict ({code}), and refresh from Core failed.',
   'actionRequest.links': 'Links',
   'actionRequest.links.workflowId': 'Workflow ID',
   'actionRequest.links.workflowTraceId': 'Workflow trace ID',
@@ -260,9 +257,13 @@ const messages: TranslationMap = {
   'actionRequest.links.outboxDeliveryIds': 'Outbox delivery IDs',
   'actionRequest.linksEmpty': 'No correlation links recorded on this request.',
   'actionRequest.storageWarning':
-  'Local retry-key storage is unavailable; retry safety may be limited for this browser session.',
+    'Local retry-key storage is unavailable; retry safety may be limited for this browser session.',
+  'actionRequest.storageUnavailable':
+    'Local retry-key storage is unavailable. Decision blocked until storage works so retries stay idempotent.',
+  'actionRequest.refreshAfterMutationFailed':
+    'Decision applied, but an authoritative Core refresh failed. Use Refresh to reload.',
   'actionRequest.tenantConfigMissing':
-  'YouPet tenant is not configured. Set YOUPET_TENANT_ID or youpet.tenant_id before listing ActionRequests.',
+    'YouPet tenant is not configured. Set YOUPET_TENANT_ID or youpet.tenant_id before listing ActionRequests.',
   'workbench.eyebrow': 'YouPet Core',
   'workbench.title': 'Workbench',
   'workbench.refresh': 'Refresh',
