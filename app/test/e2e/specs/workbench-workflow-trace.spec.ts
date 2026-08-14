@@ -94,14 +94,27 @@ describe('M1.3.2 workflow trace operator acceptance', function () {
 
     await openTraceForArticle(TASK_ALERT_SUMMARY);
     const traceState = await browser.execute(() => {
+      const metadataFromEntry = (entry: Element): Record<string, string> => {
+        const root = entry.querySelector('[aria-label="Metadata"]');
+        const pairs: Record<string, string> = {};
+        if (!root) return pairs;
+        for (const chip of Array.from(root.querySelectorAll(':scope > span'))) {
+          const chipText = (chip.textContent ?? '').trim();
+          const separator = chipText.indexOf(':');
+          if (separator < 0) continue;
+          pairs[chipText.slice(0, separator).trim()] = chipText.slice(separator + 1).trim();
+        }
+        return pairs;
+      };
       const dialog = document.querySelector('[role="dialog"]');
       const text = dialog?.textContent ?? '';
       const buttons = Array.from(dialog?.querySelectorAll('button') ?? []).map(button =>
         button.textContent?.trim()
       );
-      const entries = Array.from(dialog?.querySelectorAll('ol li') ?? []).map(
-        entry => entry.textContent ?? ''
-      );
+      const entries = Array.from(dialog?.querySelectorAll('ol li') ?? []).map(entry => ({
+        text: entry.textContent ?? '',
+        metadata: metadataFromEntry(entry),
+      }));
       return { text, buttons, entries };
     });
 
@@ -110,25 +123,23 @@ describe('M1.3.2 workflow trace operator acceptance', function () {
       expect(traceState.text).toContain(lane);
     }
     const failureIndex = traceState.entries.findIndex(entry =>
-      entry.includes('Failed · Retry scheduled')
+      entry.text.includes('Failed · Retry scheduled')
     );
     const recoveryIndex = traceState.entries.findIndex(
-      entry => entry.includes('Delivery recovered') || entry.includes('Recovered')
+      entry => entry.text.includes('Delivery recovered') || entry.text.includes('Recovered')
     );
     expect(failureIndex).toBeGreaterThanOrEqual(0);
     expect(recoveryIndex).toBeGreaterThan(failureIndex);
 
     const failureEntry = traceState.entries[failureIndex];
     const recoveryEntry = traceState.entries[recoveryIndex];
-    expect(failureEntry).toContain('openclaw-youpet-consumer');
-    expect(failureEntry).toContain('consumer');
-    expect(failureEntry).toContain('openclaw');
-    expect(failureEntry).toContain('attempts');
-    expect(failureEntry).toContain('1');
-    expect(failureEntry).toContain('event_outbox / 00000000-0000-0000-0000-000000000801');
-    expect(failureEntry).toContain('outbox.nack');
-    expect(recoveryEntry).toContain('outbox.ack');
-    expect(recoveryEntry).toContain('event_outbox / 00000000-0000-0000-0000-000000000801');
+    expect(failureEntry.text).toContain('openclaw-youpet-consumer');
+    expect(failureEntry.metadata.consumer).toBe('openclaw');
+    expect(failureEntry.metadata.attempts).toBe('1');
+    expect(failureEntry.text).toContain('event_outbox / 00000000-0000-0000-0000-000000000801');
+    expect(failureEntry.text).toContain('outbox.nack');
+    expect(recoveryEntry.text).toContain('outbox.ack');
+    expect(recoveryEntry.text).toContain('event_outbox / 00000000-0000-0000-0000-000000000801');
     expect(traceState.text).toContain('correlation_id');
     expect(traceState.text).toContain('corr_seed');
 
