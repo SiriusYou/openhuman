@@ -99,19 +99,38 @@ describe('M1.3.2 workflow trace operator acceptance', function () {
       const buttons = Array.from(dialog?.querySelectorAll('button') ?? []).map(button =>
         button.textContent?.trim()
       );
-      return { text, buttons };
+      const entries = Array.from(dialog?.querySelectorAll('ol li') ?? []).map(
+        entry => entry.textContent ?? ''
+      );
+      return { text, buttons, entries };
     });
 
     expect(traceState.text).toContain('Workflow summary');
     for (const lane of ['Step', 'Event', 'Delivery', 'Audit']) {
       expect(traceState.text).toContain(lane);
     }
-    expect(traceState.text).toContain('Failed · Retry scheduled');
-    expect(traceState.text).toContain('Recovered');
+    const failureIndex = traceState.entries.findIndex(entry =>
+      entry.includes('Failed · Retry scheduled')
+    );
+    const recoveryIndex = traceState.entries.findIndex(
+      entry => entry.includes('Delivery recovered') || entry.includes('Recovered')
+    );
+    expect(failureIndex).toBeGreaterThanOrEqual(0);
+    expect(recoveryIndex).toBeGreaterThan(failureIndex);
+
+    const failureEntry = traceState.entries[failureIndex];
+    const recoveryEntry = traceState.entries[recoveryIndex];
+    expect(failureEntry).toContain('openclaw-youpet-consumer');
+    expect(failureEntry).toContain('consumer');
+    expect(failureEntry).toContain('openclaw');
+    expect(failureEntry).toContain('attempts');
+    expect(failureEntry).toContain('1');
+    expect(failureEntry).toContain('event_outbox / 00000000-0000-0000-0000-000000000801');
+    expect(failureEntry).toContain('outbox.nack');
+    expect(recoveryEntry).toContain('outbox.ack');
+    expect(recoveryEntry).toContain('event_outbox / 00000000-0000-0000-0000-000000000801');
     expect(traceState.text).toContain('correlation_id');
     expect(traceState.text).toContain('corr_seed');
-    expect(traceState.text).toContain('Actor');
-    expect(traceState.text).toContain('Related');
 
     expect(traceState.buttons).toEqual(['Close', 'Refresh trace']);
     expect(traceState.text).not.toContain('dev-openhuman-token');
@@ -146,6 +165,9 @@ describe('M1.3.2 workflow trace operator acceptance', function () {
         buttons: Array.from(dialog?.querySelectorAll('button') ?? []).map(button =>
           button.textContent?.trim()
         ),
+        entries: Array.from(dialog?.querySelectorAll('ol li') ?? []).map(
+          entry => entry.textContent ?? ''
+        ),
       };
     });
 
@@ -153,6 +175,10 @@ describe('M1.3.2 workflow trace operator acceptance', function () {
     expect(partialState.text).toContain('Unsupported Related Type');
     expect(partialState.text).toContain(
       'trace projection does not support related_type operator_fixture'
+    );
+    expect(partialState.entries.some(entry => entry.includes('Alert created'))).toBe(true);
+    expect(partialState.entries.some(entry => entry.includes('Unsupported workflow anchor.'))).toBe(
+      true
     );
     expect(partialState.buttons).toEqual(['Close', 'Refresh trace']);
     await captureCheckpoint('m132-explicit-partial-warning');
