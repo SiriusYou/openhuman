@@ -150,6 +150,7 @@ describe('M1.3.2 workflow trace operator acceptance', function () {
     expect(failureEntry.metadata.consumer).toBe('openclaw');
     expect(failureEntry.metadata.attempts).toBe('1');
     expect(failureEntry.metadata.action).toBe('outbox.nack');
+    expect(recoveryEntry.fields.Actor).toBe('Agent · openclaw-youpet-consumer');
     expect(recoveryEntry.fields.Related).toBe(
       'event_outbox / 00000000-0000-0000-0000-000000000801'
     );

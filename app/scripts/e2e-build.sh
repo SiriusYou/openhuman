@@ -31,6 +31,15 @@ if [ "${E2E_BUILD_AUTHORITY_PROBE:-}" = "1" ]; then
   echo "e2e-build-cargo-tauri=$CARGO_TAURI_BIN"
   echo "e2e-build-path=$PATH"
   echo "e2e-build-command-v-cargo-tauri=$(command -v cargo-tauri || true)"
+  echo "e2e-build-dispatch-start"
+  pnpm tauri:ensure
+  if [ ! -x "$CARGO_TAURI_BIN" ]; then
+    echo "ERROR: vendored cargo-tauri missing at $CARGO_TAURI_BIN" >&2
+    exit 1
+  fi
+  echo "e2e-build-dispatch=$CARGO_TAURI_BIN"
+  "$CARGO_TAURI_BIN" authority-probe
+  echo "e2e-build-dispatch-ok"
   exit 0
 fi
 
