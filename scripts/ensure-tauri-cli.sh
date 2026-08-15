@@ -69,7 +69,14 @@ echo "[ensure-tauri-cli] INSTALL_ROOT=$INSTALL_ROOT"
 echo "[ensure-tauri-cli] CARGO_BIN=$CARGO_BIN"
 echo "[ensure-tauri-cli] (first install only — takes a few minutes; subsequent runs are instant)"
 "$CARGO_BIN" install --root "$INSTALL_ROOT" --locked --path "$VENDOR_CLI"
+INSTALLED_BIN="$INSTALL_ROOT/bin/cargo-tauri"
+if [[ ! -x "$INSTALLED_BIN" || -L "$INSTALLED_BIN" ]]; then
+  echo "[ensure-tauri-cli] cargo-tauri missing after install: $INSTALLED_BIN" >&2
+  exit 1
+fi
+DEST_SHA256="$(shasum -a 256 "$INSTALLED_BIN" | awk '{print $1}')"
 {
   printf 'cargo_bin=%s\n' "$CARGO_BIN"
   printf 'vendor_path=%s\n' "$VENDOR_CLI"
+  printf 'dest_sha256=%s\n' "$DEST_SHA256"
 } >"$INSTALL_ROOT/.m132-cargo-install-observed"
