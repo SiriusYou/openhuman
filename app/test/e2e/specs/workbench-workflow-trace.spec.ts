@@ -106,6 +106,15 @@ describe('M1.3.2 workflow trace operator acceptance', function () {
         }
         return pairs;
       };
+      const fieldsFromEntry = (entry: Element): Record<string, string> => {
+        const fields: Record<string, string> = {};
+        for (const row of Array.from(entry.querySelectorAll('dl > div'))) {
+          const term = (row.querySelector('dt')?.textContent ?? '').trim();
+          const definition = (row.querySelector('dd')?.textContent ?? '').trim();
+          if (term) fields[term] = definition;
+        }
+        return fields;
+      };
       const dialog = document.querySelector('[role="dialog"]');
       const text = dialog?.textContent ?? '';
       const buttons = Array.from(dialog?.querySelectorAll('button') ?? []).map(button =>
@@ -113,6 +122,7 @@ describe('M1.3.2 workflow trace operator acceptance', function () {
       );
       const entries = Array.from(dialog?.querySelectorAll('ol li') ?? []).map(entry => ({
         text: entry.textContent ?? '',
+        fields: fieldsFromEntry(entry),
         metadata: metadataFromEntry(entry),
       }));
       return { text, buttons, entries };
@@ -133,13 +143,17 @@ describe('M1.3.2 workflow trace operator acceptance', function () {
 
     const failureEntry = traceState.entries[failureIndex];
     const recoveryEntry = traceState.entries[recoveryIndex];
-    expect(failureEntry.text).toContain('openclaw-youpet-consumer');
+    expect(failureEntry.fields.Actor).toBe('Agent · openclaw-youpet-consumer');
+    expect(failureEntry.fields.Related).toBe(
+      'event_outbox / 00000000-0000-0000-0000-000000000801'
+    );
     expect(failureEntry.metadata.consumer).toBe('openclaw');
     expect(failureEntry.metadata.attempts).toBe('1');
-    expect(failureEntry.text).toContain('event_outbox / 00000000-0000-0000-0000-000000000801');
-    expect(failureEntry.text).toContain('outbox.nack');
-    expect(recoveryEntry.text).toContain('outbox.ack');
-    expect(recoveryEntry.text).toContain('event_outbox / 00000000-0000-0000-0000-000000000801');
+    expect(failureEntry.metadata.action).toBe('outbox.nack');
+    expect(recoveryEntry.fields.Related).toBe(
+      'event_outbox / 00000000-0000-0000-0000-000000000801'
+    );
+    expect(recoveryEntry.metadata.action).toBe('outbox.ack');
     expect(traceState.text).toContain('correlation_id');
     expect(traceState.text).toContain('corr_seed');
 

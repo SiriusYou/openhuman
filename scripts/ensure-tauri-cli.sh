@@ -18,7 +18,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENDOR_CLI="$ROOT_DIR/app/src-tauri/vendor/tauri-cef/crates/tauri-cli"
 VENDOR_CARGO_TOML="$VENDOR_CLI/Cargo.toml"
 INSTALL_ROOT="${OPENHUMAN_CARGO_INSTALL_ROOT:-$ROOT_DIR/.cache/cargo-install}"
-export PATH="$HOME/.cargo/bin:$INSTALL_ROOT/bin:$PATH"
+# Install-root must precede any Cargo home so a stock cargo-tauri cannot win.
+export PATH="$INSTALL_ROOT/bin:$HOME/.cargo/bin:$PATH"
 
 if [[ ! -f "$VENDOR_CARGO_TOML" ]]; then
   echo "[ensure-tauri-cli] vendored tauri-cli not found at $VENDOR_CLI" >&2
