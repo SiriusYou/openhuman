@@ -57,8 +57,19 @@ if [[ -f "$CRATES_TOML" ]] && grep -q "tauri-cli.*$VENDOR_CLI" "$CRATES_TOML" 2>
   fi
 fi
 
+CARGO_BIN="${CARGO_BIN:-cargo}"
+if [[ ! -x "$CARGO_BIN" ]] && ! command -v "$CARGO_BIN" >/dev/null 2>&1; then
+  echo "[ensure-tauri-cli] cargo not found: $CARGO_BIN" >&2
+  exit 1
+fi
+
 echo "[ensure-tauri-cli] installing vendored CEF-aware tauri-cli from $VENDOR_CLI"
 echo "[ensure-tauri-cli] CEF_PATH=$CEF_PATH"
 echo "[ensure-tauri-cli] INSTALL_ROOT=$INSTALL_ROOT"
+echo "[ensure-tauri-cli] CARGO_BIN=$CARGO_BIN"
 echo "[ensure-tauri-cli] (first install only — takes a few minutes; subsequent runs are instant)"
-cargo install --root "$INSTALL_ROOT" --locked --path "$VENDOR_CLI"
+"$CARGO_BIN" install --root "$INSTALL_ROOT" --locked --path "$VENDOR_CLI"
+{
+  printf 'cargo_bin=%s\n' "$CARGO_BIN"
+  printf 'vendor_path=%s\n' "$VENDOR_CLI"
+} >"$INSTALL_ROOT/.m132-cargo-install-observed"

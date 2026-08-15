@@ -154,6 +154,8 @@ describe('M1.3.2 workflow trace operator acceptance', function () {
     expect(recoveryEntry.fields.Related).toBe(
       'event_outbox / 00000000-0000-0000-0000-000000000801'
     );
+    expect(recoveryEntry.metadata.consumer).toBe('openclaw');
+    expect(recoveryEntry.metadata.attempts).toBe('1');
     expect(recoveryEntry.metadata.action).toBe('outbox.ack');
     expect(traceState.text).toContain('correlation_id');
     expect(traceState.text).toContain('corr_seed');
