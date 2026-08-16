@@ -171,6 +171,10 @@ pub enum WorkbenchTraceEntryKind {
     HealthPlanState,
     TaskState,
     CheckinReceived,
+    ActionRequestProposed,
+    ActionRequestApproved,
+    ActionRequestRejected,
+    ActionRequestExecution,
     AuditAction,
     OutboxEvent,
     OutboxDelivery,
@@ -188,6 +192,10 @@ impl WorkbenchTraceEntryKind {
             Self::HealthPlanState => "health_plan_state",
             Self::TaskState => "task_state",
             Self::CheckinReceived => "checkin_received",
+            Self::ActionRequestProposed => "action_request_proposed",
+            Self::ActionRequestApproved => "action_request_approved",
+            Self::ActionRequestRejected => "action_request_rejected",
+            Self::ActionRequestExecution => "action_request_execution",
             Self::AuditAction => "audit_action",
             Self::OutboxEvent => "outbox_event",
             Self::OutboxDelivery => "outbox_delivery",
@@ -220,6 +228,10 @@ impl<'de> Deserialize<'de> for WorkbenchTraceEntryKind {
             "health_plan_state" => Self::HealthPlanState,
             "task_state" => Self::TaskState,
             "checkin_received" => Self::CheckinReceived,
+            "action_request_proposed" => Self::ActionRequestProposed,
+            "action_request_approved" => Self::ActionRequestApproved,
+            "action_request_rejected" => Self::ActionRequestRejected,
+            "action_request_execution" => Self::ActionRequestExecution,
             "audit_action" => Self::AuditAction,
             "outbox_event" => Self::OutboxEvent,
             "outbox_delivery" => Self::OutboxDelivery,
@@ -238,6 +250,7 @@ pub enum WorkbenchTraceSource {
     HealthPlans,
     TaskInstances,
     Checkins,
+    ActionRequests,
     AuditLogs,
     EventOutbox,
     OutboxDeliveries,
@@ -251,6 +264,7 @@ impl WorkbenchTraceSource {
             Self::HealthPlans => "health_plans",
             Self::TaskInstances => "task_instances",
             Self::Checkins => "checkins",
+            Self::ActionRequests => "action_requests",
             Self::AuditLogs => "audit_logs",
             Self::EventOutbox => "event_outbox",
             Self::OutboxDeliveries => "outbox_deliveries",
@@ -279,6 +293,7 @@ impl<'de> Deserialize<'de> for WorkbenchTraceSource {
             "health_plans" => Self::HealthPlans,
             "task_instances" => Self::TaskInstances,
             "checkins" => Self::Checkins,
+            "action_requests" => Self::ActionRequests,
             "audit_logs" => Self::AuditLogs,
             "event_outbox" => Self::EventOutbox,
             "outbox_deliveries" => Self::OutboxDeliveries,
@@ -294,6 +309,11 @@ pub enum WorkbenchTraceWarningCode {
     MissingRelatedTask,
     MissingRelatedPlan,
     MissingRelatedEvent,
+    ActionRequestProjectionTruncated,
+    InvalidActionRequestProjection,
+    ActionRequestAuditsTruncated,
+    ActionRequestEventsTruncated,
+    ActionRequestDeliveriesTruncated,
     Unknown(String),
 }
 
@@ -305,6 +325,11 @@ impl WorkbenchTraceWarningCode {
             Self::MissingRelatedTask => "missing_related_task",
             Self::MissingRelatedPlan => "missing_related_plan",
             Self::MissingRelatedEvent => "missing_related_event",
+            Self::ActionRequestProjectionTruncated => "action_request_projection_truncated",
+            Self::InvalidActionRequestProjection => "invalid_action_request_projection",
+            Self::ActionRequestAuditsTruncated => "action_request_audits_truncated",
+            Self::ActionRequestEventsTruncated => "action_request_events_truncated",
+            Self::ActionRequestDeliveriesTruncated => "action_request_deliveries_truncated",
             Self::Unknown(value) => value.as_str(),
         }
     }
@@ -331,6 +356,11 @@ impl<'de> Deserialize<'de> for WorkbenchTraceWarningCode {
             "missing_related_task" => Self::MissingRelatedTask,
             "missing_related_plan" => Self::MissingRelatedPlan,
             "missing_related_event" => Self::MissingRelatedEvent,
+            "action_request_projection_truncated" => Self::ActionRequestProjectionTruncated,
+            "invalid_action_request_projection" => Self::InvalidActionRequestProjection,
+            "action_request_audits_truncated" => Self::ActionRequestAuditsTruncated,
+            "action_request_events_truncated" => Self::ActionRequestEventsTruncated,
+            "action_request_deliveries_truncated" => Self::ActionRequestDeliveriesTruncated,
             _ => Self::Unknown(value),
         })
     }
@@ -673,6 +703,96 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&trace.entries[1].kind).unwrap(),
             json!("delivery_succeeded")
+        );
+    }
+
+    #[test]
+    fn trace_shape_accepts_action_request_literals() {
+        let trace: WorkbenchAlertTrace = serde_json::from_value(json!({
+            "alert_id": "alert-1",
+            "partial": true,
+            "warnings": [{
+                "code": "action_request_projection_truncated",
+                "message": "ActionRequest projection limited to the latest request",
+                "source": "action_requests"
+            }, {
+                "code": "invalid_action_request_projection",
+                "message": "ActionRequest document could not be projected",
+                "source": "action_requests"
+            }],
+            "entries": [
+                {
+                    "id": "action-request:req-1:proposal",
+                    "occurred_at": "2026-06-01T00:01:00Z",
+                    "kind": "action_request_proposed",
+                    "source": "action_requests",
+                    "title": "ActionRequest proposed",
+                    "metadata": { "action_request_id": "req-1" }
+                },
+                {
+                    "id": "action-request:req-1:approved",
+                    "occurred_at": "2026-06-01T00:02:00Z",
+                    "kind": "action_request_approved",
+                    "source": "action_requests",
+                    "title": "ActionRequest approved",
+                    "metadata": { "approval_state": "approved" }
+                },
+                {
+                    "id": "action-request:req-2:rejected",
+                    "occurred_at": "2026-06-01T00:03:00Z",
+                    "kind": "action_request_rejected",
+                    "source": "action_requests",
+                    "title": "ActionRequest rejected",
+                    "metadata": { "approval_state": "rejected" }
+                },
+                {
+                    "id": "action-request:req-1:execution",
+                    "occurred_at": "2026-06-01T00:04:00Z",
+                    "kind": "action_request_execution",
+                    "source": "action_requests",
+                    "title": "ActionRequest execution succeeded",
+                    "metadata": { "execution_state": "succeeded" }
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            trace.warnings[0].code,
+            WorkbenchTraceWarningCode::ActionRequestProjectionTruncated
+        );
+        assert_eq!(
+            trace.warnings[0].source,
+            Some(WorkbenchTraceSource::ActionRequests)
+        );
+        assert_eq!(
+            trace.warnings[1].code,
+            WorkbenchTraceWarningCode::InvalidActionRequestProjection
+        );
+        assert_eq!(
+            trace.warnings[1].source,
+            Some(WorkbenchTraceSource::ActionRequests)
+        );
+        assert_eq!(
+            trace.entries[0].kind,
+            WorkbenchTraceEntryKind::ActionRequestProposed
+        );
+        assert_eq!(
+            trace.entries[1].kind,
+            WorkbenchTraceEntryKind::ActionRequestApproved
+        );
+        assert_eq!(
+            trace.entries[2].kind,
+            WorkbenchTraceEntryKind::ActionRequestRejected
+        );
+        assert_eq!(
+            trace.entries[3].kind,
+            WorkbenchTraceEntryKind::ActionRequestExecution
+        );
+        assert_eq!(trace.entries[0].source, WorkbenchTraceSource::ActionRequests);
+        assert_eq!(
+            serde_json::to_value(&trace.entries[0].kind).unwrap(),
+            json!("action_request_proposed")
         );
     }
 

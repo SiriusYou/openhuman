@@ -175,7 +175,19 @@ function formatTraceActor(actor: CoreWorkbenchTraceActor | null | undefined, non
   return actor.id ? `${labelFromLiteral(actor.type)} · ${actor.id}` : labelFromLiteral(actor.type);
 }
 
-function traceLane(entry: CoreWorkbenchTraceEntry): 'Step' | 'Event' | 'Delivery' | 'Audit' {
+function isActionRequestLifecycleKind(entry: CoreWorkbenchTraceEntry) {
+  return (
+    entry.kind === 'action_request_proposed' ||
+    entry.kind === 'action_request_approved' ||
+    entry.kind === 'action_request_rejected' ||
+    entry.kind === 'action_request_execution'
+  );
+}
+
+function traceLane(entry: CoreWorkbenchTraceEntry): 'Step' | 'Action' | 'Event' | 'Delivery' | 'Audit' {
+  if (isActionRequestLifecycleKind(entry)) {
+    return 'Action';
+  }
   if (
     entry.kind === 'health_plan_state' ||
     entry.kind === 'task_state' ||

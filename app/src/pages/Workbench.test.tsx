@@ -425,6 +425,153 @@ describe('Workbench', () => {
     expect(drawer).toHaveTextContent('alert_type: missed_checkin');
   });
 
+  it('renders ActionRequest lifecycle entries in a fifth Action lane while keeping Event and Audit lanes mixed in order', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace.mockResolvedValueOnce({
+      ...baseTrace,
+      warnings: [
+        {
+          code: 'action_request_projection_truncated',
+          message: 'ActionRequest projection limited to the latest request',
+          source: 'action_requests',
+        },
+      ],
+      entries: [
+        {
+          id: 'action-request:req-1:proposal',
+          occurred_at: '2026-06-01T00:01:00Z',
+          kind: 'action_request_proposed',
+          source: 'action_requests',
+          title: 'ActionRequest proposed',
+          detail: null,
+          actor: { type: 'agent', id: 'openclaw-youpet-consumer' },
+          related_type: 'action_request',
+          related_id: 'req-1',
+          severity: null,
+          metadata: { action_request_id: 'req-1' },
+        },
+        {
+          id: 'event:event-req-1',
+          occurred_at: '2026-06-01T00:01:30Z',
+          kind: 'outbox_event',
+          source: 'event_outbox',
+          title: 'Event action_request.created',
+          detail: null,
+          actor: null,
+          related_type: 'action_request',
+          related_id: 'req-1',
+          severity: null,
+          metadata: { event_type: 'action_request.created' },
+        },
+        {
+          id: 'audit:req-1:version-2',
+          occurred_at: '2026-06-01T00:01:45Z',
+          kind: 'audit_action',
+          source: 'audit_logs',
+          title: 'ActionRequest lifecycle audit row written',
+          detail: null,
+          actor: { type: 'system', id: 'core' },
+          related_type: 'action_request',
+          related_id: 'req-1',
+          severity: null,
+          metadata: { action: 'action_request.created' },
+        },
+        {
+          id: 'action-request:req-1:approved',
+          occurred_at: '2026-06-01T00:02:00Z',
+          kind: 'action_request_approved',
+          source: 'action_requests',
+          title: 'ActionRequest approved',
+          detail: null,
+          actor: { type: 'operator', id: 'user-1' },
+          related_type: 'action_request',
+          related_id: 'req-1',
+          severity: null,
+          metadata: { approval_state: 'approved' },
+        },
+        {
+          id: 'action-request:req-2:rejected',
+          occurred_at: '2026-06-01T00:03:00Z',
+          kind: 'action_request_rejected',
+          source: 'action_requests',
+          title: 'ActionRequest rejected',
+          detail: null,
+          actor: { type: 'operator', id: 'user-2' },
+          related_type: 'action_request',
+          related_id: 'req-2',
+          severity: null,
+          metadata: { approval_state: 'rejected' },
+        },
+        {
+          id: 'action-request:req-1:execution',
+          occurred_at: '2026-06-01T00:04:00Z',
+          kind: 'action_request_execution',
+          source: 'action_requests',
+          title: 'ActionRequest execution succeeded',
+          detail: null,
+          actor: null,
+          related_type: 'action_request',
+          related_id: 'req-1',
+          severity: null,
+          metadata: { execution_state: 'succeeded' },
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+
+    const drawer = await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
+    expect(within(drawer).getByText('Action Request Projection Truncated')).toBeInTheDocument();
+    expect(within(drawer).getAllByText('Action Requests').length).toBeGreaterThan(0);
+
+    const items = within(drawer).getAllByRole('listitem');
+    const findItem = (title: string) =>
+      items.find(item => within(item).queryByText(title)) as HTMLElement | undefined;
+
+    const proposedItem = findItem('ActionRequest proposed');
+    const eventItem = findItem('Event action_request.created');
+    const auditItem = findItem('ActionRequest lifecycle audit row written');
+    const approvedItem = findItem('ActionRequest approved');
+    const rejectedItem = findItem('ActionRequest rejected');
+    const executionItem = findItem('ActionRequest execution succeeded');
+
+    expect(proposedItem).toBeDefined();
+    expect(eventItem).toBeDefined();
+    expect(auditItem).toBeDefined();
+    expect(approvedItem).toBeDefined();
+    expect(rejectedItem).toBeDefined();
+    expect(executionItem).toBeDefined();
+
+    expect(within(proposedItem as HTMLElement).getByText('Action')).toBeInTheDocument();
+    expect(within(approvedItem as HTMLElement).getByText('Action')).toBeInTheDocument();
+    expect(within(rejectedItem as HTMLElement).getByText('Action')).toBeInTheDocument();
+    expect(within(executionItem as HTMLElement).getByText('Action')).toBeInTheDocument();
+    expect(within(eventItem as HTMLElement).getByText('Event')).toBeInTheDocument();
+    expect(within(auditItem as HTMLElement).getByText('Audit')).toBeInTheDocument();
+
+    const itemTexts = items.map(item => item.textContent ?? '');
+    const proposedIndex = itemTexts.findIndex(text => text.includes('ActionRequest proposed'));
+    const eventIndex = itemTexts.findIndex(text => text.includes('Event action_request.created'));
+    const auditIndex = itemTexts.findIndex(text =>
+      text.includes('ActionRequest lifecycle audit row written')
+    );
+    const approvedIndex = itemTexts.findIndex(text => text.includes('ActionRequest approved'));
+    const rejectedIndex = itemTexts.findIndex(text => text.includes('ActionRequest rejected'));
+    const executionIndex = itemTexts.findIndex(text =>
+      text.includes('ActionRequest execution succeeded')
+    );
+
+    expect(proposedIndex).toBeGreaterThanOrEqual(0);
+    expect(eventIndex).toBeGreaterThan(proposedIndex);
+    expect(auditIndex).toBeGreaterThan(eventIndex);
+    expect(approvedIndex).toBeGreaterThan(auditIndex);
+    expect(rejectedIndex).toBeGreaterThan(approvedIndex);
+    expect(executionIndex).toBeGreaterThan(rejectedIndex);
+  });
+
   it('renders an unavailable workflow identity when Core returns workflow null', async () => {
     mockClient.listAlerts.mockResolvedValue([baseAlert]);
     mockClient.getAlertTrace.mockResolvedValueOnce({ ...baseTrace, workflow: null });

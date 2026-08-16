@@ -9,6 +9,10 @@ export type CoreWorkbenchTraceEntryKind =
   | 'health_plan_state'
   | 'task_state'
   | 'checkin_received'
+  | 'action_request_proposed'
+  | 'action_request_approved'
+  | 'action_request_rejected'
+  | 'action_request_execution'
   | 'audit_action'
   | 'outbox_event'
   | 'outbox_delivery'
@@ -22,6 +26,7 @@ export type CoreWorkbenchTraceSource =
   | 'health_plans'
   | 'task_instances'
   | 'checkins'
+  | 'action_requests'
   | 'audit_logs'
   | 'event_outbox'
   | 'outbox_deliveries'
@@ -32,6 +37,11 @@ export type CoreWorkbenchTraceWarningCode =
   | 'missing_related_task'
   | 'missing_related_plan'
   | 'missing_related_event'
+  | 'action_request_projection_truncated'
+  | 'invalid_action_request_projection'
+  | 'action_request_audits_truncated'
+  | 'action_request_events_truncated'
+  | 'action_request_deliveries_truncated'
   | FutureCoreLiteral;
 export type CoreWorkbenchTraceSeverity = CoreAlertSeverity | FutureCoreLiteral;
 
