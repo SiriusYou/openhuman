@@ -37,11 +37,14 @@ export type CoreWorkbenchTraceWarningCode =
   | 'missing_related_task'
   | 'missing_related_plan'
   | 'missing_related_event'
+  | 'missing_related_action_request'
   | 'action_request_projection_truncated'
   | 'invalid_action_request_projection'
   | 'action_request_audits_truncated'
   | 'action_request_events_truncated'
   | 'action_request_deliveries_truncated'
+  | 'action_request_links_truncated'
+  | 'trace_reserved_budget_exceeded'
   | FutureCoreLiteral;
 export type CoreWorkbenchTraceSeverity = CoreAlertSeverity | FutureCoreLiteral;
 

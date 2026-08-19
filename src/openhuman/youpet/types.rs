@@ -309,11 +309,14 @@ pub enum WorkbenchTraceWarningCode {
     MissingRelatedTask,
     MissingRelatedPlan,
     MissingRelatedEvent,
+    MissingRelatedActionRequest,
     ActionRequestProjectionTruncated,
     InvalidActionRequestProjection,
     ActionRequestAuditsTruncated,
     ActionRequestEventsTruncated,
     ActionRequestDeliveriesTruncated,
+    ActionRequestLinksTruncated,
+    TraceReservedBudgetExceeded,
     Unknown(String),
 }
 
@@ -325,11 +328,14 @@ impl WorkbenchTraceWarningCode {
             Self::MissingRelatedTask => "missing_related_task",
             Self::MissingRelatedPlan => "missing_related_plan",
             Self::MissingRelatedEvent => "missing_related_event",
+            Self::MissingRelatedActionRequest => "missing_related_action_request",
             Self::ActionRequestProjectionTruncated => "action_request_projection_truncated",
             Self::InvalidActionRequestProjection => "invalid_action_request_projection",
             Self::ActionRequestAuditsTruncated => "action_request_audits_truncated",
             Self::ActionRequestEventsTruncated => "action_request_events_truncated",
             Self::ActionRequestDeliveriesTruncated => "action_request_deliveries_truncated",
+            Self::ActionRequestLinksTruncated => "action_request_links_truncated",
+            Self::TraceReservedBudgetExceeded => "trace_reserved_budget_exceeded",
             Self::Unknown(value) => value.as_str(),
         }
     }
@@ -356,11 +362,14 @@ impl<'de> Deserialize<'de> for WorkbenchTraceWarningCode {
             "missing_related_task" => Self::MissingRelatedTask,
             "missing_related_plan" => Self::MissingRelatedPlan,
             "missing_related_event" => Self::MissingRelatedEvent,
+            "missing_related_action_request" => Self::MissingRelatedActionRequest,
             "action_request_projection_truncated" => Self::ActionRequestProjectionTruncated,
             "invalid_action_request_projection" => Self::InvalidActionRequestProjection,
             "action_request_audits_truncated" => Self::ActionRequestAuditsTruncated,
             "action_request_events_truncated" => Self::ActionRequestEventsTruncated,
             "action_request_deliveries_truncated" => Self::ActionRequestDeliveriesTruncated,
+            "action_request_links_truncated" => Self::ActionRequestLinksTruncated,
+            "trace_reserved_budget_exceeded" => Self::TraceReservedBudgetExceeded,
             _ => Self::Unknown(value),
         })
     }
@@ -719,6 +728,14 @@ mod tests {
                 "code": "invalid_action_request_projection",
                 "message": "ActionRequest document could not be projected",
                 "source": "action_requests"
+            }, {
+                "code": "missing_related_action_request",
+                "message": "alert related action_request was not found",
+                "source": "action_requests"
+            }, {
+                "code": "action_request_links_truncated",
+                "message": "ActionRequest link identifiers limited to 3 values",
+                "source": "action_requests"
             }],
             "entries": [
                 {
@@ -768,6 +785,14 @@ mod tests {
         assert_eq!(
             trace.warnings[1].code,
             WorkbenchTraceWarningCode::InvalidActionRequestProjection
+        );
+        assert_eq!(
+            trace.warnings[2].code,
+            WorkbenchTraceWarningCode::MissingRelatedActionRequest
+        );
+        assert_eq!(
+            trace.warnings[3].code,
+            WorkbenchTraceWarningCode::ActionRequestLinksTruncated
         );
         assert_eq!(
             trace.warnings[1].source,

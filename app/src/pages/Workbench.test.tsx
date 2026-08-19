@@ -425,6 +425,51 @@ describe('Workbench', () => {
     expect(drawer).toHaveTextContent('alert_type: missed_checkin');
   });
 
+  it('renders translated titles for missing ActionRequest and truncated link warnings', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace.mockResolvedValueOnce({
+      ...baseTrace,
+      warnings: [
+        {
+          code: 'missing_related_action_request',
+          message: 'alert related action_request was not found',
+          source: 'action_requests',
+        },
+        {
+          code: 'action_request_links_truncated',
+          message: 'ActionRequest link identifiers limited to 3 values',
+          source: 'action_requests',
+        },
+        {
+          code: 'trace_reserved_budget_exceeded',
+          message: 'Trace reserved bundle limited to 7 entries',
+          source: null,
+        },
+      ],
+      entries: baseTrace.entries,
+    });
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+
+    const drawer = await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
+    expect(within(drawer).getByText('Missing related ActionRequest')).toBeInTheDocument();
+    expect(
+      within(drawer).getByText('alert related action_request was not found')
+    ).toBeInTheDocument();
+    expect(within(drawer).getByText('ActionRequest links truncated')).toBeInTheDocument();
+    expect(
+      within(drawer).getByText('ActionRequest link identifiers limited to 3 values')
+    ).toBeInTheDocument();
+    expect(within(drawer).getByText('Trace reserved budget exceeded')).toBeInTheDocument();
+    expect(
+      within(drawer).getByText('Trace reserved bundle limited to 7 entries')
+    ).toBeInTheDocument();
+    expect(within(drawer).getAllByText('Action Requests').length).toBeGreaterThan(0);
+  });
+
   it('renders ActionRequest lifecycle entries in a fifth Action lane while keeping Event and Audit lanes mixed in order', async () => {
     mockClient.listAlerts.mockResolvedValue([baseAlert]);
     mockClient.getAlertTrace.mockResolvedValueOnce({
@@ -448,7 +493,17 @@ describe('Workbench', () => {
           related_type: 'action_request',
           related_id: 'req-1',
           severity: null,
-          metadata: { action_request_id: 'req-1' },
+          metadata: {
+            action_request_id: 'req-1',
+            action_type: 'task.escalate',
+            target_type: 'task_instance',
+            target_id: 'task-1',
+            risk: 'high',
+            policy_outcome: 'require_approval',
+            required_approver_class: 'operator',
+            domain_event_ids: ['evt-task-missed-1'],
+            proposal_event_id: 'evt-task-missed-1',
+          },
         },
         {
           id: 'event:event-req-1',
@@ -513,7 +568,7 @@ describe('Workbench', () => {
           related_type: 'action_request',
           related_id: 'req-1',
           severity: null,
-          metadata: { execution_state: 'succeeded' },
+          metadata: { execution_state: 'succeeded', result_outcome_code: 'sent_to_operator' },
         },
       ],
     });
@@ -546,9 +601,14 @@ describe('Workbench', () => {
     expect(executionItem).toBeDefined();
 
     expect(within(proposedItem as HTMLElement).getByText('Action')).toBeInTheDocument();
+    expect(
+      within(proposedItem as HTMLElement).getByText('task_instance / task-1')
+    ).toBeInTheDocument();
+    expect(within(proposedItem as HTMLElement).getByText('task.escalate')).toBeInTheDocument();
     expect(within(approvedItem as HTMLElement).getByText('Action')).toBeInTheDocument();
     expect(within(rejectedItem as HTMLElement).getByText('Action')).toBeInTheDocument();
     expect(within(executionItem as HTMLElement).getByText('Action')).toBeInTheDocument();
+    expect(within(executionItem as HTMLElement).getByText('sent_to_operator')).toBeInTheDocument();
     expect(within(eventItem as HTMLElement).getByText('Event')).toBeInTheDocument();
     expect(within(auditItem as HTMLElement).getByText('Audit')).toBeInTheDocument();
 
