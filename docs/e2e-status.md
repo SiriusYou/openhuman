@@ -3,7 +3,7 @@
 Living tracking document for the OpenHuman E2E test suite. Updated whenever
 specs are added, fixed, or start failing.
 
-**Last updated:** 2026-05-20
+**Last updated:** 2026-08-20
 **Total specs:** 66 (11 categories)
 **Runner:** WDIO + Appium Chromium on the CEF desktop binary
 
@@ -31,7 +31,10 @@ L = Linux-only spec
 
 ## How to update this document
 
-- **Adding a spec**: add it to the coverage matrix below and to `e2e-run-all-flows.sh`
+- **Adding a generic suite spec**: add it to the coverage matrix below and to
+  `e2e-run-all-flows.sh`
+- **Adding a cross-repo certifying spec**: list it in the separate matrix below
+  and name the exact root harness that supplies its external fixtures
 - **Fixing an issue**: strike through the entry or remove it from Known Issues
 - **A spec starts failing**: add it to the Known Issues section with severity + status tag
 - **Pre-flight check**: `bash app/scripts/e2e-preflight.sh`
@@ -62,6 +65,16 @@ L = Linux-only spec
 | channels-smoke.spec.ts | Channels surface mount | shallow | No channel feature validation |
 | action-request-inbox.spec.ts | ActionRequest inbox route mount (M1.2.3) | shallow | Decision mutations covered by Vitest bridge suite; live Core fixtures not wired |
 | insights-dashboard.spec.ts | Insights panel | shallow | No data validation |
+
+### Cross-repo certifying specs
+
+These specs require fixtures and evidence authority outside the generic
+OpenHuman navigation suite. They are invoked by the named A-core harness rather
+than `e2e-run-all-flows.sh`.
+
+| Spec | Feature covered | Certifying harness |
+|------|-----------------|--------------------|
+| workbench-workflow-trace.spec.ts | M1.3.2/M1.3.3 workflow failure, retry, recovery, and provenance trace | `SiriusYou/A-core` `scripts/m132-workflow-trace-browser-smoke.sh` |
 
 ### Chat (10 specs)
 
