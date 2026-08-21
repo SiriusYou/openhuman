@@ -224,6 +224,19 @@ fn schema_for_rpc_method_finds_internal_youpet_methods() {
         ("openhuman.youpet_ack_alert", "ack_alert"),
         ("openhuman.youpet_resolve_alert", "resolve_alert"),
         ("openhuman.youpet_trace_alert", "trace_alert"),
+        (
+            "openhuman.youpet_list_action_requests",
+            "list_action_requests",
+        ),
+        ("openhuman.youpet_get_action_request", "get_action_request"),
+        (
+            "openhuman.youpet_approve_action_request",
+            "approve_action_request",
+        ),
+        (
+            "openhuman.youpet_reject_action_request",
+            "reject_action_request",
+        ),
     ] {
         let schema = schema_for_rpc_method(method)
             .unwrap_or_else(|| panic!("{method} should be internally routable"));
@@ -242,7 +255,16 @@ fn rpc_method_from_parts_does_not_expose_internal_mcp_audit_list() {
 
 #[test]
 fn rpc_method_from_parts_does_not_expose_internal_youpet_methods() {
-    for function in ["list_alerts", "ack_alert", "resolve_alert", "trace_alert"] {
+    for function in [
+        "list_alerts",
+        "ack_alert",
+        "resolve_alert",
+        "trace_alert",
+        "list_action_requests",
+        "get_action_request",
+        "approve_action_request",
+        "reject_action_request",
+    ] {
         assert!(
             rpc_method_from_parts("youpet", function).is_none(),
             "internal YouPet RPC must not appear in the public controller registry"

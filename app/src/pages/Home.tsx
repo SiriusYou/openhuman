@@ -349,6 +349,41 @@ const Home = () => {
           </svg>
         </button>
 
+        <button
+          onClick={() => navigate('/action-requests')}
+          className="mt-3 w-full bg-white dark:bg-neutral-900 rounded-lg shadow-soft border border-stone-200 dark:border-neutral-800 p-4 flex items-center gap-3 text-left hover:border-primary-300 dark:hover:border-primary-500/40 transition-colors animate-fade-up"
+          data-testid="home-action-request-inbox">
+          <div className="w-9 h-9 rounded-full bg-sky-50 dark:bg-sky-500/10 flex items-center justify-center flex-shrink-0">
+            <svg
+              className="w-4.5 h-4.5 text-sky-600 dark:text-sky-300"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.8}
+                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium text-stone-900 dark:text-neutral-100">
+              {t('home.youpetActionRequests')}
+            </div>
+            <div className="text-xs text-stone-500 dark:text-neutral-400">
+              {t('home.youpetActionRequestsDescription')}
+            </div>
+          </div>
+          <svg
+            className="w-4 h-4 text-stone-400 dark:text-neutral-500 flex-shrink-0"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+
         {showEarlyBirdy && <EarlyBirdyBanner onDismiss={handleDismissEarlyBirdy} />}
 
         <DiscordBanner />

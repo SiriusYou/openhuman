@@ -61,11 +61,30 @@ const baseAlert = {
 
 const baseTrace = {
   alert_id: 'alert-1',
+  workflow: {
+    type: 'health_plan',
+    id: 'plan-1',
+    task_id: 'task-1',
+    openclaw_flow_id: 'flow-plan-1',
+  },
   partial: true,
   warnings: [
     { code: 'trace_truncated', message: 'Trace limited to 50 entries', source: 'event_outbox' },
   ],
   entries: [
+    {
+      id: 'health-plan:plan-1:state',
+      occurred_at: '2026-05-31T23:59:00Z',
+      kind: 'health_plan_state',
+      source: 'health_plans',
+      title: 'Health plan active',
+      detail: 'Daily check-in',
+      actor: null,
+      related_type: 'health_plan',
+      related_id: 'plan-1',
+      severity: null,
+      metadata: { status: 'active' },
+    },
     {
       id: 'alert:alert-1',
       occurred_at: '2026-06-01T00:00:00Z',
@@ -78,6 +97,45 @@ const baseTrace = {
       related_id: 'task-1',
       severity: 'critical',
       metadata: { alert_type: 'missed_checkin', tags: ['late', 'critical'] },
+    },
+    {
+      id: 'audit:nack-1',
+      occurred_at: '2026-06-01T00:01:00Z',
+      kind: 'delivery_failed',
+      source: 'audit_logs',
+      title: 'Delivery failed; retry scheduled',
+      detail: 'provider timeout',
+      actor: { type: 'agent', id: 'openclaw-youpet-consumer' },
+      related_type: 'event_outbox',
+      related_id: 'event-1',
+      severity: null,
+      metadata: { consumer: 'openclaw', attempts: 1 },
+    },
+    {
+      id: 'audit:ack-1',
+      occurred_at: '2026-06-01T00:02:00Z',
+      kind: 'delivery_succeeded',
+      source: 'audit_logs',
+      title: 'Delivery succeeded',
+      detail: null,
+      actor: { type: 'agent', id: 'openclaw-youpet-consumer' },
+      related_type: 'event_outbox',
+      related_id: 'event-2',
+      severity: null,
+      metadata: { consumer: 'openclaw', attempts: 0, recovered: false },
+    },
+    {
+      id: 'audit:ack-2',
+      occurred_at: '2026-06-01T00:03:00Z',
+      kind: 'delivery_recovered',
+      source: 'audit_logs',
+      title: 'Delivery recovered',
+      detail: null,
+      actor: { type: 'agent', id: 'openclaw-youpet-consumer' },
+      related_type: 'event_outbox',
+      related_id: 'event-1',
+      severity: null,
+      metadata: { consumer: 'openclaw', attempts: 1, recovered: true },
     },
   ],
 };
@@ -342,7 +400,11 @@ describe('Workbench', () => {
     await user.click(screen.getByRole('button', { name: 'Trace' }));
 
     expect(mockClient.getAlertTrace).toHaveBeenCalledWith('alert-1');
-    const drawer = await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    const drawer = await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
+    const workflowSummary = within(drawer).getByRole('region', { name: 'Workflow summary' });
+    expect(workflowSummary).toBeInTheDocument();
+    expect(within(drawer).getAllByText('Daily check-in').length).toBeGreaterThan(0);
+    expect(workflowSummary).toHaveTextContent('flow-plan-1');
     expect(within(drawer).getByText('Alert created')).toBeInTheDocument();
     expect(within(drawer).getByText('Critical missed check-in alert.')).toBeInTheDocument();
     expect(within(drawer).getByText('Alert Created')).toBeInTheDocument();
@@ -351,7 +413,238 @@ describe('Workbench', () => {
     expect(within(drawer).getAllByText('task_instance / task-1')).toHaveLength(2);
     expect(within(drawer).getByText('Trace Truncated')).toBeInTheDocument();
     expect(within(drawer).getByText('Trace limited to 50 entries')).toBeInTheDocument();
+    expect(within(drawer).getAllByText('Step').length).toBeGreaterThan(0);
+    expect(within(drawer).getAllByText('Event').length).toBeGreaterThan(0);
+    expect(within(drawer).getAllByText('Delivery').length).toBeGreaterThan(0);
+    expect(within(drawer).getByText('Failed · Retry scheduled')).toBeInTheDocument();
+    const succeededEntry = within(drawer).getByText('Delivery succeeded').closest('li');
+    expect(succeededEntry).not.toBeNull();
+    expect(within(succeededEntry as HTMLElement).getByText('Delivery')).toBeInTheDocument();
+    expect(within(succeededEntry as HTMLElement).getByText('Succeeded')).toBeInTheDocument();
+    expect(within(drawer).getByText('Recovered')).toBeInTheDocument();
     expect(drawer).toHaveTextContent('alert_type: missed_checkin');
+  });
+
+  it('renders translated titles for missing ActionRequest and truncated link warnings', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace.mockResolvedValueOnce({
+      ...baseTrace,
+      warnings: [
+        {
+          code: 'missing_related_action_request',
+          message: 'alert related action_request was not found',
+          source: 'action_requests',
+        },
+        {
+          code: 'action_request_links_truncated',
+          message: 'ActionRequest link identifiers limited to 3 values',
+          source: 'action_requests',
+        },
+        {
+          code: 'trace_reserved_budget_exceeded',
+          message: 'Trace reserved bundle limited to 7 entries',
+          source: null,
+        },
+      ],
+      entries: baseTrace.entries,
+    });
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+
+    const drawer = await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
+    expect(within(drawer).getByText('Missing related ActionRequest')).toBeInTheDocument();
+    expect(
+      within(drawer).getByText('alert related action_request was not found')
+    ).toBeInTheDocument();
+    expect(within(drawer).getByText('ActionRequest links truncated')).toBeInTheDocument();
+    expect(
+      within(drawer).getByText('ActionRequest link identifiers limited to 3 values')
+    ).toBeInTheDocument();
+    expect(within(drawer).getByText('Trace reserved budget exceeded')).toBeInTheDocument();
+    expect(
+      within(drawer).getByText('Trace reserved bundle limited to 7 entries')
+    ).toBeInTheDocument();
+    expect(within(drawer).getAllByText('Action Requests').length).toBeGreaterThan(0);
+  });
+
+  it('renders ActionRequest lifecycle entries in a fifth Action lane while keeping Event and Audit lanes mixed in order', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace.mockResolvedValueOnce({
+      ...baseTrace,
+      warnings: [
+        {
+          code: 'action_request_projection_truncated',
+          message: 'ActionRequest projection limited to the latest request',
+          source: 'action_requests',
+        },
+      ],
+      entries: [
+        {
+          id: 'action-request:req-1:proposal',
+          occurred_at: '2026-06-01T00:01:00Z',
+          kind: 'action_request_proposed',
+          source: 'action_requests',
+          title: 'ActionRequest proposed',
+          detail: null,
+          actor: { type: 'agent', id: 'openclaw-youpet-consumer' },
+          related_type: 'action_request',
+          related_id: 'req-1',
+          severity: null,
+          metadata: {
+            action_request_id: 'req-1',
+            action_type: 'task.escalate',
+            target_type: 'task_instance',
+            target_id: 'task-1',
+            risk: 'high',
+            policy_outcome: 'require_approval',
+            required_approver_class: 'operator',
+            domain_event_ids: ['evt-task-missed-1'],
+            proposal_event_id: 'evt-task-missed-1',
+          },
+        },
+        {
+          id: 'event:event-req-1',
+          occurred_at: '2026-06-01T00:01:30Z',
+          kind: 'outbox_event',
+          source: 'event_outbox',
+          title: 'Event action_request.created',
+          detail: null,
+          actor: null,
+          related_type: 'action_request',
+          related_id: 'req-1',
+          severity: null,
+          metadata: { event_type: 'action_request.created' },
+        },
+        {
+          id: 'audit:req-1:version-2',
+          occurred_at: '2026-06-01T00:01:45Z',
+          kind: 'audit_action',
+          source: 'audit_logs',
+          title: 'ActionRequest lifecycle audit row written',
+          detail: null,
+          actor: { type: 'system', id: 'core' },
+          related_type: 'action_request',
+          related_id: 'req-1',
+          severity: null,
+          metadata: { action: 'action_request.created' },
+        },
+        {
+          id: 'action-request:req-1:approved',
+          occurred_at: '2026-06-01T00:02:00Z',
+          kind: 'action_request_approved',
+          source: 'action_requests',
+          title: 'ActionRequest approved',
+          detail: null,
+          actor: { type: 'operator', id: 'user-1' },
+          related_type: 'action_request',
+          related_id: 'req-1',
+          severity: null,
+          metadata: { approval_state: 'approved' },
+        },
+        {
+          id: 'action-request:req-2:rejected',
+          occurred_at: '2026-06-01T00:03:00Z',
+          kind: 'action_request_rejected',
+          source: 'action_requests',
+          title: 'ActionRequest rejected',
+          detail: null,
+          actor: { type: 'operator', id: 'user-2' },
+          related_type: 'action_request',
+          related_id: 'req-2',
+          severity: null,
+          metadata: { approval_state: 'rejected' },
+        },
+        {
+          id: 'action-request:req-1:execution',
+          occurred_at: '2026-06-01T00:04:00Z',
+          kind: 'action_request_execution',
+          source: 'action_requests',
+          title: 'ActionRequest execution succeeded',
+          detail: null,
+          actor: null,
+          related_type: 'action_request',
+          related_id: 'req-1',
+          severity: null,
+          metadata: { execution_state: 'succeeded', result_outcome_code: 'sent_to_operator' },
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+
+    const drawer = await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
+    expect(within(drawer).getByText('Action Request Projection Truncated')).toBeInTheDocument();
+    expect(within(drawer).getAllByText('Action Requests').length).toBeGreaterThan(0);
+
+    const items = within(drawer).getAllByRole('listitem');
+    const findItem = (title: string) =>
+      items.find(item => within(item).queryByText(title)) as HTMLElement | undefined;
+
+    const proposedItem = findItem('ActionRequest proposed');
+    const eventItem = findItem('Event action_request.created');
+    const auditItem = findItem('ActionRequest lifecycle audit row written');
+    const approvedItem = findItem('ActionRequest approved');
+    const rejectedItem = findItem('ActionRequest rejected');
+    const executionItem = findItem('ActionRequest execution succeeded');
+
+    expect(proposedItem).toBeDefined();
+    expect(eventItem).toBeDefined();
+    expect(auditItem).toBeDefined();
+    expect(approvedItem).toBeDefined();
+    expect(rejectedItem).toBeDefined();
+    expect(executionItem).toBeDefined();
+
+    expect(within(proposedItem as HTMLElement).getByText('Action')).toBeInTheDocument();
+    expect(
+      within(proposedItem as HTMLElement).getByText('task_instance / task-1')
+    ).toBeInTheDocument();
+    expect(within(proposedItem as HTMLElement).getByText('task.escalate')).toBeInTheDocument();
+    expect(within(approvedItem as HTMLElement).getByText('Action')).toBeInTheDocument();
+    expect(within(rejectedItem as HTMLElement).getByText('Action')).toBeInTheDocument();
+    expect(within(executionItem as HTMLElement).getByText('Action')).toBeInTheDocument();
+    expect(within(executionItem as HTMLElement).getByText('sent_to_operator')).toBeInTheDocument();
+    expect(within(eventItem as HTMLElement).getByText('Event')).toBeInTheDocument();
+    expect(within(auditItem as HTMLElement).getByText('Audit')).toBeInTheDocument();
+
+    const itemTexts = items.map(item => item.textContent ?? '');
+    const proposedIndex = itemTexts.findIndex(text => text.includes('ActionRequest proposed'));
+    const eventIndex = itemTexts.findIndex(text => text.includes('Event action_request.created'));
+    const auditIndex = itemTexts.findIndex(text =>
+      text.includes('ActionRequest lifecycle audit row written')
+    );
+    const approvedIndex = itemTexts.findIndex(text => text.includes('ActionRequest approved'));
+    const rejectedIndex = itemTexts.findIndex(text => text.includes('ActionRequest rejected'));
+    const executionIndex = itemTexts.findIndex(text =>
+      text.includes('ActionRequest execution succeeded')
+    );
+
+    expect(proposedIndex).toBeGreaterThanOrEqual(0);
+    expect(eventIndex).toBeGreaterThan(proposedIndex);
+    expect(auditIndex).toBeGreaterThan(eventIndex);
+    expect(approvedIndex).toBeGreaterThan(auditIndex);
+    expect(rejectedIndex).toBeGreaterThan(approvedIndex);
+    expect(executionIndex).toBeGreaterThan(rejectedIndex);
+  });
+
+  it('renders an unavailable workflow identity when Core returns workflow null', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.getAlertTrace.mockResolvedValueOnce({ ...baseTrace, workflow: null });
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Trace' }));
+
+    const drawer = await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
+    expect(
+      within(drawer).getByText('Workflow identity is unavailable for this alert.')
+    ).toBeInTheDocument();
   });
 
   it('renders empty trace as an empty state', async () => {
@@ -437,7 +730,7 @@ describe('Workbench', () => {
     const traceButton = screen.getByRole('button', { name: 'Trace' });
     await user.click(traceButton);
 
-    const drawer = await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    const drawer = await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
     expect(drawer).toHaveFocus();
 
     await user.tab({ shift: true });
@@ -450,18 +743,20 @@ describe('Workbench', () => {
 
     await waitFor(() =>
       expect(
-        screen.queryByRole('dialog', { name: 'Alert trace for alert-1' })
+        screen.queryByRole('dialog', { name: 'Workflow trace for alert-1' })
       ).not.toBeInTheDocument()
     );
     expect(traceButton).toHaveFocus();
 
     await user.click(traceButton);
-    const reopenedDrawer = await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    const reopenedDrawer = await screen.findByRole('dialog', {
+      name: 'Workflow trace for alert-1',
+    });
     fireEvent.mouseDown(reopenedDrawer.parentElement as HTMLElement);
 
     await waitFor(() =>
       expect(
-        screen.queryByRole('dialog', { name: 'Alert trace for alert-1' })
+        screen.queryByRole('dialog', { name: 'Workflow trace for alert-1' })
       ).not.toBeInTheDocument()
     );
   });
@@ -480,13 +775,13 @@ describe('Workbench', () => {
     render(<Workbench />);
     await screen.findByText('Buddy missed a check-in.');
     await user.click(screen.getByRole('button', { name: 'Trace' }));
-    await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
     await screen.findByText('Alert created');
 
     await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
 
     await waitFor(() => expect(mockClient.listAlerts).toHaveBeenCalledTimes(2));
-    expect(screen.getByRole('dialog', { name: 'Alert trace for alert-1' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Workflow trace for alert-1' })).toBeInTheDocument();
     expect(screen.getByText('Alert created')).toBeInTheDocument();
     expect(mockClient.getAlertTrace).toHaveBeenCalledTimes(1);
   });
@@ -529,7 +824,7 @@ describe('Workbench', () => {
       entries: [{ ...baseTrace.entries[0], id: 'alert:alert-1', title: 'First stale trace' }],
     });
 
-    const drawer = await screen.findByRole('dialog', { name: 'Alert trace for alert-2' });
+    const drawer = await screen.findByRole('dialog', { name: 'Workflow trace for alert-2' });
     expect(await within(drawer).findByText('Second alert trace')).toBeInTheDocument();
     expect(within(drawer).queryByText('First stale trace')).not.toBeInTheDocument();
   });
@@ -543,14 +838,14 @@ describe('Workbench', () => {
     render(<Workbench />);
     await screen.findByText('Buddy missed a check-in.');
     await user.click(screen.getByRole('button', { name: 'Trace' }));
-    await screen.findByRole('dialog', { name: 'Alert trace for alert-1' });
+    await screen.findByRole('dialog', { name: 'Workflow trace for alert-1' });
     await user.click(screen.getByRole('button', { name: 'Close' }));
 
     pendingTrace.resolve(baseTrace);
 
     await waitFor(() =>
       expect(
-        screen.queryByRole('dialog', { name: 'Alert trace for alert-1' })
+        screen.queryByRole('dialog', { name: 'Workflow trace for alert-1' })
       ).not.toBeInTheDocument()
     );
     expect(screen.queryByText('Alert created')).not.toBeInTheDocument();

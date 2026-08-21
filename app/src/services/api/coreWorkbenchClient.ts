@@ -6,16 +6,27 @@ export type CoreAlertStatus = 'open' | 'acknowledged' | 'resolved' | 'dismissed'
 type FutureCoreLiteral = string & {};
 export type CoreWorkbenchTraceEntryKind =
   | 'alert_created'
+  | 'health_plan_state'
   | 'task_state'
   | 'checkin_received'
+  | 'action_request_proposed'
+  | 'action_request_approved'
+  | 'action_request_rejected'
+  | 'action_request_execution'
   | 'audit_action'
   | 'outbox_event'
   | 'outbox_delivery'
+  | 'delivery_failed'
+  | 'delivery_succeeded'
+  | 'delivery_recovered'
+  | 'delivery_dead_lettered'
   | FutureCoreLiteral;
 export type CoreWorkbenchTraceSource =
   | 'alerts'
+  | 'health_plans'
   | 'task_instances'
   | 'checkins'
+  | 'action_requests'
   | 'audit_logs'
   | 'event_outbox'
   | 'outbox_deliveries'
@@ -24,7 +35,16 @@ export type CoreWorkbenchTraceWarningCode =
   | 'trace_truncated'
   | 'unsupported_related_type'
   | 'missing_related_task'
+  | 'missing_related_plan'
   | 'missing_related_event'
+  | 'missing_related_action_request'
+  | 'action_request_projection_truncated'
+  | 'invalid_action_request_projection'
+  | 'action_request_audits_truncated'
+  | 'action_request_events_truncated'
+  | 'action_request_deliveries_truncated'
+  | 'action_request_links_truncated'
+  | 'trace_reserved_budget_exceeded'
   | FutureCoreLiteral;
 export type CoreWorkbenchTraceSeverity = CoreAlertSeverity | FutureCoreLiteral;
 
@@ -94,8 +114,16 @@ export interface CoreWorkbenchTraceWarning {
   source?: CoreWorkbenchTraceSource | null;
 }
 
+export interface CoreWorkbenchWorkflowIdentity {
+  type: 'health_plan' | FutureCoreLiteral;
+  id: string;
+  task_id?: string | null;
+  openclaw_flow_id?: string | null;
+}
+
 export interface CoreWorkbenchAlertTrace {
   alert_id: string;
+  workflow: CoreWorkbenchWorkflowIdentity | null;
   partial: boolean;
   warnings: CoreWorkbenchTraceWarning[];
   entries: CoreWorkbenchTraceEntry[];

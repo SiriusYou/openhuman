@@ -168,11 +168,20 @@ pub struct CoreWorkbenchAlert {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkbenchTraceEntryKind {
     AlertCreated,
+    HealthPlanState,
     TaskState,
     CheckinReceived,
+    ActionRequestProposed,
+    ActionRequestApproved,
+    ActionRequestRejected,
+    ActionRequestExecution,
     AuditAction,
     OutboxEvent,
     OutboxDelivery,
+    DeliveryFailed,
+    DeliverySucceeded,
+    DeliveryRecovered,
+    DeliveryDeadLettered,
     Unknown(String),
 }
 
@@ -180,11 +189,20 @@ impl WorkbenchTraceEntryKind {
     fn as_str(&self) -> &str {
         match self {
             Self::AlertCreated => "alert_created",
+            Self::HealthPlanState => "health_plan_state",
             Self::TaskState => "task_state",
             Self::CheckinReceived => "checkin_received",
+            Self::ActionRequestProposed => "action_request_proposed",
+            Self::ActionRequestApproved => "action_request_approved",
+            Self::ActionRequestRejected => "action_request_rejected",
+            Self::ActionRequestExecution => "action_request_execution",
             Self::AuditAction => "audit_action",
             Self::OutboxEvent => "outbox_event",
             Self::OutboxDelivery => "outbox_delivery",
+            Self::DeliveryFailed => "delivery_failed",
+            Self::DeliverySucceeded => "delivery_succeeded",
+            Self::DeliveryRecovered => "delivery_recovered",
+            Self::DeliveryDeadLettered => "delivery_dead_lettered",
             Self::Unknown(value) => value.as_str(),
         }
     }
@@ -207,11 +225,20 @@ impl<'de> Deserialize<'de> for WorkbenchTraceEntryKind {
         let value = String::deserialize(deserializer)?;
         Ok(match value.as_str() {
             "alert_created" => Self::AlertCreated,
+            "health_plan_state" => Self::HealthPlanState,
             "task_state" => Self::TaskState,
             "checkin_received" => Self::CheckinReceived,
+            "action_request_proposed" => Self::ActionRequestProposed,
+            "action_request_approved" => Self::ActionRequestApproved,
+            "action_request_rejected" => Self::ActionRequestRejected,
+            "action_request_execution" => Self::ActionRequestExecution,
             "audit_action" => Self::AuditAction,
             "outbox_event" => Self::OutboxEvent,
             "outbox_delivery" => Self::OutboxDelivery,
+            "delivery_failed" => Self::DeliveryFailed,
+            "delivery_succeeded" => Self::DeliverySucceeded,
+            "delivery_recovered" => Self::DeliveryRecovered,
+            "delivery_dead_lettered" => Self::DeliveryDeadLettered,
             _ => Self::Unknown(value),
         })
     }
@@ -220,8 +247,10 @@ impl<'de> Deserialize<'de> for WorkbenchTraceEntryKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkbenchTraceSource {
     Alerts,
+    HealthPlans,
     TaskInstances,
     Checkins,
+    ActionRequests,
     AuditLogs,
     EventOutbox,
     OutboxDeliveries,
@@ -232,8 +261,10 @@ impl WorkbenchTraceSource {
     fn as_str(&self) -> &str {
         match self {
             Self::Alerts => "alerts",
+            Self::HealthPlans => "health_plans",
             Self::TaskInstances => "task_instances",
             Self::Checkins => "checkins",
+            Self::ActionRequests => "action_requests",
             Self::AuditLogs => "audit_logs",
             Self::EventOutbox => "event_outbox",
             Self::OutboxDeliveries => "outbox_deliveries",
@@ -259,8 +290,10 @@ impl<'de> Deserialize<'de> for WorkbenchTraceSource {
         let value = String::deserialize(deserializer)?;
         Ok(match value.as_str() {
             "alerts" => Self::Alerts,
+            "health_plans" => Self::HealthPlans,
             "task_instances" => Self::TaskInstances,
             "checkins" => Self::Checkins,
+            "action_requests" => Self::ActionRequests,
             "audit_logs" => Self::AuditLogs,
             "event_outbox" => Self::EventOutbox,
             "outbox_deliveries" => Self::OutboxDeliveries,
@@ -274,7 +307,16 @@ pub enum WorkbenchTraceWarningCode {
     TraceTruncated,
     UnsupportedRelatedType,
     MissingRelatedTask,
+    MissingRelatedPlan,
     MissingRelatedEvent,
+    MissingRelatedActionRequest,
+    ActionRequestProjectionTruncated,
+    InvalidActionRequestProjection,
+    ActionRequestAuditsTruncated,
+    ActionRequestEventsTruncated,
+    ActionRequestDeliveriesTruncated,
+    ActionRequestLinksTruncated,
+    TraceReservedBudgetExceeded,
     Unknown(String),
 }
 
@@ -284,7 +326,16 @@ impl WorkbenchTraceWarningCode {
             Self::TraceTruncated => "trace_truncated",
             Self::UnsupportedRelatedType => "unsupported_related_type",
             Self::MissingRelatedTask => "missing_related_task",
+            Self::MissingRelatedPlan => "missing_related_plan",
             Self::MissingRelatedEvent => "missing_related_event",
+            Self::MissingRelatedActionRequest => "missing_related_action_request",
+            Self::ActionRequestProjectionTruncated => "action_request_projection_truncated",
+            Self::InvalidActionRequestProjection => "invalid_action_request_projection",
+            Self::ActionRequestAuditsTruncated => "action_request_audits_truncated",
+            Self::ActionRequestEventsTruncated => "action_request_events_truncated",
+            Self::ActionRequestDeliveriesTruncated => "action_request_deliveries_truncated",
+            Self::ActionRequestLinksTruncated => "action_request_links_truncated",
+            Self::TraceReservedBudgetExceeded => "trace_reserved_budget_exceeded",
             Self::Unknown(value) => value.as_str(),
         }
     }
@@ -309,7 +360,16 @@ impl<'de> Deserialize<'de> for WorkbenchTraceWarningCode {
             "trace_truncated" => Self::TraceTruncated,
             "unsupported_related_type" => Self::UnsupportedRelatedType,
             "missing_related_task" => Self::MissingRelatedTask,
+            "missing_related_plan" => Self::MissingRelatedPlan,
             "missing_related_event" => Self::MissingRelatedEvent,
+            "missing_related_action_request" => Self::MissingRelatedActionRequest,
+            "action_request_projection_truncated" => Self::ActionRequestProjectionTruncated,
+            "invalid_action_request_projection" => Self::InvalidActionRequestProjection,
+            "action_request_audits_truncated" => Self::ActionRequestAuditsTruncated,
+            "action_request_events_truncated" => Self::ActionRequestEventsTruncated,
+            "action_request_deliveries_truncated" => Self::ActionRequestDeliveriesTruncated,
+            "action_request_links_truncated" => Self::ActionRequestLinksTruncated,
+            "trace_reserved_budget_exceeded" => Self::TraceReservedBudgetExceeded,
             _ => Self::Unknown(value),
         })
     }
@@ -398,9 +458,22 @@ pub struct WorkbenchTraceWarning {
     pub source: Option<WorkbenchTraceSource>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkbenchWorkflowIdentity {
+    #[serde(rename = "type")]
+    pub workflow_type: String,
+    pub id: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub openclaw_flow_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkbenchAlertTrace {
     pub alert_id: String,
+    #[serde(default)]
+    pub workflow: Option<WorkbenchWorkflowIdentity>,
     pub partial: bool,
     #[serde(default)]
     pub warnings: Vec<WorkbenchTraceWarning>,
@@ -564,31 +637,55 @@ mod tests {
     fn trace_shape_accepts_nullable_fields_warnings_metadata_and_unknowns() {
         let trace: WorkbenchAlertTrace = serde_json::from_value(json!({
             "alert_id": "alert-1",
+            "workflow": {
+                "type": "health_plan",
+                "id": "plan-1",
+                "task_id": "task-1",
+                "openclaw_flow_id": "flow-plan-1"
+            },
             "partial": true,
             "warnings": [{
                 "code": "trace_truncated",
                 "message": "Trace limited to 50 entries",
                 "source": "event_outbox"
             }],
-            "entries": [{
-                "id": "event:event-1",
-                "occurred_at": "2026-06-01T00:00:00Z",
-                "kind": "outbox_event",
-                "source": "event_outbox",
-                "title": "Event emitted",
-                "detail": null,
-                "actor": { "type": "system", "id": null },
-                "related_type": null,
-                "related_id": null,
-                "severity": null,
-                "metadata": {
-                    "event_type": "task.checkin_received",
-                    "delivery_state": ["pending", "acked"]
+            "entries": [
+                {
+                    "id": "event:event-1",
+                    "occurred_at": "2026-06-01T00:00:00Z",
+                    "kind": "outbox_event",
+                    "source": "event_outbox",
+                    "title": "Event emitted",
+                    "detail": null,
+                    "actor": { "type": "system", "id": null },
+                    "related_type": null,
+                    "related_id": null,
+                    "severity": null,
+                    "metadata": {
+                        "event_type": "task.checkin_received",
+                        "delivery_state": ["pending", "acked"]
+                    },
+                    "future_field": "tolerated"
                 },
-                "future_field": "tolerated"
-            }]
+                {
+                    "id": "audit:ack-1",
+                    "occurred_at": "2026-06-01T00:01:00Z",
+                    "kind": "delivery_succeeded",
+                    "source": "audit_logs",
+                    "title": "Delivery succeeded",
+                    "metadata": {
+                        "consumer": "openclaw",
+                        "attempts": 0,
+                        "recovered": false
+                    }
+                }
+            ]
         }))
         .unwrap();
+        assert_eq!(
+            trace.workflow.as_ref().map(|workflow| workflow.id.as_str()),
+            Some("plan-1")
+        );
 
         assert!(trace.partial);
         assert_eq!(
@@ -605,6 +702,125 @@ mod tests {
         assert_eq!(
             trace.entries[0].metadata["event_type"],
             json!("task.checkin_received")
+        );
+        assert_eq!(
+            trace.entries[1].kind,
+            WorkbenchTraceEntryKind::DeliverySucceeded
+        );
+        assert_eq!(trace.entries[1].source, WorkbenchTraceSource::AuditLogs);
+        assert_eq!(trace.entries[1].metadata["attempts"], json!(0));
+        assert_eq!(
+            serde_json::to_value(&trace.entries[1].kind).unwrap(),
+            json!("delivery_succeeded")
+        );
+    }
+
+    #[test]
+    fn trace_shape_accepts_action_request_literals() {
+        let trace: WorkbenchAlertTrace = serde_json::from_value(json!({
+            "alert_id": "alert-1",
+            "partial": true,
+            "warnings": [{
+                "code": "action_request_projection_truncated",
+                "message": "ActionRequest projection limited to the latest request",
+                "source": "action_requests"
+            }, {
+                "code": "invalid_action_request_projection",
+                "message": "ActionRequest document could not be projected",
+                "source": "action_requests"
+            }, {
+                "code": "missing_related_action_request",
+                "message": "alert related action_request was not found",
+                "source": "action_requests"
+            }, {
+                "code": "action_request_links_truncated",
+                "message": "ActionRequest link identifiers limited to 3 values",
+                "source": "action_requests"
+            }],
+            "entries": [
+                {
+                    "id": "action-request:req-1:proposal",
+                    "occurred_at": "2026-06-01T00:01:00Z",
+                    "kind": "action_request_proposed",
+                    "source": "action_requests",
+                    "title": "ActionRequest proposed",
+                    "metadata": { "action_request_id": "req-1" }
+                },
+                {
+                    "id": "action-request:req-1:approved",
+                    "occurred_at": "2026-06-01T00:02:00Z",
+                    "kind": "action_request_approved",
+                    "source": "action_requests",
+                    "title": "ActionRequest approved",
+                    "metadata": { "approval_state": "approved" }
+                },
+                {
+                    "id": "action-request:req-2:rejected",
+                    "occurred_at": "2026-06-01T00:03:00Z",
+                    "kind": "action_request_rejected",
+                    "source": "action_requests",
+                    "title": "ActionRequest rejected",
+                    "metadata": { "approval_state": "rejected" }
+                },
+                {
+                    "id": "action-request:req-1:execution",
+                    "occurred_at": "2026-06-01T00:04:00Z",
+                    "kind": "action_request_execution",
+                    "source": "action_requests",
+                    "title": "ActionRequest execution succeeded",
+                    "metadata": { "execution_state": "succeeded" }
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            trace.warnings[0].code,
+            WorkbenchTraceWarningCode::ActionRequestProjectionTruncated
+        );
+        assert_eq!(
+            trace.warnings[0].source,
+            Some(WorkbenchTraceSource::ActionRequests)
+        );
+        assert_eq!(
+            trace.warnings[1].code,
+            WorkbenchTraceWarningCode::InvalidActionRequestProjection
+        );
+        assert_eq!(
+            trace.warnings[2].code,
+            WorkbenchTraceWarningCode::MissingRelatedActionRequest
+        );
+        assert_eq!(
+            trace.warnings[3].code,
+            WorkbenchTraceWarningCode::ActionRequestLinksTruncated
+        );
+        assert_eq!(
+            trace.warnings[1].source,
+            Some(WorkbenchTraceSource::ActionRequests)
+        );
+        assert_eq!(
+            trace.entries[0].kind,
+            WorkbenchTraceEntryKind::ActionRequestProposed
+        );
+        assert_eq!(
+            trace.entries[1].kind,
+            WorkbenchTraceEntryKind::ActionRequestApproved
+        );
+        assert_eq!(
+            trace.entries[2].kind,
+            WorkbenchTraceEntryKind::ActionRequestRejected
+        );
+        assert_eq!(
+            trace.entries[3].kind,
+            WorkbenchTraceEntryKind::ActionRequestExecution
+        );
+        assert_eq!(
+            trace.entries[0].source,
+            WorkbenchTraceSource::ActionRequests
+        );
+        assert_eq!(
+            serde_json::to_value(&trace.entries[0].kind).unwrap(),
+            json!("action_request_proposed")
         );
     }
 
@@ -691,4 +907,55 @@ mod tests {
             CoreAlertStatusFilter::Status(CoreAlertStatus::Open)
         );
     }
+}
+
+// --- ActionRequest lifecycle (AOS-S1.M1.2.3) ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ActionRequestLifecycleEnvelope {
+    pub action_request: Value,
+    pub row_version: i64,
+    pub id: String,
+    pub tenant_id: String,
+    pub approval_state: String,
+    pub execution_state: String,
+    pub policy_outcome: String,
+    pub correlation_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ActionRequestListResponse {
+    pub items: Vec<ActionRequestLifecycleEnvelope>,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ListActionRequestsRpcParams {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    #[serde(default)]
+    pub approval_state: Option<String>,
+    #[serde(default)]
+    pub execution_state: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GetActionRequestRpcParams {
+    pub action_request_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionRequestDecisionRpcParams {
+    pub action_request_id: String,
+    pub reason: String,
+    pub expected_row_version: i64,
+    /// Required stable per-intent key. Blank/missing is rejected so retries cannot silently mint a new UUID.
+    pub idempotency_key: String,
 }

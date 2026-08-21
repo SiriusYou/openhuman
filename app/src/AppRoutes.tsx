@@ -7,6 +7,7 @@ import PublicRoute from './components/PublicRoute';
 import HumanPage from './features/human/HumanPage';
 import { getIsMobile } from './lib/platform';
 import Accounts from './pages/Accounts';
+import ActionRequestInbox from './pages/ActionRequestInbox';
 import AgentWorkflows from './pages/AgentWorkflows';
 import Channels from './pages/Channels';
 import Home from './pages/Home';
@@ -190,6 +191,15 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute requireAuth={true}>
             <Workbench />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/action-requests"
+        element={
+          <ProtectedRoute requireAuth={true}>
+            <ActionRequestInbox />
           </ProtectedRoute>
         }
       />

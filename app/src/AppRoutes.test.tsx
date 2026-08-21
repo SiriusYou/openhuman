@@ -70,6 +70,9 @@ vi.mock('./pages/Welcome', () => ({
 vi.mock('./pages/Workbench', () => ({
   default: () => <div data-testid="page-workbench">workbench</div>,
 }));
+vi.mock('./pages/ActionRequestInbox', () => ({
+  default: () => <div data-testid="page-action-request-inbox">action-requests</div>,
+}));
 
 const AppRoutes = (await import('./AppRoutes')).default;
 
@@ -82,6 +85,17 @@ describe('AppRoutes', () => {
     );
 
     expect(screen.getByTestId('page-workbench')).toBeInTheDocument();
+    expect(screen.getByTestId('protected-route')).toHaveAttribute('data-require-auth', 'true');
+  });
+
+  it('registers the ActionRequest inbox route behind the protected desktop shell', () => {
+    render(
+      <MemoryRouter initialEntries={['/action-requests']}>
+        <AppRoutes />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByTestId('page-action-request-inbox')).toBeInTheDocument();
     expect(screen.getByTestId('protected-route')).toHaveAttribute('data-require-auth', 'true');
   });
 });

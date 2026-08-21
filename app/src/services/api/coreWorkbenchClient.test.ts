@@ -24,6 +24,12 @@ const alert = (overrides = {}) => ({
 
 const trace = (overrides = {}) => ({
   alert_id: 'alert-1',
+  workflow: {
+    type: 'health_plan',
+    id: 'plan-1',
+    task_id: 'task-1',
+    openclaw_flow_id: 'flow-plan-1',
+  },
   partial: true,
   warnings: [
     { code: 'trace_truncated', message: 'Trace limited to 50 entries', source: 'event_outbox' },
@@ -175,6 +181,7 @@ describe('coreWorkbenchClient', () => {
     const loaded = await client.getAlertTrace('alert-1');
 
     expect(loaded.partial).toBe(true);
+    expect(loaded.workflow?.id).toBe('plan-1');
     expect(loaded.warnings[0]?.code).toBe('trace_truncated');
     expect(loaded.entries[0]?.kind).toBe('outbox_event');
     expect(loaded.entries[0]?.metadata).toEqual({
@@ -221,6 +228,69 @@ describe('coreWorkbenchClient', () => {
     expect(loaded.entries[0]?.kind).toBe('future_kind');
     expect(loaded.entries[0]?.source).toBe('future_source');
     expect(loaded.entries[0]?.severity).toBe('future_severity');
+  });
+
+  it('accepts ActionRequest trace literals from Core unchanged', async () => {
+    mockCallCoreRpc.mockResolvedValueOnce(
+      trace({
+        warnings: [
+          {
+            code: 'action_request_deliveries_truncated',
+            message: 'ActionRequest delivery rows truncated',
+            source: 'outbox_deliveries',
+          },
+          {
+            code: 'invalid_action_request_projection',
+            message: 'ActionRequest document could not be projected',
+            source: 'action_requests',
+          },
+        ],
+        entries: [
+          {
+            ...trace().entries[0],
+            kind: 'action_request_proposed',
+            source: 'action_requests',
+            title: 'ActionRequest proposed',
+          },
+          {
+            ...trace().entries[0],
+            id: 'action-request:req-1:approved',
+            kind: 'action_request_approved',
+            source: 'action_requests',
+            title: 'ActionRequest approved',
+          },
+          {
+            ...trace().entries[0],
+            id: 'action-request:req-2:rejected',
+            kind: 'action_request_rejected',
+            source: 'action_requests',
+            title: 'ActionRequest rejected',
+          },
+          {
+            ...trace().entries[0],
+            id: 'action-request:req-1:execution',
+            kind: 'action_request_execution',
+            source: 'action_requests',
+            title: 'ActionRequest execution succeeded',
+          },
+        ],
+      })
+    );
+    const client = createCoreWorkbenchClient();
+
+    const loaded = await client.getAlertTrace('alert-1');
+
+    expect(loaded.warnings[0]?.code).toBe('action_request_deliveries_truncated');
+    expect(loaded.warnings[0]?.source).toBe('outbox_deliveries');
+    expect(loaded.warnings[1]?.code).toBe('invalid_action_request_projection');
+    expect(loaded.warnings[1]?.source).toBe('action_requests');
+    expect(loaded.entries.map(entry => entry.kind)).toEqual([
+      'action_request_proposed',
+      'action_request_approved',
+      'action_request_rejected',
+      'action_request_execution',
+    ]);
+    expect(loaded.entries.every(entry => entry.source === 'action_requests')).toBe(true);
   });
 
   it('propagates RPC errors to callers', async () => {

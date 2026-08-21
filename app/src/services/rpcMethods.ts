@@ -44,6 +44,10 @@ export const CORE_RPC_METHODS = {
   youpetAckAlert: 'openhuman.youpet_ack_alert',
   youpetResolveAlert: 'openhuman.youpet_resolve_alert',
   youpetTraceAlert: 'openhuman.youpet_trace_alert',
+  youpetListActionRequests: 'openhuman.youpet_list_action_requests',
+  youpetGetActionRequest: 'openhuman.youpet_get_action_request',
+  youpetApproveActionRequest: 'openhuman.youpet_approve_action_request',
+  youpetRejectActionRequest: 'openhuman.youpet_reject_action_request',
 } as const;
 
 export type CoreRpcMethod = (typeof CORE_RPC_METHODS)[keyof typeof CORE_RPC_METHODS];

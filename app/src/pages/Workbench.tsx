@@ -146,9 +146,13 @@ function truncateText(value: string, limit = MAX_METADATA_VALUE_LENGTH): string 
   return value.length > limit ? `${value.slice(0, limit - 1)}…` : value;
 }
 
-function metadataChips(metadata: Record<string, unknown> | undefined) {
+function metadataChips(
+  metadata: Record<string, unknown> | undefined,
+  omitKeys: ReadonlySet<string> = new Set()
+) {
   if (!metadata || typeof metadata !== 'object') return [];
   return Object.keys(metadata)
+    .filter(key => !omitKeys.has(key))
     .sort((left, right) => left.localeCompare(right))
     .slice(0, MAX_METADATA_CHIPS)
     .map(
@@ -162,6 +166,28 @@ function metadataChips(metadata: Record<string, unknown> | undefined) {
     .filter(([, , value]) => value.length > 0);
 }
 
+const ACTION_NAMED_METADATA_KEYS = new Set([
+  'action_request_id',
+  'action_type',
+  'target_type',
+  'target_id',
+  'risk',
+  'policy_outcome',
+  'required_approver_class',
+  'approval_state',
+  'approver_class',
+  'execution_state',
+  'result_outcome_code',
+  'error_code',
+  'error_message',
+]);
+
+function metadataString(metadata: Record<string, unknown>, key: string): string | null {
+  const value = metadata[key];
+  if (typeof value === 'string' && value.trim()) return value;
+  return null;
+}
+
 function labelFromLiteral(value: string): string {
   return value
     .split('_')
@@ -173,6 +199,53 @@ function labelFromLiteral(value: string): string {
 function formatTraceActor(actor: CoreWorkbenchTraceActor | null | undefined, noneLabel: string) {
   if (!actor) return noneLabel;
   return actor.id ? `${labelFromLiteral(actor.type)} · ${actor.id}` : labelFromLiteral(actor.type);
+}
+
+function isActionRequestLifecycleKind(entry: CoreWorkbenchTraceEntry) {
+  return (
+    entry.kind === 'action_request_proposed' ||
+    entry.kind === 'action_request_approved' ||
+    entry.kind === 'action_request_rejected' ||
+    entry.kind === 'action_request_execution'
+  );
+}
+
+function traceLane(
+  entry: CoreWorkbenchTraceEntry
+): 'Step' | 'Action' | 'Event' | 'Delivery' | 'Audit' {
+  if (isActionRequestLifecycleKind(entry)) {
+    return 'Action';
+  }
+  if (
+    entry.kind === 'health_plan_state' ||
+    entry.kind === 'task_state' ||
+    entry.kind === 'checkin_received'
+  ) {
+    return 'Step';
+  }
+  if (
+    entry.kind === 'outbox_delivery' ||
+    entry.kind === 'delivery_failed' ||
+    entry.kind === 'delivery_succeeded' ||
+    entry.kind === 'delivery_recovered' ||
+    entry.kind === 'delivery_dead_lettered'
+  ) {
+    return 'Delivery';
+  }
+  if (entry.kind === 'audit_action' || entry.source === 'audit_logs') return 'Audit';
+  if (entry.source === 'health_plans' || entry.source === 'task_instances') return 'Step';
+  if (entry.source === 'outbox_deliveries') return 'Delivery';
+  return 'Event';
+}
+
+function traceDeliveryStatus(entry: CoreWorkbenchTraceEntry): string | null {
+  if (entry.kind === 'delivery_failed') return 'Failed · Retry scheduled';
+  if (entry.kind === 'delivery_recovered') return 'Recovered';
+  if (entry.kind === 'delivery_succeeded') return 'Succeeded';
+  if (entry.kind === 'delivery_dead_lettered') return 'Dead lettered';
+  if (entry.kind !== 'outbox_delivery') return null;
+  const state = entry.metadata?.state;
+  return typeof state === 'string' ? labelFromLiteral(state) : null;
 }
 
 function WorkbenchAlertContextPanel({
@@ -367,7 +440,7 @@ function WorkbenchTraceDrawer({
         role="dialog"
         aria-modal="true"
         tabIndex={-1}
-        aria-label={t('workbench.trace.dialogLabel', 'Alert trace for {alertId}').replace(
+        aria-label={t('workbench.trace.dialogLabel', 'Workflow trace for {alertId}').replace(
           '{alertId}',
           alert.id
         )}
@@ -420,12 +493,51 @@ function WorkbenchTraceDrawer({
 
               {trace ? (
                 <>
+                  <section
+                    aria-label={t('workbench.trace.workflowSummary', 'Workflow summary')}
+                    className="rounded-lg border border-primary-200 bg-primary-50 p-3 text-sm dark:border-primary-500/30 dark:bg-primary-500/10">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-primary-700 dark:text-primary-300">
+                      {t('workbench.trace.workflowSummary', 'Workflow summary')}
+                    </p>
+                    {trace.workflow ? (
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <div>
+                          <p className="font-medium text-stone-900 dark:text-neutral-100">
+                            {alert.context?.health_plan.title ??
+                              t('workbench.trace.healthPlan', 'Health plan')}
+                          </p>
+                          <p className="break-all text-stone-600 dark:text-neutral-300">
+                            {trace.workflow.type} / {trace.workflow.id}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-stone-600 dark:text-neutral-300">
+                            {alert.context?.pet.name ??
+                              t('workbench.trace.unknownPet', 'Unknown pet')}
+                          </p>
+                          <p className="break-all text-stone-600 dark:text-neutral-300">
+                            {t('workbench.context.flowId', 'Flow ID')}:{' '}
+                            {formatOptional(trace.workflow.openclaw_flow_id, none)}
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-stone-600 dark:text-neutral-300">
+                        {t(
+                          'workbench.trace.workflowUnavailable',
+                          'Workflow identity is unavailable for this alert.'
+                        )}
+                      </p>
+                    )}
+                  </section>
+
                   {trace.partial && trace.warnings.length > 0 && (
                     <div className="space-y-2">
                       {trace.warnings.map(warning => (
                         <TraceWarningNotice
                           key={`${warning.code}:${warning.source ?? ''}`}
                           warning={warning}
+                          t={t}
                         />
                       ))}
                     </div>
@@ -452,15 +564,112 @@ function WorkbenchTraceDrawer({
   );
 }
 
-function TraceWarningNotice({ warning }: { warning: CoreWorkbenchTraceWarning }) {
+const TRACE_WARNING_TITLE_KEYS: Record<string, string> = {
+  missing_related_action_request: 'workbench.trace.warning.missingRelatedActionRequest',
+  action_request_links_truncated: 'workbench.trace.warning.actionRequestLinksTruncated',
+  trace_reserved_budget_exceeded: 'workbench.trace.warning.traceReservedBudgetExceeded',
+};
+
+function TraceWarningNotice({
+  warning,
+  t,
+}: {
+  warning: CoreWorkbenchTraceWarning;
+  t: (key: string, fallback?: string) => string;
+}) {
+  const titleKey = TRACE_WARNING_TITLE_KEYS[warning.code];
+  const title = titleKey
+    ? t(titleKey, labelFromLiteral(warning.code))
+    : labelFromLiteral(warning.code);
   return (
     <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
-      <p className="font-medium">{labelFromLiteral(warning.code)}</p>
+      <p className="font-medium">{title}</p>
       <p>{warning.message}</p>
       {warning.source ? (
         <p className="text-xs opacity-80">{labelFromLiteral(warning.source)}</p>
       ) : null}
     </div>
+  );
+}
+
+function formatActionTarget(metadata: Record<string, unknown>, none: string): string {
+  const targetType = metadataString(metadata, 'target_type');
+  const targetId = metadataString(metadata, 'target_id');
+  if (targetType && targetId) return `${targetType} / ${targetId}`;
+  return targetId ?? targetType ?? none;
+}
+
+function ActionRequestFields({
+  entry,
+  none,
+  t,
+}: {
+  entry: CoreWorkbenchTraceEntry;
+  none: string;
+  t: (key: string, fallback?: string) => string;
+}) {
+  const metadata = entry.metadata ?? {};
+  const fields: Array<[string, string]> = [];
+  const actionRequestId = metadataString(metadata, 'action_request_id');
+  const actionType = metadataString(metadata, 'action_type');
+  const risk = metadataString(metadata, 'risk');
+  const policyOutcome = metadataString(metadata, 'policy_outcome');
+  const requiredApproverClass = metadataString(metadata, 'required_approver_class');
+  const approvalState = metadataString(metadata, 'approval_state');
+  const approverClass = metadataString(metadata, 'approver_class');
+  const executionState = metadataString(metadata, 'execution_state');
+  const resultOutcome = metadataString(metadata, 'result_outcome_code');
+  const errorCode = metadataString(metadata, 'error_code');
+  const errorMessage = metadataString(metadata, 'error_message');
+  if (actionRequestId) {
+    fields.push([t('workbench.trace.actionRequestId', 'Action request'), actionRequestId]);
+  }
+  if (actionType) {
+    fields.push([t('workbench.trace.actionType', 'Action type'), actionType]);
+  }
+  if (metadataString(metadata, 'target_type') || metadataString(metadata, 'target_id')) {
+    fields.push([t('workbench.trace.target', 'Target'), formatActionTarget(metadata, none)]);
+  }
+  if (risk) {
+    fields.push([t('workbench.trace.risk', 'Risk'), risk]);
+  }
+  if (policyOutcome) {
+    fields.push([t('workbench.trace.policyOutcome', 'Policy'), policyOutcome]);
+  }
+  if (requiredApproverClass) {
+    fields.push([
+      t('workbench.trace.requiredApproverClass', 'Required approver'),
+      requiredApproverClass,
+    ]);
+  }
+  if (approvalState) {
+    fields.push([t('workbench.trace.approvalState', 'Approval'), approvalState]);
+  }
+  if (approverClass) {
+    fields.push([t('workbench.trace.approverClass', 'Approver class'), approverClass]);
+  }
+  if (executionState) {
+    fields.push([t('workbench.trace.executionState', 'Execution'), executionState]);
+  }
+  if (resultOutcome) {
+    fields.push([t('workbench.trace.executionResult', 'Result'), resultOutcome]);
+  }
+  if (errorCode || errorMessage) {
+    fields.push([
+      t('workbench.trace.executionError', 'Error'),
+      [errorCode, errorMessage].filter(Boolean).join(' · '),
+    ]);
+  }
+  if (fields.length === 0) return null;
+  return (
+    <dl className="mt-3 grid gap-x-3 gap-y-1 text-xs text-stone-600 dark:text-neutral-300 sm:grid-cols-2">
+      {fields.map(([label, value]) => (
+        <div key={label}>
+          <dt className="uppercase text-stone-400">{label}</dt>
+          <dd className="break-all">{value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -473,11 +682,18 @@ function TraceEntryItem({
   none: string;
   t: (key: string, fallback?: string) => string;
 }) {
-  const chips = metadataChips(entry.metadata);
+  const isAction = isActionRequestLifecycleKind(entry);
+  const chips = metadataChips(entry.metadata, isAction ? ACTION_NAMED_METADATA_KEYS : undefined);
+  const lane = traceLane(entry);
+  const laneLabel = isAction ? t('workbench.trace.lane.action', 'Action') : lane;
+  const deliveryStatus = traceDeliveryStatus(entry);
 
   return (
     <li className="rounded-lg border border-stone-200 p-3 text-sm dark:border-neutral-800">
       <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-md bg-sage-50 px-2 py-1 text-xs font-semibold uppercase text-sage-700 dark:bg-sage-500/10 dark:text-sage-300">
+          {laneLabel}
+        </span>
         <span className="rounded-md bg-primary-50 px-2 py-1 text-xs font-semibold uppercase text-primary-700 dark:bg-primary-500/10 dark:text-primary-300">
           {labelFromLiteral(entry.kind)}
         </span>
@@ -487,6 +703,11 @@ function TraceEntryItem({
         {entry.severity ? (
           <span className="rounded-md bg-coral-50 px-2 py-1 text-xs font-semibold uppercase text-coral-700 dark:bg-coral-500/10 dark:text-coral-200">
             {labelFromLiteral(entry.severity)}
+          </span>
+        ) : null}
+        {deliveryStatus ? (
+          <span className="rounded-md bg-amber-50 px-2 py-1 text-xs font-semibold uppercase text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+            {deliveryStatus}
           </span>
         ) : null}
       </div>
@@ -511,6 +732,7 @@ function TraceEntryItem({
           </dd>
         </div>
       </dl>
+      {isAction ? <ActionRequestFields entry={entry} none={none} t={t} /> : null}
       {chips.length > 0 ? (
         <div
           className="mt-3 flex flex-wrap gap-2"

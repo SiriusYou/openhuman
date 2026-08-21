@@ -18,7 +18,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENDOR_CLI="$ROOT_DIR/app/src-tauri/vendor/tauri-cef/crates/tauri-cli"
 VENDOR_CARGO_TOML="$VENDOR_CLI/Cargo.toml"
 INSTALL_ROOT="${OPENHUMAN_CARGO_INSTALL_ROOT:-$ROOT_DIR/.cache/cargo-install}"
-export PATH="$HOME/.cargo/bin:$INSTALL_ROOT/bin:$PATH"
+# Install-root must precede any Cargo home so a stock cargo-tauri cannot win.
+export PATH="$INSTALL_ROOT/bin:$HOME/.cargo/bin:$PATH"
 
 if [[ ! -f "$VENDOR_CARGO_TOML" ]]; then
   echo "[ensure-tauri-cli] vendored tauri-cli not found at $VENDOR_CLI" >&2
@@ -56,8 +57,26 @@ if [[ -f "$CRATES_TOML" ]] && grep -q "tauri-cli.*$VENDOR_CLI" "$CRATES_TOML" 2>
   fi
 fi
 
+CARGO_BIN="${CARGO_BIN:-cargo}"
+if [[ ! -x "$CARGO_BIN" ]] && ! command -v "$CARGO_BIN" >/dev/null 2>&1; then
+  echo "[ensure-tauri-cli] cargo not found: $CARGO_BIN" >&2
+  exit 1
+fi
+
 echo "[ensure-tauri-cli] installing vendored CEF-aware tauri-cli from $VENDOR_CLI"
 echo "[ensure-tauri-cli] CEF_PATH=$CEF_PATH"
 echo "[ensure-tauri-cli] INSTALL_ROOT=$INSTALL_ROOT"
+echo "[ensure-tauri-cli] CARGO_BIN=$CARGO_BIN"
 echo "[ensure-tauri-cli] (first install only — takes a few minutes; subsequent runs are instant)"
-cargo install --root "$INSTALL_ROOT" --locked --path "$VENDOR_CLI"
+"$CARGO_BIN" install --root "$INSTALL_ROOT" --locked --path "$VENDOR_CLI"
+INSTALLED_BIN="$INSTALL_ROOT/bin/cargo-tauri"
+if [[ ! -x "$INSTALLED_BIN" || -L "$INSTALLED_BIN" ]]; then
+  echo "[ensure-tauri-cli] cargo-tauri missing after install: $INSTALLED_BIN" >&2
+  exit 1
+fi
+DEST_SHA256="$(shasum -a 256 "$INSTALLED_BIN" | awk '{print $1}')"
+{
+  printf 'cargo_bin=%s\n' "$CARGO_BIN"
+  printf 'vendor_path=%s\n' "$VENDOR_CLI"
+  printf 'dest_sha256=%s\n' "$DEST_SHA256"
+} >"$INSTALL_ROOT/.m132-cargo-install-observed"

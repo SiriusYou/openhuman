@@ -527,12 +527,18 @@ fn env_overlay_youpet_config_trims_and_ignores_blanks() {
     cfg.youpet.workbench_actor_id = "old-actor".into();
     cfg.youpet.operator_user_id = Some("old-operator".into());
 
+    cfg.youpet.tenant_id = Some("old-tenant".into());
+
     cfg.apply_env_overlay_with(
         &HashMapEnv::new()
             .with("YOUPET_CORE_API_URL", " https://core.example.test/// ")
             .with("YOUPET_SERVICE_TOKEN", "  svc-token  ")
             .with("YOUPET_WORKBENCH_ACTOR_ID", "  workbench-actor  ")
-            .with("YOUPET_OPERATOR_USER_ID", "  operator-user-id  "),
+            .with("YOUPET_OPERATOR_USER_ID", "  operator-user-id  ")
+            .with(
+                "YOUPET_TENANT_ID",
+                "  20000000-0000-0000-0000-000000000001  ",
+            ),
     );
 
     assert_eq!(cfg.youpet.core_api_url, "https://core.example.test");
@@ -542,13 +548,18 @@ fn env_overlay_youpet_config_trims_and_ignores_blanks() {
         cfg.youpet.operator_user_id.as_deref(),
         Some("operator-user-id")
     );
+    assert_eq!(
+        cfg.youpet.tenant_id.as_deref(),
+        Some("20000000-0000-0000-0000-000000000001")
+    );
 
     cfg.apply_env_overlay_with(
         &HashMapEnv::new()
             .with("YOUPET_CORE_API_URL", "   ")
             .with("YOUPET_SERVICE_TOKEN", "   ")
             .with("YOUPET_WORKBENCH_ACTOR_ID", "   ")
-            .with("YOUPET_OPERATOR_USER_ID", "   "),
+            .with("YOUPET_OPERATOR_USER_ID", "   ")
+            .with("YOUPET_TENANT_ID", "   "),
     );
 
     assert_eq!(
@@ -567,6 +578,10 @@ fn env_overlay_youpet_config_trims_and_ignores_blanks() {
     assert!(
         cfg.youpet.operator_user_id.is_none(),
         "blank YouPet operator id must clear to None"
+    );
+    assert!(
+        cfg.youpet.tenant_id.is_none(),
+        "blank YouPet tenant id must clear to None"
     );
 }
 
