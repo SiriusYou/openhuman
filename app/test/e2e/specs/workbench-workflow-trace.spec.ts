@@ -25,11 +25,7 @@ async function waitForArticle(summary: string, timeout = 20_000): Promise<void> 
           (article.textContent ?? '').includes(targetSummary)
         );
       }, summary),
-    {
-      timeout,
-      interval: 250,
-      timeoutMsg: `workbench article "${summary}" did not appear`,
-    }
+    { timeout, interval: 250, timeoutMsg: `workbench article "${summary}" did not appear` }
   );
 }
 
@@ -144,9 +140,7 @@ describe('M1.3.2 workflow trace operator acceptance', function () {
     const failureEntry = traceState.entries[failureIndex];
     const recoveryEntry = traceState.entries[recoveryIndex];
     expect(failureEntry.fields.Actor).toBe('Agent · openclaw-youpet-consumer');
-    expect(failureEntry.fields.Related).toBe(
-      'event_outbox / 00000000-0000-0000-0000-000000000801'
-    );
+    expect(failureEntry.fields.Related).toBe('event_outbox / 00000000-0000-0000-0000-000000000801');
     expect(failureEntry.metadata.consumer).toBe('openclaw');
     expect(failureEntry.metadata.attempts).toBe('1');
     expect(failureEntry.metadata.action).toBe('outbox.nack');

@@ -9,9 +9,7 @@ import {
 
 const callCoreRpc = vi.hoisted(() => vi.fn());
 
-vi.mock('../coreRpcClient', () => ({
-  callCoreRpc,
-}));
+vi.mock('../coreRpcClient', () => ({ callCoreRpc }));
 
 const SAMPLE = {
   action_request: {
@@ -76,11 +74,7 @@ describe('CoreActionRequestClient', () => {
   });
 
   it('approves with required reason, row version, and idempotency key', async () => {
-    callCoreRpc.mockResolvedValueOnce({
-      ...SAMPLE,
-      approval_state: 'approved',
-      row_version: 3,
-    });
+    callCoreRpc.mockResolvedValueOnce({ ...SAMPLE, approval_state: 'approved', row_version: 3 });
     const client = createCoreActionRequestClient();
     await client.approve(SAMPLE.id, {
       reason: 'safe to proceed',
@@ -100,11 +94,7 @@ describe('CoreActionRequestClient', () => {
   });
 
   it('rejects with required reason and expected row version', async () => {
-    callCoreRpc.mockResolvedValueOnce({
-      ...SAMPLE,
-      approval_state: 'rejected',
-      row_version: 3,
-    });
+    callCoreRpc.mockResolvedValueOnce({ ...SAMPLE, approval_state: 'rejected', row_version: 3 });
     const client = createCoreActionRequestClient();
     await client.reject(SAMPLE.id, {
       reason: 'too risky',
@@ -126,11 +116,7 @@ describe('CoreActionRequestClient', () => {
   it('rejects blank idempotency keys before RPC dispatch', async () => {
     const client = createCoreActionRequestClient();
     await expect(
-      client.approve(SAMPLE.id, {
-        reason: 'x',
-        expectedRowVersion: 1,
-        idempotencyKey: '   ',
-      })
+      client.approve(SAMPLE.id, { reason: 'x', expectedRowVersion: 1, idempotencyKey: '   ' })
     ).rejects.toThrow(/idempotencyKey is required/);
     expect(callCoreRpc).not.toHaveBeenCalled();
   });

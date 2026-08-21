@@ -814,7 +814,10 @@ mod tests {
             trace.entries[3].kind,
             WorkbenchTraceEntryKind::ActionRequestExecution
         );
-        assert_eq!(trace.entries[0].source, WorkbenchTraceSource::ActionRequests);
+        assert_eq!(
+            trace.entries[0].source,
+            WorkbenchTraceSource::ActionRequests
+        );
         assert_eq!(
             serde_json::to_value(&trace.entries[0].kind).unwrap(),
             json!("action_request_proposed")

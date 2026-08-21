@@ -7,6 +7,7 @@ import PublicRoute from './components/PublicRoute';
 import HumanPage from './features/human/HumanPage';
 import { getIsMobile } from './lib/platform';
 import Accounts from './pages/Accounts';
+import ActionRequestInbox from './pages/ActionRequestInbox';
 import AgentWorkflows from './pages/AgentWorkflows';
 import Channels from './pages/Channels';
 import Home from './pages/Home';
@@ -22,7 +23,6 @@ import Skills from './pages/Skills';
 import SkillsRun from './pages/SkillsRun';
 import WebCallbackPage from './pages/WebCallbackPage';
 import Welcome from './pages/Welcome';
-import ActionRequestInbox from './pages/ActionRequestInbox';
 import Workbench from './pages/Workbench';
 
 const AppRoutes = () => {
