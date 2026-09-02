@@ -19,6 +19,7 @@ interface RegistryCollectionPaneProps {
   loadMoreLabel?: string;
   onLoadMore?: () => void;
   onRetry?: () => void;
+  retryDisabled?: boolean;
   hasMore?: boolean;
 }
 
@@ -124,6 +125,7 @@ export default function RegistryCollectionPane({
   loadMoreLabel,
   onLoadMore,
   onRetry,
+  retryDisabled = false,
   hasMore = false,
 }: RegistryCollectionPaneProps) {
   const { t } = useT();
@@ -226,7 +228,8 @@ export default function RegistryCollectionPane({
           <button
             type="button"
             onClick={onRetry}
-            className="inline-flex items-center rounded-xl border border-stone-200 px-3 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-100 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800">
+            disabled={retryDisabled}
+            className="inline-flex items-center rounded-xl border border-stone-200 px-3 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800">
             {t('registries.page.retry')}
           </button>
         ) : null}

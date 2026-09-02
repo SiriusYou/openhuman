@@ -112,6 +112,10 @@ function hasMore(nextCursor: string | null) {
   return typeof nextCursor === 'string' && nextCursor.length > 0;
 }
 
+function isRetryDisabled(retryDisabledUntil: number | null | undefined): boolean {
+  return typeof retryDisabledUntil === 'number' && retryDisabledUntil > Date.now();
+}
+
 function useMinWidth(query: string): boolean {
   const getMatches = () =>
     typeof window !== 'undefined' && typeof window.matchMedia === 'function'
@@ -161,6 +165,42 @@ export default function CoreRegistriesPage() {
     connectors: null,
   });
   const blocker = state.surfaceError ? describeBlocker(t, state.surfaceError) : null;
+  const [retryClockTick, setRetryClockTick] = useState(0);
+
+  const activeRetryDisabledUntilValues = useMemo(() => {
+    if (activeTab === 'agents') {
+      return [state.tabs.agents.collections.agents.retryDisabledUntil];
+    }
+
+    if (activeTab === 'tools') {
+      return [
+        state.tabs.tools.collections.toolDefinitions.retryDisabledUntil,
+        state.tabs.tools.collections.toolEnablements.retryDisabledUntil,
+      ];
+    }
+
+    return [
+      state.tabs.connectors.collections.connectorTypes.retryDisabledUntil,
+      state.tabs.connectors.collections.connectorBindings.retryDisabledUntil,
+    ];
+  }, [activeTab, state.tabs]);
+
+  useEffect(() => {
+    const now = Date.now();
+    const nextRetryWakeAt = activeRetryDisabledUntilValues
+      .filter((value): value is number => typeof value === 'number' && value > now)
+      .sort((left, right) => left - right)[0];
+
+    if (!nextRetryWakeAt) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setRetryClockTick(current => current + 1);
+    }, nextRetryWakeAt - now);
+
+    return () => window.clearTimeout(timer);
+  }, [activeRetryDisabledUntilValues, retryClockTick]);
 
   const agentItems = useMemo<RegistryCollectionPaneItem[]>(
     () =>
@@ -462,6 +502,9 @@ export default function CoreRegistriesPage() {
                     onRetry={() => {
                       void retryCollection('agents');
                     }}
+                    retryDisabled={isRetryDisabled(
+                      state.tabs.agents.collections.agents.retryDisabledUntil
+                    )}
                   />
                 ) : null}
 
@@ -480,6 +523,9 @@ export default function CoreRegistriesPage() {
                       onRetry={() => {
                         void retryCollection('toolDefinitions');
                       }}
+                      retryDisabled={isRetryDisabled(
+                        state.tabs.tools.collections.toolDefinitions.retryDisabledUntil
+                      )}
                     />
                     <RegistryCollectionPane
                       title={t('registries.collections.toolEnablements.title')}
@@ -489,6 +535,9 @@ export default function CoreRegistriesPage() {
                       onRetry={() => {
                         void retryCollection('toolEnablements');
                       }}
+                      retryDisabled={isRetryDisabled(
+                        state.tabs.tools.collections.toolEnablements.retryDisabledUntil
+                      )}
                     />
                   </div>
                 ) : null}
@@ -508,6 +557,9 @@ export default function CoreRegistriesPage() {
                       onRetry={() => {
                         void retryCollection('connectorTypes');
                       }}
+                      retryDisabled={isRetryDisabled(
+                        state.tabs.connectors.collections.connectorTypes.retryDisabledUntil
+                      )}
                     />
                     <RegistryCollectionPane
                       title={t('registries.collections.connectorBindings.title')}
@@ -524,6 +576,9 @@ export default function CoreRegistriesPage() {
                       onRetry={() => {
                         void retryCollection('connectorBindings');
                       }}
+                      retryDisabled={isRetryDisabled(
+                        state.tabs.connectors.collections.connectorBindings.retryDisabledUntil
+                      )}
                     />
                   </div>
                 ) : null}

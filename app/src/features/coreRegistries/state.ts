@@ -76,6 +76,7 @@ type CollectionFailureEvent = {
   generation: number;
   error: RegistryBridgeErrorMeta;
   restartPlanned: boolean;
+  failedAtMs?: number;
 };
 
 type DetailSuccessEvent =
@@ -137,6 +138,7 @@ function notLoadedCollection<TItem>(): CursorRegistryCollectionState<TItem> {
     lastObservedAt: null,
     successGeneration: null,
     restartGeneration: null,
+    retryDisabledUntil: null,
   };
 }
 
@@ -147,6 +149,7 @@ function notLoadedUnpagedCollection<TItem>(): UnpagedRegistryCollectionState<TIt
     lastObservedAt: null,
     successGeneration: null,
     restartGeneration: null,
+    retryDisabledUntil: null,
   };
 }
 
@@ -254,6 +257,20 @@ function detailsEqual(left: RegistryDetailRef | null, right: RegistryDetailRef):
     left.key === right.key &&
     left.version === right.version
   );
+}
+
+function getRetryDisabledUntil(error: RegistryBridgeErrorMeta, failedAtMs?: number): number | null {
+  if (
+    error.kind !== 'YouPetCoreHttpError' ||
+    error.httpStatus !== 429 ||
+    typeof error.retryAfterSeconds !== 'number' ||
+    !Number.isFinite(error.retryAfterSeconds) ||
+    error.retryAfterSeconds <= 0
+  ) {
+    return null;
+  }
+
+  return (failedAtMs ?? Date.now()) + error.retryAfterSeconds * 1000;
 }
 
 function summarizeTab(state: RegistryInspectionState, tab: RegistryTab): RegistrySummaryState {
@@ -372,6 +389,7 @@ function markTabLoading(
       continue;
     }
     collectionState.observation = { kind: 'loading', generation };
+    collectionState.retryDisabledUntil = null;
   }
 
   if (state.urlState.tab === tab && state.urlState.detail) {
@@ -397,6 +415,7 @@ function markCollectionLoading(
 
   tabState.generation = generation;
   collectionState.observation = { kind: 'loading', generation };
+  collectionState.retryDisabledUntil = null;
 }
 
 function resetCollectionForRestart(
@@ -410,11 +429,13 @@ function resetCollectionForRestart(
   collectionState.observation = { kind: 'loading', generation };
   collectionState.restartGeneration = generation;
   collectionState.successGeneration = null;
+  collectionState.retryDisabledUntil = null;
 }
 
 function blockCollection(
   collectionState: CursorRegistryCollectionState<unknown> | UnpagedRegistryCollectionState<unknown>,
-  error: RegistryBridgeErrorMeta
+  error: RegistryBridgeErrorMeta,
+  retryDisabledUntil: number | null
 ): void {
   collectionState.items = [];
   if ('nextCursor' in collectionState) {
@@ -422,6 +443,7 @@ function blockCollection(
   }
   collectionState.observation = { kind: 'blocked', error };
   collectionState.successGeneration = null;
+  collectionState.retryDisabledUntil = retryDisabledUntil;
 }
 
 export function createRegistryInspectionState(
@@ -484,6 +506,7 @@ export function registryInspectionReducer(
       collectionState.lastObservedAt = action.observedAt;
       collectionState.successGeneration = action.generation;
       collectionState.observation = collectionObservationSuccess(action.observedAt, items.length);
+      collectionState.retryDisabledUntil = null;
       updateObservedAt(next, action.tab, action.observedAt);
       tabState.summaryState = summarizeTab(next, action.tab);
       return next;
@@ -507,6 +530,7 @@ export function registryInspectionReducer(
         action.observedAt,
         action.items.length
       );
+      collectionState.retryDisabledUntil = null;
       updateObservedAt(next, action.tab, action.observedAt);
       tabState.summaryState = summarizeTab(next, action.tab);
       return next;
@@ -523,6 +547,8 @@ export function registryInspectionReducer(
         return state;
       }
 
+      const retryDisabledUntil = getRetryDisabledUntil(action.error, action.failedAtMs);
+
       if (action.restartPlanned) {
         resetCollectionForRestart(collectionState, action.generation);
       } else if (
@@ -535,8 +561,9 @@ export function registryInspectionReducer(
           observedAt: collectionState.lastObservedAt,
           error: action.error,
         };
+        collectionState.retryDisabledUntil = retryDisabledUntil;
       } else {
-        blockCollection(collectionState, action.error);
+        blockCollection(collectionState, action.error, retryDisabledUntil);
       }
 
       tabState.summaryState = summarizeTab(next, action.tab);

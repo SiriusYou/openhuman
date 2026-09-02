@@ -422,6 +422,7 @@ export function useRegistryInspection(
           generation,
           error: meta,
           restartPlanned: shouldRestart,
+          failedAtMs: Date.now(),
         });
 
         if (shouldRestart) {
@@ -544,6 +545,11 @@ export function useRegistryInspection(
   const retryCollection = useCallback(
     async (collection: RegistryCollectionKey) => {
       const tab = collectionTab(collection);
+      const collectionState = getCollectionState(stateRef.current, tab, collection);
+      if (collectionState?.retryDisabledUntil && collectionState.retryDisabledUntil > Date.now()) {
+        return;
+      }
+
       visitedTabsRef.current.add(tab);
       const generation = nextGeneration(tab);
       dispatch({ type: 'collection_request_started', tab, collection, generation });
