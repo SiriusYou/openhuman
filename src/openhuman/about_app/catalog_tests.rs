@@ -22,7 +22,8 @@ fn core_registry_inspection_capability_is_registered_as_read_only_desktop_view()
         capability.description
     );
     assert!(
-        capability.description.contains("Agent") && capability.description.contains("Tool")
+        capability.description.contains("Agent")
+            && capability.description.contains("Tool")
             && capability.description.contains("Connector"),
         "description must cover the exact registry families: {}",
         capability.description

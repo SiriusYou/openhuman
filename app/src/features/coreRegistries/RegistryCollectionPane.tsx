@@ -1,3 +1,4 @@
+import { useT } from '../../lib/i18n/I18nContext';
 import type { RegistryObservationState } from './types';
 
 export interface RegistryCollectionPaneItem {
@@ -21,27 +22,48 @@ interface RegistryCollectionPaneProps {
   hasMore?: boolean;
 }
 
-function summarizeObservation(observation: RegistryObservationState) {
+type TranslateFn = (key: string, fallback?: string) => string;
+
+function summarizeObservation(t: TranslateFn, observation: RegistryObservationState) {
   switch (observation.kind) {
     case 'not_loaded':
-      return { label: 'Idle', tone: 'stone', body: 'Waiting for the first observation.' };
+      return {
+        label: t('registries.collection.state.idle'),
+        tone: 'stone',
+        body: t('registries.collection.body.idle'),
+      };
     case 'loading':
-      return { label: 'Loading', tone: 'sky', body: 'Refreshing the exact records from Core.' };
+      return {
+        label: t('registries.collection.state.loading'),
+        tone: 'sky',
+        body: t('registries.collection.body.loading'),
+      };
     case 'empty':
-      return { label: 'Observed', tone: 'stone', body: 'Observed with no records returned.' };
+      return {
+        label: t('registries.collection.state.observed'),
+        tone: 'stone',
+        body: t('registries.collection.body.empty'),
+      };
     case 'loaded':
-      return { label: 'Observed', tone: 'sage', body: `Observed at ${observation.observedAt}.` };
+      return {
+        label: t('registries.collection.state.observed'),
+        tone: 'sage',
+        body: t('registries.collection.body.observedAt').replace(
+          '{observedAt}',
+          observation.observedAt
+        ),
+      };
     case 'stale':
       return {
-        label: 'Stale',
+        label: t('registries.collection.state.stale'),
         tone: 'amber',
-        body: `Observed at ${observation.observedAt}; the latest refresh kept the last good data.`,
+        body: t('registries.collection.body.stale').replace('{observedAt}', observation.observedAt),
       };
     case 'blocked':
       return {
-        label: 'Blocked',
+        label: t('registries.collection.state.blocked'),
         tone: 'coral',
-        body: 'Core rejected this collection for inspection.',
+        body: t('registries.collection.body.blocked'),
       };
   }
 }
@@ -104,7 +126,8 @@ export default function RegistryCollectionPane({
   onRetry,
   hasMore = false,
 }: RegistryCollectionPaneProps) {
-  const summary = summarizeObservation(observation);
+  const { t } = useT();
+  const summary = summarizeObservation(t, observation);
 
   return (
     <section className="rounded-3xl border border-stone-200 bg-white p-5 shadow-soft dark:border-neutral-800 dark:bg-neutral-900">
@@ -125,7 +148,7 @@ export default function RegistryCollectionPane({
       <div className="mt-4 space-y-3" data-registry-collection-items="true">
         {items.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-stone-200 px-4 py-5 text-sm text-stone-500 dark:border-neutral-800 dark:text-neutral-400">
-            No exact records available in this collection yet.
+            {t('registries.collection.empty')}
           </div>
         ) : (
           items.map(item => (
@@ -204,7 +227,7 @@ export default function RegistryCollectionPane({
             type="button"
             onClick={onRetry}
             className="inline-flex items-center rounded-xl border border-stone-200 px-3 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-100 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800">
-            Retry
+            {t('registries.page.retry')}
           </button>
         ) : null}
 
@@ -213,7 +236,7 @@ export default function RegistryCollectionPane({
             type="button"
             onClick={onLoadMore}
             className="inline-flex items-center rounded-xl bg-primary-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-primary-600">
-            {loadMoreLabel ?? 'Load more'}
+            {loadMoreLabel ?? t('common.showMore')}
           </button>
         ) : null}
       </div>

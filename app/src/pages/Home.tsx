@@ -21,6 +21,7 @@ import { APP_VERSION } from '../utils/config';
 import { openhumanCronList } from '../utils/tauriCommands';
 
 const homeLog = createDebug('app:home');
+type TranslateFn = (key: string, fallback?: string) => string;
 
 export function resolveHomeUserName(user: unknown): string {
   if (!user || typeof user !== 'object') return 'User';
@@ -46,6 +47,7 @@ export function resolveHomeUserName(user: unknown): string {
 }
 
 function registryCardCopy(
+  t: TranslateFn,
   blocking: 'internet-offline' | 'core-unreachable' | 'backend-only' | 'ok',
   coreError: string | undefined
 ) {
@@ -53,33 +55,30 @@ function registryCardCopy(
     const normalized = coreError?.toLowerCase() ?? '';
     if (normalized.includes('config missing')) {
       return {
-        title: 'Core integration required',
-        description: 'Complete the desktop Core integration before inspecting registries.',
+        title: t('home.coreRegistriesBlockedTitle'),
+        description: t('home.coreRegistriesBlockedMissingDescription'),
       };
     }
     if (normalized.includes('config invalid')) {
       return {
-        title: 'Core integration required',
-        description: 'Repair the desktop Core integration before inspecting registries.',
+        title: t('home.coreRegistriesBlockedTitle'),
+        description: t('home.coreRegistriesBlockedInvalidDescription'),
       };
     }
     return {
-      title: 'Core integration required',
-      description: 'Reconnect the local Core bridge before inspecting registries.',
+      title: t('home.coreRegistriesBlockedTitle'),
+      description: t('home.coreRegistriesBlockedBridgeDescription'),
     };
   }
 
   if (blocking === 'internet-offline') {
     return {
-      title: 'Core integration required',
-      description: 'Reconnect to the internet before inspecting registries.',
+      title: t('home.coreRegistriesBlockedTitle'),
+      description: t('home.coreRegistriesBlockedOfflineDescription'),
     };
   }
 
-  return {
-    title: 'Core Registries',
-    description: 'Inspect exact Agent, Tool, and Connector records from Core.',
-  };
+  return { title: t('home.coreRegistries'), description: t('home.coreRegistriesDescription') };
 }
 
 const Home = () => {
@@ -160,7 +159,7 @@ const Home = () => {
     'core-unreachable': t('home.statusCoreUnreachable'),
     'internet-offline': t('home.statusInternetOffline'),
   }[blocking];
-  const registriesCard = registryCardCopy(blocking, connectivityErrors.core);
+  const registriesCard = registryCardCopy(t, blocking, connectivityErrors.core);
 
   // Open in-app chat.
   const handleStartCooking = async () => {
@@ -373,14 +372,10 @@ const Home = () => {
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-stone-900 dark:text-neutral-100">
-              {blocking === 'ok' || blocking === 'backend-only'
-                ? t('home.coreRegistries', registriesCard.title)
-                : registriesCard.title}
+              {registriesCard.title}
             </div>
             <div className="text-xs text-stone-500 dark:text-neutral-400">
-              {blocking === 'ok' || blocking === 'backend-only'
-                ? t('home.coreRegistriesDescription', registriesCard.description)
-                : registriesCard.description}
+              {registriesCard.description}
             </div>
           </div>
           <svg

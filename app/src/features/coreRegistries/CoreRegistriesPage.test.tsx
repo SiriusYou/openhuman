@@ -1,8 +1,7 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 import ReadOnlyJson from './ReadOnlyJson';
@@ -302,7 +301,7 @@ describe('CoreRegistriesPage', () => {
     expect(screen.getByText('Tools · Partial')).toBeInTheDocument();
     expect(screen.getByText('Stale')).toBeInTheDocument();
     expect(screen.getAllByText('Disabled')).toHaveLength(1);
-    expect(screen.getAllByText('No Tenant Enablement returned')).toHaveLength(2);
+    expect(screen.getAllByText('No tenant enablement returned')).toHaveLength(2);
 
     await user.click(screen.getByRole('button', { name: /load more definitions/i }));
     expect(loadMoreCollectionMock).toHaveBeenCalledWith('toolDefinitions');
@@ -637,7 +636,7 @@ describe('RegistryDetailPane', () => {
       />
     );
 
-    expect(screen.getByText('No Tenant Enablement returned')).toBeInTheDocument();
+    expect(screen.getByText('No tenant enablement returned')).toBeInTheDocument();
     expect(screen.getByText('Input schema')).toBeInTheDocument();
     expect(screen.getByText('Output schema')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'View raw JSON' })).toBeInTheDocument();
@@ -673,7 +672,7 @@ describe('RegistryDetailPane', () => {
 
     expect(screen.getByText('Binding fingerprint · eeeeeeeeeeee')).toBeInTheDocument();
     expect(screen.getByText('wechat:acct-primary')).toBeInTheDocument();
-    expect(screen.getByText('Logical reference only—secret not displayed')).toBeInTheDocument();
+    expect(screen.getByText('Logical reference only; secret not displayed.')).toBeInTheDocument();
   });
 });
 

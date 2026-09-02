@@ -50,6 +50,12 @@ const SEARXNG_RAW_TO_CONFIGURED_INSTANCE: Option<CapabilityPrivacy> = Some(Capab
     destinations: &["Configured SearXNG instance"],
 });
 
+const YOUPET_CORE_METADATA: Option<CapabilityPrivacy> = Some(CapabilityPrivacy {
+    leaves_device: true,
+    data_kind: PrivacyDataKind::Metadata,
+    destinations: &["Configured YouPet Core API"],
+});
+
 // Direct-mode Composio: the user's API key and tool arguments leave the
 // device — they are sent to backend.composio.dev, not the OpenHuman backend.
 // LOCAL_CREDENTIALS was incorrect here because leaves_device must be true.
@@ -383,6 +389,16 @@ pub(super) const CAPABILITIES: &[Capability] = &[
         how_to: "Call openhuman.tool_registry_list over core JSON-RPC, or openhuman.tool_registry_get with a tool_id such as memory.search.",
         status: CapabilityStatus::Beta,
         privacy: LOCAL_RAW,
+    },
+    Capability {
+        id: "intelligence.inspect_core_registries",
+        name: "Inspect Core registries",
+        domain: "youpet_registry",
+        category: CapabilityCategory::Intelligence,
+        description: "Inspect exact Agent, Tool, and Connector records from a configured YouPet Core connection in a read-only desktop view.",
+        how_to: "Home > Core Registries (desktop only; requires a configured YouPet Core connection).",
+        status: CapabilityStatus::Beta,
+        privacy: YOUPET_CORE_METADATA,
     },
     Capability {
         id: "intelligence.orchestrator_worker_thread",
