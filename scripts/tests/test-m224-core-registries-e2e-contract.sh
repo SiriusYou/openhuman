@@ -112,6 +112,9 @@ validate_runner_source() {
   assert_contains "$runner_path" 'CARGO_HOME="$REAL_CARGO_HOME"' || return 1
   assert_contains "$runner_path" 'RUSTUP_HOME="$REAL_RUSTUP_HOME"' || return 1
   assert_contains "$runner_path" 'PATH="$REAL_CARGO_HOME/bin:$PATH"' || return 1
+  assert_contains "$runner_path" 'CEF_CDP_PORT="${M224_CEF_CDP_PORT:-19222}"' || return 1
+  assert_contains "$runner_path" '[[ "$CEF_CDP_PORT" == "19222" ]]' || return 1
+  assert_contains "$runner_path" 'require_free_port "$CEF_CDP_PORT" "CEF CDP"' || return 1
   assert_line_order "$runner_path" 'rm -rf "$RUN_ROOT"' 'write_meta "$cleanup_ok"' || return 1
   assert_contains "$runner_path" "cmp_snapshots" || return 1
   assert_not_contains "$runner_path" "rm -rf /" || return 1
