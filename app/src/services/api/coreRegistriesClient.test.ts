@@ -117,6 +117,19 @@ describe('coreRegistriesClient contracts', () => {
     });
   });
 
+  it('unwraps the logged Rust RpcOutcome envelope before registry decoding', async () => {
+    const { callCoreRpc } = await import('../coreRpcClient');
+    vi.mocked(callCoreRpc).mockResolvedValueOnce({
+      result: { items: [], next_cursor: null },
+      logs: ['[youpet] listed Core registry agents'],
+    });
+
+    await expect(coreRegistriesClient.listAgents()).resolves.toEqual({
+      items: [],
+      nextCursor: null,
+    });
+  });
+
   it('uses items-only decoding for the unpaged tool enablement list', async () => {
     const { callCoreRpc } = await import('../coreRpcClient');
     vi.mocked(callCoreRpc).mockResolvedValueOnce({
