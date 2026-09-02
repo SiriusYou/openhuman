@@ -18,6 +18,32 @@ const EXPECTED_REGISTRY_METHODS = {
     'openhuman.youpet_registry_get_connector_binding_version',
 } as const;
 
+function parseCoreRpcMethodsFromSource(): Record<string, string> {
+  const source = fs.readFileSync(path.resolve(__dirname, '../rpcMethods.ts'), 'utf8');
+  const start = source.indexOf('export const CORE_RPC_METHODS = {');
+  const end = source.indexOf('} as const;', start);
+
+  if (start === -1 || end === -1) {
+    throw new Error('CORE_RPC_METHODS source block not found');
+  }
+
+  const body = source
+    .slice(start + 'export const CORE_RPC_METHODS = {'.length, end)
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0 && !line.startsWith('//'));
+
+  return Object.fromEntries(
+    body.map(line => {
+      const entry = line.match(/^([A-Za-z0-9]+):\s*(['"])(.+)\2,$/);
+      if (!entry) {
+        throw new Error(`CORE_RPC_METHODS entry is not a single-line quoted value: ${line}`);
+      }
+      return [entry[1], entry[3]];
+    })
+  );
+}
+
 describe('rpcMethods catalog', () => {
   describe('normalizeRpcMethod', () => {
     test('resolves all legacy aliases to their canonical core method', () => {
@@ -76,6 +102,10 @@ describe('rpcMethods catalog', () => {
         ])
       )
     ).toEqual(EXPECTED_REGISTRY_METHODS);
+  });
+
+  test('keeps every CORE_RPC_METHODS entry parseable as a single-line quoted source value', () => {
+    expect(parseCoreRpcMethodsFromSource()).toEqual(CORE_RPC_METHODS);
   });
 
   describe('MCP client legacy alias resolution (Sentry CORE-RUST-DW/DV/DT/DS/DR)', () => {
