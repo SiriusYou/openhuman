@@ -4736,7 +4736,7 @@ const messages: TranslationMap = {
   'registries.detail.state.missing':
     'Core melaporkan bahwa versi catatan tepat ini sudah tidak ada.',
   'registries.detail.state.error': 'Core tidak dapat memuat catatan tepat ini sekarang.',
-  'registries.detail.kind.agent': 'Agent',
+  'registries.detail.kind.agent': 'Agen',
   'registries.detail.kind.tool-definition': 'Definisi tool',
   'registries.detail.kind.tool-enablement': 'Pengaktifan tool',
   'registries.detail.kind.connector-type': 'Tipe connector',

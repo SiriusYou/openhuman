@@ -4665,7 +4665,7 @@ const messages: TranslationMap = {
     'Cet écran ne modifie jamais la configuration, les secrets ni état exécution.',
   'registries.page.retry': 'Réessayer',
   'registries.page.tablistAria': 'Registres du Core',
-  'registries.tab.agents': 'Agents',
+  'registries.tab.agents': 'Agents IA',
   'registries.tab.tools': 'Outils',
   'registries.tab.connectors': 'Connecteurs',
   'registries.summaryState.idle': 'Au repos',
@@ -4699,7 +4699,7 @@ const messages: TranslationMap = {
     'Cet écran est en lecture seule et ne peut pas écrire la configuration pour vous.',
   'registries.blocker.fixFlow':
     'Corrigez connexion Core dans le flux intégration existant puis réessayez ici.',
-  'registries.collections.agents.title': 'Agents',
+  'registries.collections.agents.title': 'Agents IA',
   'registries.collections.agents.description':
     'Enregistrements agents publiés. Aucun enregistrement sélectionné automatiquement.',
   'registries.collections.agents.loadMore': 'Charger plus agents',
@@ -4710,7 +4710,7 @@ const messages: TranslationMap = {
   'registries.collections.toolEnablements.title': 'Activations',
   'registries.collections.toolEnablements.description':
     'Garde-fous de permission et limites approbation pour outils.',
-  'registries.collections.connectorTypes.title': 'Types',
+  'registries.collections.connectorTypes.title': 'Types de connecteur',
   'registries.collections.connectorTypes.description':
     'Types connecteurs publiés et contrats de normalisation.',
   'registries.collections.connectorTypes.loadMore': 'Charger plus types',
@@ -4766,7 +4766,7 @@ const messages: TranslationMap = {
   'registries.detail.section.agentLifecycle': 'Cycle agent',
   'registries.detail.section.exactToolReferences': 'Références exactes outils',
   'registries.detail.section.logicalReferenceWarnings': 'Avertissements références logiques',
-  'registries.detail.section.configuration': 'Configuration',
+  'registries.detail.section.configuration': 'Paramétrage',
   'registries.detail.section.definitionLifecycle': 'Cycle définition',
   'registries.detail.section.schemas': 'Schémas',
   'registries.detail.section.enablementLifecycle': 'Cycle activation',
@@ -4820,7 +4820,7 @@ const messages: TranslationMap = {
     'Core a signalé que cette version exacte enregistrement n existe plus.',
   'registries.detail.state.error':
     'Core ne peut pas charger cet enregistrement exact pour le moment.',
-  'registries.detail.kind.agent': 'Agent',
+  'registries.detail.kind.agent': 'Agent IA',
   'registries.detail.kind.tool-definition': 'Définition outil',
   'registries.detail.kind.tool-enablement': 'Activation outil',
   'registries.detail.kind.connector-type': 'Type connecteur',

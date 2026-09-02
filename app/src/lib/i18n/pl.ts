@@ -4794,7 +4794,7 @@ const messages: TranslationMap = {
   'registries.detail.state.missing':
     'Core zgłosił, że ta dokładna wersja rekordu już nie istnieje.',
   'registries.detail.state.error': 'Core nie mógł teraz załadować tego dokładnego rekordu.',
-  'registries.detail.kind.agent': 'Agent',
+  'registries.detail.kind.agent': 'Agent AI',
   'registries.detail.kind.tool-definition': 'Definicja narzędzia',
   'registries.detail.kind.tool-enablement': 'Włączenie narzędzia',
   'registries.detail.kind.connector-type': 'Typ konektora',

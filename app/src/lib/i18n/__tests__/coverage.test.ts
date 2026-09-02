@@ -107,9 +107,9 @@ describe('i18n coverage', () => {
         key =>
           (key.startsWith('home.coreRegistries') || key.startsWith('registries.')) &&
           flat[key] === enFlat[key] &&
-          !isExplicitTechnicalLiteral(flat[key]),
+          !isExplicitTechnicalLiteral(flat[key])
       );
       expect(identicalEnglish).toEqual([]);
-    },
+    }
   );
 });
