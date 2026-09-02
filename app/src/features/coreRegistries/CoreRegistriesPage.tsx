@@ -116,6 +116,8 @@ function isRetryDisabled(retryDisabledUntil: number | null | undefined): boolean
   return typeof retryDisabledUntil === 'number' && retryDisabledUntil > Date.now();
 }
 
+const MAX_BROWSER_TIMEOUT_MS = 2_147_483_647;
+
 function useMinWidth(query: string): boolean {
   const getMatches = () =>
     typeof window !== 'undefined' && typeof window.matchMedia === 'function'
@@ -195,9 +197,12 @@ export default function CoreRegistriesPage() {
       return;
     }
 
-    const timer = window.setTimeout(() => {
-      setRetryClockTick(current => current + 1);
-    }, nextRetryWakeAt - now);
+    const timer = window.setTimeout(
+      () => {
+        setRetryClockTick(current => current + 1);
+      },
+      Math.min(nextRetryWakeAt - now, MAX_BROWSER_TIMEOUT_MS)
+    );
 
     return () => window.clearTimeout(timer);
   }, [activeRetryDisabledUntilValues, retryClockTick]);
