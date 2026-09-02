@@ -58,7 +58,7 @@ INSERT INTO kernel_agents (
   owner_actor_type
 )
 SELECT
-  format('20000000-0000-4000-8000-%012s', lpad(n::text, 12, '0'))::uuid,
+  format('20000000-0000-4000-8000-%012s', lpad((n + 100)::text, 12, '0'))::uuid,
   '10000000-0000-4000-8000-000000000001'::uuid,
   format('agent.registry.zzz-%03s', n),
   1,
