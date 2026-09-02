@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -305,6 +305,62 @@ describe('CoreRegistriesPage', () => {
 
     await user.click(screen.getByRole('button', { name: /load more definitions/i }));
     expect(loadMoreCollectionMock).toHaveBeenCalledWith('toolDefinitions');
+  });
+
+  it('disables Retry until Retry-After expires and re-enables it without auto-retrying', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-09-02T04:06:00Z'));
+      useRegistryInspectionMock.mockReturnValue({
+        state: cloneState({
+          urlState: { tab: 'tools', detail: null },
+          tabs: {
+            ...baseState.tabs,
+            tools: {
+              ...baseState.tabs.tools,
+              collections: {
+                ...baseState.tabs.tools.collections,
+                toolDefinitions: {
+                  ...baseState.tabs.tools.collections.toolDefinitions,
+                  observation: {
+                    kind: 'stale',
+                    observedAt: '2026-09-02T04:06:00Z',
+                    error: {
+                      kind: 'YouPetCoreHttpError',
+                      httpStatus: 429,
+                      coreCode: 'rate_limited',
+                      retryAfterSeconds: 2,
+                    },
+                  },
+                  retryDisabledUntil: Date.parse('2026-09-02T04:06:02Z'),
+                },
+              },
+            },
+          },
+        }),
+        setTab: setTabMock,
+        refreshActiveTab: refreshActiveTabMock,
+        loadMoreCollection: loadMoreCollectionMock,
+        openDetail: openDetailMock,
+        retryCollection: retryCollectionMock,
+      });
+
+      render(<CoreRegistriesPage />);
+
+      const definitionsPane = screen
+        .getByRole('heading', { name: 'Definitions' })
+        .closest('section') as HTMLElement;
+      expect(within(definitionsPane).getByRole('button', { name: 'Retry' })).toBeDisabled();
+
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+
+      expect(within(definitionsPane).getByRole('button', { name: 'Retry' })).toBeEnabled();
+      expect(retryCollectionMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('labels a Connector Binding version separately from its Connector Type version', () => {

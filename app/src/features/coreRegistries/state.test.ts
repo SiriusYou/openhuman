@@ -306,6 +306,70 @@ describe('registry inspection state', () => {
     expect(state.tabs.tools.collections.toolEnablements.items).toEqual([]);
   });
 
+  it('stores a Retry-After cooldown for 429 collection failures while retaining last-known-good stale data', () => {
+    let state = createRegistryInspectionState({ tab: 'tools', detail: null });
+
+    state = registryInspectionReducer(state, {
+      type: 'tab_request_started',
+      tab: 'tools',
+      generation: 1,
+    });
+    state = registryInspectionReducer(state, {
+      type: 'cursor_collection_request_succeeded',
+      tab: 'tools',
+      collection: 'toolDefinitions',
+      generation: 1,
+      items: [toolDefinitionSummary],
+      nextCursor: null,
+      append: false,
+      observedAt: '2026-09-01T12:30:00Z',
+    });
+    state = registryInspectionReducer(state, {
+      type: 'unpaged_collection_request_succeeded',
+      tab: 'tools',
+      collection: 'toolEnablements',
+      generation: 1,
+      items: [toolEnablement],
+      observedAt: '2026-09-01T12:31:00Z',
+    });
+
+    state = registryInspectionReducer(state, {
+      type: 'collection_request_started',
+      tab: 'tools',
+      collection: 'toolDefinitions',
+      generation: 2,
+    });
+    state = registryInspectionReducer(state, {
+      type: 'collection_request_failed',
+      tab: 'tools',
+      collection: 'toolDefinitions',
+      generation: 2,
+      error: {
+        kind: 'YouPetCoreHttpError',
+        httpStatus: 429,
+        coreCode: 'rate_limited',
+        retryAfterSeconds: 5,
+      },
+      restartPlanned: false,
+      failedAtMs: Date.parse('2026-09-01T12:32:00Z'),
+    });
+
+    expect(state.tabs.tools.collections.toolDefinitions.items).toEqual([toolDefinitionSummary]);
+    expect(state.tabs.tools.collections.toolDefinitions.observation).toEqual({
+      kind: 'stale',
+      observedAt: '2026-09-01T12:30:00Z',
+      error: {
+        kind: 'YouPetCoreHttpError',
+        httpStatus: 429,
+        coreCode: 'rate_limited',
+        retryAfterSeconds: 5,
+      },
+    });
+    expect(state.tabs.tools.collections.toolDefinitions.retryDisabledUntil).toBe(
+      Date.parse('2026-09-01T12:32:05Z')
+    );
+  });
+
   it('keeps the source collection and only invalidates detail on 404', () => {
     let state = createRegistryInspectionState({
       tab: 'agents',
