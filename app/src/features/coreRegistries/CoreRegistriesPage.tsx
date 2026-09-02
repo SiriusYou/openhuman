@@ -266,7 +266,7 @@ export default function CoreRegistriesPage() {
       state.tabs.connectors.collections.connectorBindings.items.map(binding => ({
         id: `${binding.bindingKey}:${binding.version}`,
         title: binding.bindingKey,
-        subtitle: `${binding.connectorTypeKey} v${binding.connectorTypeVersion}`,
+        subtitle: `v${binding.version} · ${binding.connectorTypeKey} v${binding.connectorTypeVersion}`,
         meta: binding.enabledCapabilities,
         statusLabel: formatLiteral(binding.lifecycleState),
         fingerprintLabel: fingerprintLabel(t, 'binding', binding.bindingFingerprint),
