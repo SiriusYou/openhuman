@@ -79,6 +79,10 @@ function cacheKey(detail: RegistryDetailRef): string {
   return `${detail.kind}:${detail.key}:${detail.version}`;
 }
 
+function isPageSessionDetailCacheable(detail: RegistryDetailRef): boolean {
+  return detail.kind !== 'tool-enablement';
+}
+
 function currentObservedAt(): string {
   return new Date().toISOString();
 }
@@ -241,7 +245,8 @@ export function useRegistryInspection(
 
   const runDetailRequest = useCallback(
     async (tab: RegistryTab, detail: RegistryDetailRef, generation: number) => {
-      const cached = detailCacheRef.current.get(cacheKey(detail));
+      const detailIsCacheable = isPageSessionDetailCacheable(detail);
+      const cached = detailIsCacheable ? detailCacheRef.current.get(cacheKey(detail)) : undefined;
       if (cached) {
         dispatch({ type: 'detail_request_started', tab, generation, detail });
         dispatch({
@@ -291,7 +296,11 @@ export function useRegistryInspection(
             break;
         }
 
-        detailCacheRef.current.set(cacheKey(detail), record);
+        if (detailIsCacheable) {
+          detailCacheRef.current.set(cacheKey(detail), record);
+        } else {
+          detailCacheRef.current.delete(cacheKey(detail));
+        }
         dispatch({
           type: 'detail_request_succeeded',
           tab,
@@ -621,7 +630,9 @@ export function useRegistryInspection(
           return;
         }
 
-        const cached = detailCacheRef.current.get(cacheKey(nextUrlState.detail));
+        const cached = isPageSessionDetailCacheable(nextUrlState.detail)
+          ? detailCacheRef.current.get(cacheKey(nextUrlState.detail))
+          : undefined;
         const generation = stateRef.current.tabs[nextUrlState.tab].generation;
         if (cached) {
           dispatch({
