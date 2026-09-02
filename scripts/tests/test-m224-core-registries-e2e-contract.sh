@@ -93,6 +93,7 @@ validate_runner_source() {
   assert_contains "$runner_path" "0014_connector_registry.sql" || return 1
   assert_contains "$runner_path" "audit_logs" || return 1
   assert_contains "$runner_path" "status --short" || return 1
+  assert_contains "$runner_path" "/private/tmp/*|/tmp/*|/private/var/folders/*|/var/folders/*" || return 1
   assert_contains "$runner_path" "next_cursor" || return 1
   assert_contains "$runner_path" "cleanup_ok" || return 1
   assert_contains "$runner_path" '"http://127.0.0.1:$CORE_PORT/healthz"' || return 1
