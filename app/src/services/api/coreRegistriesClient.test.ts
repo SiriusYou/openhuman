@@ -167,6 +167,50 @@ describe('coreRegistriesClient contracts', () => {
     );
   });
 
+  it('rejects non-active rows from active-only agent and tool definition lists', async () => {
+    const { callCoreRpc } = await import('../coreRpcClient');
+    vi.mocked(callCoreRpc)
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: 'agent-record',
+            agent_key: 'agent.alpha',
+            version: 7,
+            lifecycle_state: 'draft',
+            configuration_fingerprint: 'a'.repeat(64),
+            owner_actor_type: 'service',
+            owner_actor_id: 'registry-reader',
+            created_at: '2026-09-01T12:00:00Z',
+          },
+        ],
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            tool_key: 'tool.alpha',
+            version: 3,
+            lifecycle_state: 'retired',
+            definition_fingerprint: 'b'.repeat(64),
+            schema_version: 1,
+            display_name: 'Tool Alpha',
+            description: 'Reads data',
+            tool_effect_class: 'read_only',
+            abstract_auth_scopes: ['scope.read'],
+            created_at: '2026-09-01T12:05:00Z',
+          },
+        ],
+        next_cursor: null,
+      });
+
+    await expect(coreRegistriesClient.listAgents()).rejects.toThrow(
+      'Registry bridge response shape mismatch'
+    );
+    await expect(coreRegistriesClient.listToolDefinitions()).rejects.toThrow(
+      'Registry bridge response shape mismatch'
+    );
+  });
+
   it('loads exact records through domain-specific key/version methods', async () => {
     const { callCoreRpc } = await import('../coreRpcClient');
     vi.mocked(callCoreRpc)
