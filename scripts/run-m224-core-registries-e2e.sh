@@ -141,9 +141,62 @@ pid_still_running() {
   [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1
 }
 
+collect_process_tree() {
+  local parent_pid="$1"
+  local child_pid
+  for child_pid in $(pgrep -P "$parent_pid" 2>/dev/null || true); do
+    collect_process_tree "$child_pid"
+  done
+  printf '%s\n' "$parent_pid"
+}
+
+stop_process_tree() {
+  local root_pid="$1"
+  local pid
+  local pids
+  local still_running
+  [[ -n "$root_pid" ]] || return 0
+  pids="$(collect_process_tree "$root_pid")"
+  for pid in $pids; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  for _ in $(seq 1 30); do
+    still_running=0
+    for pid in $pids; do
+      if kill -0 "$pid" >/dev/null 2>&1; then
+        still_running=1
+      fi
+    done
+    [[ "$still_running" -eq 0 ]] && return 0
+    sleep 0.1
+  done
+  for pid in $pids; do
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+  for pid in $pids; do
+    kill -0 "$pid" >/dev/null 2>&1 && return 1
+  done
+  return 0
+}
+
+port_is_closed() {
+  python3 - "$1" <<'PY'
+import socket
+import sys
+s = socket.socket()
+s.settimeout(0.2)
+try:
+    listening = s.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0
+finally:
+    s.close()
+raise SystemExit(1 if listening else 0)
+PY
+}
+
 cleanup() {
   local exit_status=$?
   local retained_artifacts=1
+  local process_cleanup_ok=1
   trap - EXIT
   set +e
   if ! artifact_dir_retained_after_cleanup; then
@@ -151,11 +204,11 @@ cleanup() {
   fi
 
   if pid_still_running "$PROXY_PID"; then
-    kill "$PROXY_PID" 2>/dev/null || true
+    stop_process_tree "$PROXY_PID" || process_cleanup_ok=0
     wait "$PROXY_PID" 2>/dev/null || true
   fi
   if pid_still_running "$CORE_PID"; then
-    kill "$CORE_PID" 2>/dev/null || true
+    stop_process_tree "$CORE_PID" || process_cleanup_ok=0
     wait "$CORE_PID" 2>/dev/null || true
   fi
   if [[ -d "$PG_DATA" ]] && pg_ctl -D "$PG_DATA" status >/dev/null 2>&1; then
@@ -164,7 +217,7 @@ cleanup() {
   if [[ -d "$RUN_ROOT" ]]; then
     rm -rf "$RUN_ROOT"
   fi
-  cleanup_ok=1
+  cleanup_ok="$process_cleanup_ok"
   if pid_still_running "$PROXY_PID" || pid_still_running "$CORE_PID"; then
     cleanup_ok=0
   fi
@@ -174,6 +227,10 @@ cleanup() {
   if [[ -e "$RUN_ROOT" ]]; then
     cleanup_ok=0
   fi
+  port_is_closed "$CORE_PORT" || cleanup_ok=0
+  port_is_closed "$PROXY_PORT" || cleanup_ok=0
+  port_is_closed "$CEF_CDP_PORT" || cleanup_ok=0
+  port_is_closed "$APPIUM_PORT" || cleanup_ok=0
   if [[ "$retained_artifacts" -eq 1 && -d "$ARTIFACT_DIR" ]]; then
     write_meta "$cleanup_ok"
     write_checksums || cleanup_ok=0
