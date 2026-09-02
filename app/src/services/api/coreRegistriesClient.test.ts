@@ -174,10 +174,15 @@ describe('coreRegistriesClient contracts', () => {
   it('rejects cursor-backed responses that omit required nullable next_cursor', async () => {
     const { callCoreRpc } = await import('../coreRpcClient');
     vi.mocked(callCoreRpc).mockResolvedValueOnce({ items: [] });
+    const operation = coreRegistriesClient.listAgents();
 
-    await expect(coreRegistriesClient.listAgents()).rejects.toThrow(
-      'Registry bridge response shape mismatch'
-    );
+    await expect(operation).rejects.toMatchObject({
+      name: 'CoreRpcError',
+      data: { kind: 'YouPetCoreResponseShape' },
+    });
+    await expect(operation.catch(extractRegistryBridgeErrorMeta)).resolves.toEqual({
+      kind: 'YouPetCoreResponseShape',
+    });
   });
 
   it('rejects non-active rows from active-only agent and tool definition lists', async () => {
@@ -216,12 +221,49 @@ describe('coreRegistriesClient contracts', () => {
         next_cursor: null,
       });
 
-    await expect(coreRegistriesClient.listAgents()).rejects.toThrow(
-      'Registry bridge response shape mismatch'
-    );
-    await expect(coreRegistriesClient.listToolDefinitions()).rejects.toThrow(
-      'Registry bridge response shape mismatch'
-    );
+    await expect(coreRegistriesClient.listAgents()).rejects.toMatchObject({
+      name: 'CoreRpcError',
+      data: { kind: 'YouPetCoreResponseShape' },
+    });
+    await expect(coreRegistriesClient.listToolDefinitions()).rejects.toMatchObject({
+      name: 'CoreRpcError',
+      data: { kind: 'YouPetCoreResponseShape' },
+    });
+  });
+
+  it('classifies malformed exact-record shapes as YouPetCoreResponseShape', async () => {
+    const { callCoreRpc } = await import('../coreRpcClient');
+    vi.mocked(callCoreRpc).mockResolvedValueOnce({
+      toolDefinition: {
+        tool_key: 'tool.alpha',
+        version: 3,
+        lifecycle_state: 'active',
+        definition_fingerprint: 'b'.repeat(64),
+        schema_version: 1,
+        display_name: 'Tool Alpha',
+        description: 'Reads data',
+        tool_effect_class: 'read_only',
+        abstract_auth_scopes: ['scope.read'],
+        input_schema: { type: 'object' },
+        output_schema: { type: 'object' },
+        timeout_defaults: { ms: 5000 },
+        retry_contract: { attempts: 2 },
+        audit_contract: { mode: 'metadata_only' },
+      },
+    });
+
+    const operation = coreRegistriesClient.getToolDefinitionVersion({
+      toolKey: 'tool.alpha',
+      version: 3,
+    });
+
+    await expect(operation).rejects.toMatchObject({
+      name: 'CoreRpcError',
+      data: { kind: 'YouPetCoreResponseShape' },
+    });
+    await expect(operation.catch(extractRegistryBridgeErrorMeta)).resolves.toEqual({
+      kind: 'YouPetCoreResponseShape',
+    });
   });
 
   it('loads exact records through domain-specific key/version methods', async () => {
@@ -500,6 +542,13 @@ describe('coreRegistriesClient contracts', () => {
           httpStatus: 404,
           coreCode: 'tool_definition_not_found',
         },
+      },
+      {
+        error: new CoreRpcError('schema mismatch', 'unknown', undefined, {
+          kind: 'YouPetCoreResponseShape',
+          youpet: { raw_body: { secret: 'must-not-leak' } },
+        }),
+        expected: { kind: 'YouPetCoreResponseShape' },
       },
     ];
 

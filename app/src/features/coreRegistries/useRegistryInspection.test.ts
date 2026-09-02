@@ -349,6 +349,51 @@ describe('useRegistryInspection', () => {
     expect(client.listToolEnablements).toHaveBeenCalledTimes(1);
   });
 
+  it('treats response-shape failures as blocked instead of preserving stale collection data', async () => {
+    const client = makeClient();
+    vi.mocked(client.listAgents).mockResolvedValue({ items: [], nextCursor: null });
+    vi.mocked(client.listToolDefinitions)
+      .mockResolvedValueOnce({ items: [toolDefinitionSummary], nextCursor: null })
+      .mockRejectedValueOnce(
+        new CoreRpcError('schema mismatch', 'unknown', undefined, {
+          kind: 'YouPetCoreResponseShape',
+        })
+      );
+    vi.mocked(client.listToolEnablements).mockResolvedValue({ items: [toolEnablement] });
+
+    const { result } = renderHook(() => useRegistryInspection({ client }));
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.collections.agents.observation).toEqual({
+        kind: 'empty',
+        observedAt: '2026-09-01T12:00:00.000Z',
+      })
+    );
+
+    await act(async () => {
+      await result.current.setTab('tools');
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.tools.collections.toolDefinitions.items).toEqual([
+        toolDefinitionSummary,
+      ])
+    );
+
+    await act(async () => {
+      await result.current.retryCollection('toolDefinitions');
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.tools.collections.toolDefinitions.observation).toEqual({
+        kind: 'blocked',
+        error: { kind: 'YouPetCoreResponseShape' },
+      })
+    );
+    expect(result.current.state.tabs.tools.collections.toolDefinitions.items).toEqual([]);
+    expect(result.current.state.tabs.tools.summaryState).toBe('blocked');
+  });
+
   it('consumes invalid-cursor restart budget once per collection generation even after a successful restart', async () => {
     const client = makeClient();
     vi.mocked(client.listAgents)
