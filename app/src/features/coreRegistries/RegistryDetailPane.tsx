@@ -176,6 +176,20 @@ function summarizeRecordShape(t: TranslateFn, value: Record<string, unknown>): s
         .replace('{sample}', sample);
 }
 
+function summarizeScalarRecord(t: TranslateFn, value: Record<string, unknown>): string {
+  const scalarEntries = Object.entries(value).filter(
+    (entry): entry is [string, string | number | boolean] =>
+      typeof entry[1] === 'string' || typeof entry[1] === 'number' || typeof entry[1] === 'boolean'
+  );
+  if (scalarEntries.length === 0) {
+    return summarizeRecordShape(t, value);
+  }
+  return scalarEntries
+    .slice(0, 3)
+    .map(([key, value]) => `${key}: ${String(value)}`)
+    .join(' · ');
+}
+
 function summarizeNormalizationContracts(
   t: TranslateFn,
   contracts: ConnectorNormalizationContract[]
@@ -540,7 +554,7 @@ function ConnectorTypeDetail({ record }: { record: ConnectorRegistryType }) {
             ],
             [
               t('registries.detail.field.deliveryBehavior'),
-              summarizeRecordShape(t, record.deliveryBehavior),
+              summarizeScalarRecord(t, record.deliveryBehavior),
             ],
           ]}
         />
