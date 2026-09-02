@@ -28,8 +28,7 @@ const PRIMARY_BINDING_KEY = 'binding.registry-primary';
 const PRIMARY_BINDING_DETAIL = 'binding.registry-primary v2';
 const PRIMARY_CONNECTOR_KEY = 'connector.registry.feed';
 const PRIMARY_CONNECTOR_DETAIL = 'connector.registry.feed v2';
-const PRIMARY_FINGERPRINT =
-  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const PRIMARY_FINGERPRINT = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 describe('M2.2.4 Core registries live desktop flow', function () {
   this.timeout(120_000);
@@ -51,7 +50,9 @@ describe('M2.2.4 Core registries live desktop flow', function () {
     const initial = await collectionSnapshot();
     expect(initial.tabStates).toContain('Agents:selected');
     expect(initial.loadMoreButtons).toContain('Load more agents');
-    expect(initial.text).toContain('This screen never writes configuration, secrets, or runtime state.');
+    expect(initial.text).toContain(
+      'This screen never writes configuration, secrets, or runtime state.'
+    );
     expect(initial.text).toContain('Observed at');
     expect(initial.text).toContain('Agents · Observed');
     expect(initial.text).not.toContain('Save');
@@ -100,7 +101,10 @@ describe('M2.2.4 Core registries live desktop flow', function () {
     await loadMore('Load more types');
     await loadMore('Load more bindings');
 
-    await clickCollectionRow('Bindings', PRIMARY_BINDING_KEY);
+    await clickCollectionRow('Bindings', PRIMARY_BINDING_KEY, [
+      'v2 · connector.registry.feed v2',
+      'Active',
+    ]);
     await waitForDetailHeading(PRIMARY_BINDING_DETAIL);
     const binding = await detailSnapshot();
     expect(binding.text).toContain('Binding lifecycle');

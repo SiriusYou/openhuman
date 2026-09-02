@@ -307,6 +307,21 @@ describe('CoreRegistriesPage', () => {
     expect(loadMoreCollectionMock).toHaveBeenCalledWith('toolDefinitions');
   });
 
+  it('labels a Connector Binding version separately from its Connector Type version', () => {
+    useRegistryInspectionMock.mockReturnValue({
+      state: cloneState({ urlState: { tab: 'connectors', detail: null } }),
+      setTab: setTabMock,
+      refreshActiveTab: refreshActiveTabMock,
+      loadMoreCollection: loadMoreCollectionMock,
+      openDetail: openDetailMock,
+      retryCollection: retryCollectionMock,
+    });
+
+    render(<CoreRegistriesPage />);
+
+    expect(screen.getByText('v2 · connector.wecom v4')).toBeInTheDocument();
+  });
+
   it('renders the actual detail pane on wide screens and keeps the drawer narrow-only', () => {
     viewportWidth = 1440;
     useRegistryInspectionMock.mockReturnValue({
