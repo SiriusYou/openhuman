@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
@@ -189,7 +192,74 @@ function cloneState(overrides?: Partial<RegistryInspectionState>): RegistryInspe
   };
 }
 
+function readSource(relativePath: string): string {
+  return readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8');
+}
+
 describe('CoreRegistriesPage', () => {
+  it('keeps registry inspection copy in locale tables instead of hard-coded source literals', () => {
+    const homeSource = readSource('../../pages/Home.tsx');
+    const pageSource = readSource('./CoreRegistriesPage.tsx');
+    const collectionSource = readSource('./RegistryCollectionPane.tsx');
+    const detailSource = readSource('./RegistryDetailPane.tsx');
+    const drawerSource = readSource('./RegistryDetailDrawer.tsx');
+
+    for (const [source, forbidden] of [
+      [
+        homeSource,
+        [
+          "title: 'Core Registries'",
+          "title: 'Core integration required'",
+          "description: 'Inspect exact Agent, Tool, and Connector records from Core.'",
+          "description: 'Complete the desktop Core integration before inspecting registries.'",
+          "description: 'Repair the desktop Core integration before inspecting registries.'",
+          "description: 'Reconnect the local Core bridge before inspecting registries.'",
+          "description: 'Reconnect to the internet before inspecting registries.'",
+        ],
+      ],
+      [
+        pageSource,
+        [
+          'Registry Views',
+          'Core Registries',
+          'Read-only inspection for exact agent, tool, and connector records backed by Core.',
+          'This screen never writes configuration, secrets, or runtime state.',
+          'This screen is read-only and cannot write configuration for you.',
+          'Fix the Core connection in the existing integration flow, then retry inspection here.',
+          'Published agent records. No record is auto-selected.',
+          'Published tool contracts, distinct from permission enablements.',
+          'Permission gates and runtime approval limits for tools.',
+          'Bound provider accounts and capability selections.',
+        ],
+      ],
+      [
+        collectionSource,
+        [
+          'Waiting for the first observation.',
+          'Refreshing the exact records from Core.',
+          'Observed with no records returned.',
+          'No exact records available in this collection yet.',
+        ],
+      ],
+      [
+        detailSource,
+        [
+          'Copy full fingerprint',
+          'Logical references need follow-up outside this read-only view.',
+          'Select a record to inspect its exact registry version.',
+          'Loading exact registry detail...',
+          'Core reported that this exact record version no longer exists.',
+          'Core could not load this exact record right now.',
+        ],
+      ],
+      [drawerSource, ['Registry Detail', 'aria-label="Close"']],
+    ] as const) {
+      for (const value of forbidden) {
+        expect(source).not.toContain(value);
+      }
+    }
+  });
+
   it('renders registry tabs and does not auto-select a detail record', () => {
     useRegistryInspectionMock.mockReturnValue({
       state: cloneState(),

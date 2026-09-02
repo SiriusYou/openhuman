@@ -36,6 +36,22 @@ function loadLocale(locale: string): Record<string, string> {
 }
 
 const enFlat = enAggregate as Record<string, string>;
+const REQUIRED_REGISTRY_INSPECTION_KEYS = [
+  'home.coreRegistries',
+  'home.coreRegistriesDescription',
+  'home.coreRegistriesBlockedTitle',
+  'home.coreRegistriesBlockedMissingDescription',
+  'home.coreRegistriesBlockedInvalidDescription',
+  'home.coreRegistriesBlockedBridgeDescription',
+  'home.coreRegistriesBlockedOfflineDescription',
+  'registries.page.eyebrow',
+  'registries.page.title',
+  'registries.page.description',
+  'registries.page.retry',
+  'registries.detail.empty',
+  'registries.detail.copyFingerprint',
+  'registries.drawer.title',
+] as const;
 
 describe('i18n coverage', () => {
   it.each(LOCALES)('locale %s has a translation file', locale => {
@@ -52,5 +68,18 @@ describe('i18n coverage', () => {
     const flat = loadLocale(locale);
     const extra = Object.keys(flat).filter(k => !(k in enFlat));
     expect(extra).toEqual([]);
+  });
+
+  it('registry inspection keys exist in English', () => {
+    for (const key of REQUIRED_REGISTRY_INSPECTION_KEYS) {
+      expect(enFlat[key]).toBeDefined();
+    }
+  });
+
+  it.each(LOCALES)('locale %s includes the registry inspection keys', locale => {
+    const flat = loadLocale(locale);
+    for (const key of REQUIRED_REGISTRY_INSPECTION_KEYS) {
+      expect(flat[key]).toBeDefined();
+    }
   });
 });

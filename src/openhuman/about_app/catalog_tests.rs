@@ -8,6 +8,43 @@ fn lookup_returns_expected_capability() {
 }
 
 #[test]
+fn core_registry_inspection_capability_is_registered_as_read_only_desktop_view() {
+    let capability = lookup("intelligence.inspect_core_registries")
+        .expect("core registry inspection capability should exist");
+
+    assert_eq!(capability.name, "Inspect Core registries");
+    assert_eq!(capability.category, CapabilityCategory::Intelligence);
+    assert_eq!(capability.status, CapabilityStatus::Beta);
+    assert_eq!(capability.domain, "youpet_registry");
+    assert!(
+        capability.description.contains("read-only"),
+        "description must disclose that the view is read-only: {}",
+        capability.description
+    );
+    assert!(
+        capability.description.contains("Agent") && capability.description.contains("Tool")
+            && capability.description.contains("Connector"),
+        "description must cover the exact registry families: {}",
+        capability.description
+    );
+    assert!(
+        capability.how_to.contains("Home > Core Registries"),
+        "how_to must point at the desktop route entry: {}",
+        capability.how_to
+    );
+    assert!(
+        capability.how_to.contains("desktop only"),
+        "how_to must mark the view as desktop only: {}",
+        capability.how_to
+    );
+    assert!(
+        capability.how_to.contains("configured YouPet Core"),
+        "how_to must pin the configured YouPet Core prerequisite: {}",
+        capability.how_to
+    );
+}
+
+#[test]
 fn composio_direct_mode_capabilities_are_registered() {
     // PR #1710 PR3: ensure the direct-mode capability and the trigger-gap
     // capability are advertised in the catalog so downstream UI surfaces
