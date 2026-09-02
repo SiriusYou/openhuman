@@ -363,6 +363,65 @@ describe('CoreRegistriesPage', () => {
     }
   });
 
+  it('bounds oversized Retry-After wake-up timers without retrying early', async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout');
+    try {
+      vi.setSystemTime(new Date('2026-09-02T04:06:00Z'));
+      useRegistryInspectionMock.mockReturnValue({
+        state: cloneState({
+          urlState: { tab: 'tools', detail: null },
+          tabs: {
+            ...baseState.tabs,
+            tools: {
+              ...baseState.tabs.tools,
+              collections: {
+                ...baseState.tabs.tools.collections,
+                toolDefinitions: {
+                  ...baseState.tabs.tools.collections.toolDefinitions,
+                  observation: {
+                    kind: 'stale',
+                    observedAt: '2026-09-02T04:06:00Z',
+                    error: {
+                      kind: 'YouPetCoreHttpError',
+                      httpStatus: 429,
+                      coreCode: 'rate_limited',
+                      retryAfterSeconds: 3_000_000,
+                    },
+                  },
+                  retryDisabledUntil: Date.now() + 3_000_000_000,
+                },
+              },
+            },
+          },
+        }),
+        setTab: setTabMock,
+        refreshActiveTab: refreshActiveTabMock,
+        loadMoreCollection: loadMoreCollectionMock,
+        openDetail: openDetailMock,
+        retryCollection: retryCollectionMock,
+      });
+
+      render(<CoreRegistriesPage />);
+
+      const retry = within(
+        screen.getByRole('heading', { name: 'Definitions' }).closest('section') as HTMLElement
+      ).getByRole('button', { name: 'Retry' });
+      expect(retry).toBeDisabled();
+      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 2_147_483_647);
+
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+      });
+
+      expect(retry).toBeDisabled();
+      expect(retryCollectionMock).not.toHaveBeenCalled();
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('labels a Connector Binding version separately from its Connector Type version', () => {
     useRegistryInspectionMock.mockReturnValue({
       state: cloneState({ urlState: { tab: 'connectors', detail: null } }),
