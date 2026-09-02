@@ -105,13 +105,32 @@ REAL_NVM_DIR="${NVM_DIR:-$REAL_HOME/.nvm}"
 REAL_APPIUM_HOME="${APPIUM_HOME:-$REAL_HOME/.appium}"
 REAL_COREPACK_HOME="${COREPACK_HOME:-$REAL_HOME/.cache/node/corepack}"
 
+artifact_dir_retained_after_cleanup() {
+  case "$ARTIFACT_DIR" in
+    "$RUN_ROOT"|"$RUN_ROOT"/*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+pid_still_running() {
+  local pid="$1"
+  [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1
+}
+
 cleanup() {
+  local exit_status=$?
+  local retained_artifacts=1
+  trap - EXIT
   set +e
-  if [[ -n "$PROXY_PID" ]]; then
+  if ! artifact_dir_retained_after_cleanup; then
+    retained_artifacts=0
+  fi
+
+  if pid_still_running "$PROXY_PID"; then
     kill "$PROXY_PID" 2>/dev/null || true
     wait "$PROXY_PID" 2>/dev/null || true
   fi
-  if [[ -n "$CORE_PID" ]]; then
+  if pid_still_running "$CORE_PID"; then
     kill "$CORE_PID" 2>/dev/null || true
     wait "$CORE_PID" 2>/dev/null || true
   fi
@@ -121,6 +140,30 @@ cleanup() {
   if [[ -d "$RUN_ROOT" ]]; then
     rm -rf "$RUN_ROOT"
   fi
+  cleanup_ok=1
+  if pid_still_running "$PROXY_PID" || pid_still_running "$CORE_PID"; then
+    cleanup_ok=0
+  fi
+  if [[ -d "$PG_DATA" ]] && pg_ctl -D "$PG_DATA" status >/dev/null 2>&1; then
+    cleanup_ok=0
+  fi
+  if [[ -e "$RUN_ROOT" ]]; then
+    cleanup_ok=0
+  fi
+  if [[ "$retained_artifacts" -eq 1 && -d "$ARTIFACT_DIR" ]]; then
+    write_meta "$cleanup_ok"
+    write_checksums || cleanup_ok=0
+    verify_checksums || cleanup_ok=0
+    scan_retained_artifacts || cleanup_ok=0
+    if [[ "$cleanup_ok" -eq 0 ]]; then
+      write_meta "$cleanup_ok"
+      write_checksums || true
+    fi
+  fi
+  if [[ "$cleanup_ok" -eq 0 && "$exit_status" -eq 0 ]]; then
+    exit_status=1
+  fi
+  exit "$exit_status"
 }
 trap cleanup EXIT
 
@@ -302,7 +345,7 @@ start_core() {
   ) >"$CORE_LOG" 2>&1 &
   CORE_PID=$!
   for _ in $(seq 1 60); do
-    if curl -fsS "http://127.0.0.1:$CORE_PORT/health" >/dev/null 2>&1; then
+    if curl -fsS "http://127.0.0.1:$CORE_PORT/healthz" >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -371,7 +414,7 @@ run_openhuman_e2e() {
 }
 
 write_meta() {
-  python3 - "$ARTIFACT_DIR/meta.json" "$EXPECTED_CORE_SHA" "$CORE_PORT" "$PROXY_PORT" "$MOCK_PORT" "$APPIUM_PORT" "$CEF_CDP_PORT" <<'PY'
+  python3 - "$ARTIFACT_DIR/meta.json" "$EXPECTED_CORE_SHA" "$CORE_PORT" "$PROXY_PORT" "$MOCK_PORT" "$APPIUM_PORT" "$CEF_CDP_PORT" "${1:-0}" <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -386,7 +429,7 @@ path.write_text(
             "mockPort": int(sys.argv[5]),
             "appiumPort": int(sys.argv[6]),
             "cefCdpPort": int(sys.argv[7]),
-            "cleanup_ok": True,
+            "cleanup_ok": sys.argv[8] == "1",
             "next_cursor": "redacted",
         },
         indent=2,
@@ -407,10 +450,9 @@ snapshot_all after
 cmp_snapshots
 verify_proxy_log
 normalize_ui_sources
-write_meta
+write_meta 0
 write_checksums
 verify_checksums
 scan_retained_artifacts
-cleanup_ok=1
-printf 'M224 core registries live proof passed\nartifacts=%s\ncore_sha=%s\ncleanup_ok=%s\n' \
-  "$ARTIFACT_DIR" "$EXPECTED_CORE_SHA" "$cleanup_ok"
+printf 'M224 core registries live proof passed\nartifacts=%s\ncore_sha=%s\ncleanup_ok=pending-exit-trap\n' \
+  "$ARTIFACT_DIR" "$EXPECTED_CORE_SHA"

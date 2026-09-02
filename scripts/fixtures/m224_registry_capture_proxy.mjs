@@ -11,17 +11,31 @@ if (!targetBase || !outputPath || !listenPort) {
   process.exit(2);
 }
 
+const PAGED_QUERY_KEYS = new Set(['limit', 'cursor']);
+
 const ALLOWED_GET_PATTERNS = [
-  /^\/api\/v1\/kernel\/agents(?:\?.*)?$/,
-  /^\/api\/v1\/kernel\/agents\/[^/]+\/versions\/[1-9][0-9]*$/,
-  /^\/api\/v1\/kernel\/tool-definitions(?:\?.*)?$/,
-  /^\/api\/v1\/kernel\/tool-definitions\/[^/]+\/versions\/[1-9][0-9]*$/,
-  /^\/api\/v1\/kernel\/tool-enablement$/,
-  /^\/api\/v1\/kernel\/tool-enablement\/[^/]+\/versions\/[1-9][0-9]*$/,
-  /^\/api\/v1\/kernel\/connector-types(?:\?.*)?$/,
-  /^\/api\/v1\/kernel\/connector-types\/[^/]+\/versions\/[1-9][0-9]*$/,
-  /^\/api\/v1\/kernel\/connector-bindings(?:\?.*)?$/,
-  /^\/api\/v1\/kernel\/connector-bindings\/[^/]+\/versions\/[1-9][0-9]*$/,
+  { pattern: /^\/api\/v1\/kernel\/agents$/, allowPagedQuery: true },
+  { pattern: /^\/api\/v1\/kernel\/agents\/[^/]+\/versions\/[1-9][0-9]*$/, allowPagedQuery: false },
+  { pattern: /^\/api\/v1\/kernel\/tool-definitions$/, allowPagedQuery: true },
+  {
+    pattern: /^\/api\/v1\/kernel\/tool-definitions\/[^/]+\/versions\/[1-9][0-9]*$/,
+    allowPagedQuery: false,
+  },
+  { pattern: /^\/api\/v1\/kernel\/tool-enablement$/, allowPagedQuery: false },
+  {
+    pattern: /^\/api\/v1\/kernel\/tool-enablement\/[^/]+\/versions\/[1-9][0-9]*$/,
+    allowPagedQuery: false,
+  },
+  { pattern: /^\/api\/v1\/kernel\/connector-types$/, allowPagedQuery: true },
+  {
+    pattern: /^\/api\/v1\/kernel\/connector-types\/[^/]+\/versions\/[1-9][0-9]*$/,
+    allowPagedQuery: false,
+  },
+  { pattern: /^\/api\/v1\/kernel\/connector-bindings$/, allowPagedQuery: true },
+  {
+    pattern: /^\/api\/v1\/kernel\/connector-bindings\/[^/]+\/versions\/[1-9][0-9]*$/,
+    allowPagedQuery: false,
+  },
 ];
 
 const entries = [];
@@ -37,24 +51,51 @@ function sanitizePath(rawUrl) {
   if (limit) {
     safe.searchParams.set('limit', limit);
   }
-  if (parsed.searchParams.has('cursor=')) {
-    safe.searchParams.set('cursor', '[redacted]');
-  }
   if (parsed.searchParams.has('cursor')) {
     safe.searchParams.set('cursor', '[redacted]');
-    safe.searchParams.delete('cursor');
   }
   return `${safe.pathname}${safe.search}`;
 }
 
-function assertAllowed(method, path) {
-  return method === 'GET' && ALLOWED_GET_PATTERNS.some(pattern => pattern.test(path));
+function validatePagedQuery(search) {
+  if (!search) {
+    return true;
+  }
+  if (!search.startsWith('?')) {
+    return false;
+  }
+  const rawPairs = search.slice(1).split('&');
+  if (rawPairs.some(segment => segment.length === 0)) {
+    return false;
+  }
+  const searchParams = new URLSearchParams(search);
+  const seenKeys = new Set();
+  for (const [key] of searchParams.entries()) {
+    if (!key || !PAGED_QUERY_KEYS.has(key) || seenKeys.has(key)) {
+      return false;
+    }
+    seenKeys.add(key);
+  }
+  return seenKeys.size === rawPairs.length;
+}
+
+function assertAllowed(method, requestUrl) {
+  if (method !== 'GET') {
+    return false;
+  }
+  const matched = ALLOWED_GET_PATTERNS.find(({ pattern }) => pattern.test(requestUrl.pathname));
+  if (!matched) {
+    return false;
+  }
+  return matched.allowPagedQuery
+    ? validatePagedQuery(requestUrl.search)
+    : requestUrl.search.length === 0;
 }
 
 const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url ?? '/', targetBase);
   const safePath = sanitizePath(req.url ?? '/');
-  if (!assertAllowed(req.method ?? '', requestUrl.pathname + requestUrl.search)) {
+  if (!assertAllowed(req.method ?? '', requestUrl)) {
     entries.push({
       method: req.method ?? 'UNKNOWN',
       path: safePath,
