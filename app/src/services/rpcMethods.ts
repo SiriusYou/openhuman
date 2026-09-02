@@ -57,8 +57,8 @@ export const CORE_RPC_METHODS = {
   youpetRegistryListConnectorTypes: 'openhuman.youpet_registry_list_connector_types',
   youpetRegistryGetConnectorTypeVersion: 'openhuman.youpet_registry_get_connector_type_version',
   youpetRegistryListConnectorBindings: 'openhuman.youpet_registry_list_connector_bindings',
-  youpetRegistryGetConnectorBindingVersion:
-    'openhuman.youpet_registry_get_connector_binding_version',
+  // prettier-ignore
+  youpetRegistryGetConnectorBindingVersion: 'openhuman.youpet_registry_get_connector_binding_version',
 } as const;
 
 export type CoreRpcMethod = (typeof CORE_RPC_METHODS)[keyof typeof CORE_RPC_METHODS];
