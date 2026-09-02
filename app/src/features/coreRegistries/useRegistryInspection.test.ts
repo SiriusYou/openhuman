@@ -395,4 +395,126 @@ describe('useRegistryInspection', () => {
     expect(client.listAgents).toHaveBeenCalledTimes(4);
     expect(result.current.state.tabs.agents.collections.agents.items).toEqual([]);
   });
+
+  it('replaces the current detail URL with tab-only state when a surface blocker clears the active tab', async () => {
+    const client = makeClient();
+    const blockedError = new CoreRpcError('forbidden actor', 'unknown', 403, {
+      kind: 'YouPetCoreHttpError',
+      youpet: { http_status: 403, code: 'forbidden_actor' },
+    });
+    const replaceStateSpy = vi.spyOn(window.history, 'replaceState');
+
+    vi.mocked(client.listAgents).mockResolvedValue({ items: [agentSummary], nextCursor: null });
+    vi.mocked(client.listToolDefinitions).mockResolvedValue({
+      items: [toolDefinitionSummary],
+      nextCursor: null,
+    });
+    vi.mocked(client.listToolEnablements).mockResolvedValue({ items: [toolEnablement] });
+    vi.mocked(client.getToolDefinitionVersion).mockRejectedValue(blockedError);
+
+    const { result } = renderHook(() => useRegistryInspection({ client }));
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.collections.agents.items).toEqual([agentSummary])
+    );
+
+    await act(async () => {
+      await result.current.setTab('tools');
+    });
+
+    await waitFor(() => expect(result.current.state.tabs.tools.summaryState).toBe('fresh'));
+
+    await act(async () => {
+      await result.current.openDetail({ kind: 'tool-definition', key: 'tool.alpha', version: 3 });
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.surfaceError).toEqual({
+        kind: 'YouPetCoreHttpError',
+        httpStatus: 403,
+        coreCode: 'forbidden_actor',
+      })
+    );
+
+    expect(result.current.state.urlState).toEqual({ tab: 'tools', detail: null });
+    expect(window.location.search).toBe('?tab=tools');
+    expect(replaceStateSpy).toHaveBeenCalledWith({}, '', '/registries?tab=tools');
+  });
+
+  it('reloads a previously visited tab after a surface blocker resets all tab data', async () => {
+    const client = makeClient();
+    const blockedError = new CoreRpcError('forbidden actor', 'unknown', 403, {
+      kind: 'YouPetCoreHttpError',
+      youpet: { http_status: 403, code: 'forbidden_actor' },
+    });
+
+    vi.mocked(client.listAgents).mockResolvedValue({ items: [agentSummary], nextCursor: null });
+    vi.mocked(client.listToolDefinitions)
+      .mockResolvedValueOnce({ items: [toolDefinitionSummary], nextCursor: null })
+      .mockRejectedValueOnce(blockedError)
+      .mockResolvedValueOnce({
+        items: [{ ...toolDefinitionSummary, version: 4 }],
+        nextCursor: null,
+      });
+    vi.mocked(client.listToolEnablements)
+      .mockResolvedValueOnce({ items: [toolEnablement] })
+      .mockResolvedValueOnce({ items: [toolEnablement] })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            ...toolEnablement,
+            version: 6,
+            generation: 13,
+            updatedAt: '2026-09-01T12:07:00Z',
+          },
+        ],
+      });
+
+    const { result } = renderHook(() => useRegistryInspection({ client }));
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.collections.agents.items).toEqual([agentSummary])
+    );
+
+    await act(async () => {
+      await result.current.setTab('tools');
+    });
+
+    await waitFor(() => expect(result.current.state.tabs.tools.summaryState).toBe('fresh'));
+
+    await act(async () => {
+      await result.current.refreshActiveTab();
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.surfaceError).toEqual({
+        kind: 'YouPetCoreHttpError',
+        httpStatus: 403,
+        coreCode: 'forbidden_actor',
+      })
+    );
+
+    expect(result.current.state.tabs.tools.collections.toolDefinitions.items).toEqual([]);
+    expect(result.current.state.tabs.tools.collections.toolEnablements.items).toEqual([]);
+
+    await act(async () => {
+      await result.current.setTab('tools');
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.tools.collections.toolDefinitions.items).toEqual([
+        { ...toolDefinitionSummary, version: 4 },
+      ])
+    );
+    expect(result.current.state.tabs.tools.collections.toolEnablements.items).toEqual([
+      {
+        ...toolEnablement,
+        version: 6,
+        generation: 13,
+        updatedAt: '2026-09-01T12:07:00Z',
+      },
+    ]);
+    expect(client.listToolDefinitions).toHaveBeenCalledTimes(3);
+    expect(client.listToolEnablements).toHaveBeenCalledTimes(3);
+  });
 });
