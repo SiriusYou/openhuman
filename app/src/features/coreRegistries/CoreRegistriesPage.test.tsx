@@ -2,10 +2,10 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { RegistryInspectionState } from './types';
+import ReadOnlyJson from './ReadOnlyJson';
 import RegistryDetailDrawer from './RegistryDetailDrawer';
 import RegistryDetailPane from './RegistryDetailPane';
-import ReadOnlyJson from './ReadOnlyJson';
+import type { RegistryInspectionState } from './types';
 
 const openDetailMock = vi.hoisted(() => vi.fn());
 const setTabMock = vi.hoisted(() => vi.fn());
@@ -192,7 +192,9 @@ describe('CoreRegistriesPage', () => {
     expect(screen.getByRole('tab', { name: 'Connectors' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /agent\.alpha/i })).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: /registry detail/i })).not.toBeInTheDocument();
-    expect(screen.getByText('Select a record to inspect its exact registry version.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Select a record to inspect its exact registry version.')
+    ).toBeInTheDocument();
   });
 
   it('keeps Definitions and Enablements separate and distinguishes missing enablement from disabled', async () => {
@@ -240,8 +242,12 @@ describe('CoreRegistriesPage', () => {
 
     render(<CoreRegistriesPage />);
 
-    expect(screen.getByText('Core integration is blocking registry inspection.')).toBeInTheDocument();
-    expect(screen.getByText('This screen is read-only and cannot write configuration for you.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Core integration is blocking registry inspection.')
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('This screen is read-only and cannot write configuration for you.')
+    ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /save|connect|apply/i })).not.toBeInTheDocument();
   });
@@ -250,9 +256,7 @@ describe('CoreRegistriesPage', () => {
 describe('RegistryDetailPane', () => {
   it('shows exact cross-links, unresolved references, lifecycle explanations, and inert JSON', async () => {
     const writeText = vi.fn();
-    Object.assign(navigator, {
-      clipboard: { writeText },
-    });
+    Object.assign(navigator, { clipboard: { writeText } });
 
     render(
       <RegistryDetailPane
@@ -284,7 +288,9 @@ describe('RegistryDetailPane', () => {
             },
           },
         }}
-        state={cloneState({ urlState: { tab: 'agents', detail: { kind: 'agent', key: 'agent.alpha', version: 7 } } })}
+        state={cloneState({
+          urlState: { tab: 'agents', detail: { kind: 'agent', key: 'agent.alpha', version: 7 } },
+        })}
         onOpenDetail={openDetailMock}
       />
     );
@@ -295,7 +301,9 @@ describe('RegistryDetailPane', () => {
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /tool\.alpha v3/i })).toBeInTheDocument();
     expect(screen.getByText('Unresolved: tool.missing v9')).toBeInTheDocument();
-    expect(screen.getByText('Logical references need follow-up outside this read-only view.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Logical references need follow-up outside this read-only view.')
+    ).toBeInTheDocument();
     expect(screen.getByText(/"domainKey": "ops"/)).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
 
