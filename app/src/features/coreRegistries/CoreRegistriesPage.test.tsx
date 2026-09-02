@@ -643,6 +643,63 @@ describe('RegistryDetailPane', () => {
     expect(screen.getByText('Definition fingerprint · bbbbbbbbbbbb')).toBeInTheDocument();
   });
 
+  it('keeps exact Agent tool links actionable before the Tools tab is first observed', () => {
+    const lazyToolsState = cloneState({
+      tabs: {
+        ...baseState.tabs,
+        tools: {
+          ...baseState.tabs.tools,
+          generation: 0,
+          observedAt: null,
+          summaryState: 'idle',
+          collections: {
+            ...baseState.tabs.tools.collections,
+            toolDefinitions: {
+              items: [],
+              nextCursor: null,
+              observation: { kind: 'not_loaded' },
+              lastObservedAt: null,
+              successGeneration: null,
+              restartGeneration: null,
+            },
+          },
+        },
+      },
+    });
+
+    render(
+      <RegistryDetailPane
+        activeTab="agents"
+        detailState={{
+          kind: 'loaded',
+          detail: { kind: 'agent', key: 'agent.alpha', version: 7 },
+          record: {
+            id: 'agent-row',
+            agentKey: 'agent.alpha',
+            version: 7,
+            lifecycleState: 'active',
+            configurationFingerprint: 'a'.repeat(64),
+            ownerActorType: 'service',
+            ownerActorId: 'registry-reader',
+            createdAt: '2026-09-01T12:00:00Z',
+            configuration: {
+              schemaVersion: 1,
+              domainKey: 'ops',
+              owner: { actorType: 'service', actorId: 'registry-reader' },
+              allowedToolRefs: [{ toolKey: 'tool.lazy', version: 1 }],
+              knowledgeScopeRefs: [],
+              riskPolicyRef: null,
+            },
+          },
+        }}
+        state={lazyToolsState}
+        onOpenDetail={openDetailMock}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: 'tool.lazy v1' })).toBeInTheDocument();
+  });
+
   it('shows connector contract summaries and logical reference warnings without exposing secrets', () => {
     render(
       <RegistryDetailPane
