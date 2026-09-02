@@ -62,6 +62,22 @@ s.close()
 PY
 }
 
+require_free_port() {
+  python3 - "$1" "$2" <<'PY'
+import socket
+import sys
+port = int(sys.argv[1])
+label = sys.argv[2]
+s = socket.socket()
+try:
+    s.bind(("127.0.0.1", port))
+except OSError as exc:
+    raise SystemExit(f"ERROR: {label} port {port} is unavailable: {exc}")
+finally:
+    s.close()
+PY
+}
+
 require_disposable_path() {
   local path="$1"
   case "$path" in
@@ -89,11 +105,17 @@ CORE_PORT="${M224_CORE_PORT:-$(pick_free_port)}"
 PROXY_PORT="${M224_PROXY_PORT:-$(pick_free_port)}"
 MOCK_PORT="${M224_MOCK_PORT:-$(pick_free_port)}"
 APPIUM_PORT="${M224_APPIUM_PORT:-$(pick_free_port)}"
-CEF_CDP_PORT="${M224_CEF_CDP_PORT:-$(pick_free_port)}"
+CEF_CDP_PORT="${M224_CEF_CDP_PORT:-19222}"
 PG_PORT=5432
 CORE_PID=""
 PROXY_PID=""
 cleanup_ok=0
+
+[[ "$CEF_CDP_PORT" == "19222" ]] || {
+  echo "ERROR: committed CEF runtime requires CDP port 19222" >&2
+  exit 2
+}
+require_free_port "$CEF_CDP_PORT" "CEF CDP"
 
 require_disposable_path "$PG_DATA"
 require_disposable_path "$PG_SOCKET"
