@@ -441,6 +441,71 @@ describe('useRegistryInspection', () => {
     expect(replaceStateSpy).toHaveBeenCalledWith({}, '', '/registries?tab=tools');
   });
 
+  it('does not resurrect cached detail from history after a surface blocker already cleared the selection', async () => {
+    const client = makeClient();
+    const blockedError = new CoreRpcError('forbidden actor', 'unknown', 403, {
+      kind: 'YouPetCoreHttpError',
+      youpet: { http_status: 403, code: 'forbidden_actor' },
+    });
+
+    vi.mocked(client.listAgents)
+      .mockResolvedValueOnce({ items: [agentSummary], nextCursor: null })
+      .mockRejectedValueOnce(blockedError);
+    vi.mocked(client.listToolDefinitions)
+      .mockResolvedValueOnce({
+        items: [toolDefinitionSummary],
+        nextCursor: null,
+      })
+      .mockRejectedValueOnce(blockedError);
+    vi.mocked(client.listToolEnablements)
+      .mockResolvedValueOnce({ items: [toolEnablement] })
+      .mockResolvedValueOnce({ items: [toolEnablement] });
+    vi.mocked(client.getToolDefinitionVersion).mockResolvedValue(toolDefinitionSummary);
+
+    const { result } = renderHook(() => useRegistryInspection({ client }));
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.collections.agents.items).toEqual([agentSummary])
+    );
+
+    await act(async () => {
+      await result.current.setTab('tools');
+    });
+
+    await waitFor(() => expect(result.current.state.tabs.tools.summaryState).toBe('fresh'));
+
+    await act(async () => {
+      await result.current.openDetail({ kind: 'tool-definition', key: 'tool.alpha', version: 3 });
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.tools.detail).toEqual({
+        kind: 'loaded',
+        detail: { kind: 'tool-definition', key: 'tool.alpha', version: 3 },
+        record: toolDefinitionSummary,
+      })
+    );
+
+    await act(async () => {
+      await result.current.setTab('agents');
+    });
+
+    await act(async () => {
+      await result.current.refreshActiveTab();
+      window.history.pushState(
+        {},
+        '',
+        '/registries?tab=tools&kind=tool-definition&key=tool.alpha&version=3'
+      );
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+
+    expect(result.current.state.urlState).toEqual({ tab: 'tools', detail: null });
+    expect(result.current.state.tabs.tools.detail).toEqual({ kind: 'none' });
+    expect(window.location.search).toBe('?tab=tools');
+    expect(client.getToolDefinitionVersion).toHaveBeenCalledTimes(1);
+  });
+
   it('reloads a previously visited tab after a surface blocker resets all tab data', async () => {
     const client = makeClient();
     const blockedError = new CoreRpcError('forbidden actor', 'unknown', 403, {
