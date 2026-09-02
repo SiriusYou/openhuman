@@ -92,6 +92,9 @@ validate_runner_source() {
   assert_contains "$runner_path" "$PROXY_RELPATH" || return 1
   assert_contains "$runner_path" "$FIXTURE_RELPATH" || return 1
   assert_contains "$runner_path" "0014_connector_registry.sql" || return 1
+  assert_contains "$runner_path" 'for migration in "$CORE_DIR"/migrations/00??_*.sql' || return 1
+  assert_contains "$runner_path" '[[ "$applied_count" -eq 14 ]]' || return 1
+  assert_not_contains "$runner_path" '00{01..09}_*.sql' || return 1
   assert_contains "$runner_path" "audit_logs" || return 1
   assert_contains "$runner_path" "status --short" || return 1
   assert_contains "$runner_path" "/private/tmp/*|/tmp/*|/private/var/folders/*|/var/folders/*" || return 1
