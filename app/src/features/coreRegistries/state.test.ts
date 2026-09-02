@@ -391,12 +391,10 @@ describe('registry inspection state', () => {
       items: [toolEnablement],
       observedAt: '2026-09-01T12:31:00Z',
     });
-    state.tabs.tools.collections.toolDefinitions.retryDisabledUntil = Date.parse(
-      '2026-09-01T12:32:05Z'
-    );
-    state.tabs.tools.collections.toolEnablements.retryDisabledUntil = Date.parse(
-      '2026-09-01T12:32:07Z'
-    );
+    state.tabs.tools.collections.toolDefinitions.retryDisabledUntil =
+      Date.parse('2026-09-01T12:32:05Z');
+    state.tabs.tools.collections.toolEnablements.retryDisabledUntil =
+      Date.parse('2026-09-01T12:32:07Z');
 
     state = registryInspectionReducer(state, {
       type: 'tab_request_started',
