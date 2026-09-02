@@ -48,6 +48,17 @@ export const CORE_RPC_METHODS = {
   youpetGetActionRequest: 'openhuman.youpet_get_action_request',
   youpetApproveActionRequest: 'openhuman.youpet_approve_action_request',
   youpetRejectActionRequest: 'openhuman.youpet_reject_action_request',
+  youpetRegistryListAgents: 'openhuman.youpet_registry_list_agents',
+  youpetRegistryGetAgentVersion: 'openhuman.youpet_registry_get_agent_version',
+  youpetRegistryListToolDefinitions: 'openhuman.youpet_registry_list_tool_definitions',
+  youpetRegistryGetToolDefinitionVersion: 'openhuman.youpet_registry_get_tool_definition_version',
+  youpetRegistryListToolEnablements: 'openhuman.youpet_registry_list_tool_enablements',
+  youpetRegistryGetToolEnablementVersion: 'openhuman.youpet_registry_get_tool_enablement_version',
+  youpetRegistryListConnectorTypes: 'openhuman.youpet_registry_list_connector_types',
+  youpetRegistryGetConnectorTypeVersion: 'openhuman.youpet_registry_get_connector_type_version',
+  youpetRegistryListConnectorBindings: 'openhuman.youpet_registry_list_connector_bindings',
+  youpetRegistryGetConnectorBindingVersion:
+    'openhuman.youpet_registry_get_connector_binding_version',
 } as const;
 
 export type CoreRpcMethod = (typeof CORE_RPC_METHODS)[keyof typeof CORE_RPC_METHODS];
