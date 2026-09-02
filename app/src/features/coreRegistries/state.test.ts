@@ -370,6 +370,59 @@ describe('registry inspection state', () => {
     );
   });
 
+  it('preserves active Retry-After cooldowns when refresh or retry request-start actions begin', () => {
+    let state = createRegistryInspectionState({ tab: 'tools', detail: null });
+
+    state = registryInspectionReducer(state, {
+      type: 'cursor_collection_request_succeeded',
+      tab: 'tools',
+      collection: 'toolDefinitions',
+      generation: 1,
+      items: [toolDefinitionSummary],
+      nextCursor: 'tool-definition-cursor-1',
+      append: false,
+      observedAt: '2026-09-01T12:30:00Z',
+    });
+    state = registryInspectionReducer(state, {
+      type: 'unpaged_collection_request_succeeded',
+      tab: 'tools',
+      collection: 'toolEnablements',
+      generation: 1,
+      items: [toolEnablement],
+      observedAt: '2026-09-01T12:31:00Z',
+    });
+    state.tabs.tools.collections.toolDefinitions.retryDisabledUntil = Date.parse(
+      '2026-09-01T12:32:05Z'
+    );
+    state.tabs.tools.collections.toolEnablements.retryDisabledUntil = Date.parse(
+      '2026-09-01T12:32:07Z'
+    );
+
+    state = registryInspectionReducer(state, {
+      type: 'tab_request_started',
+      tab: 'tools',
+      generation: 2,
+    });
+
+    expect(state.tabs.tools.collections.toolDefinitions.retryDisabledUntil).toBe(
+      Date.parse('2026-09-01T12:32:05Z')
+    );
+    expect(state.tabs.tools.collections.toolEnablements.retryDisabledUntil).toBe(
+      Date.parse('2026-09-01T12:32:07Z')
+    );
+
+    state = registryInspectionReducer(state, {
+      type: 'collection_request_started',
+      tab: 'tools',
+      collection: 'toolDefinitions',
+      generation: 3,
+    });
+
+    expect(state.tabs.tools.collections.toolDefinitions.retryDisabledUntil).toBe(
+      Date.parse('2026-09-01T12:32:05Z')
+    );
+  });
+
   it('keeps the source collection and only invalidates detail on 404', () => {
     let state = createRegistryInspectionState({
       tab: 'agents',

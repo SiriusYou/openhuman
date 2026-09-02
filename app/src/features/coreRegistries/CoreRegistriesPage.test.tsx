@@ -363,6 +363,43 @@ describe('CoreRegistriesPage', () => {
     }
   });
 
+  it('disables Refresh and Load More controls while Retry-After is active', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-09-02T04:06:00Z'));
+      useRegistryInspectionMock.mockReturnValue({
+        state: cloneState({
+          urlState: { tab: 'tools', detail: null },
+          tabs: {
+            ...baseState.tabs,
+            tools: {
+              ...baseState.tabs.tools,
+              collections: {
+                ...baseState.tabs.tools.collections,
+                toolDefinitions: {
+                  ...baseState.tabs.tools.collections.toolDefinitions,
+                  retryDisabledUntil: Date.parse('2026-09-02T04:06:02Z'),
+                },
+              },
+            },
+          },
+        }),
+        setTab: setTabMock,
+        refreshActiveTab: refreshActiveTabMock,
+        loadMoreCollection: loadMoreCollectionMock,
+        openDetail: openDetailMock,
+        retryCollection: retryCollectionMock,
+      });
+
+      render(<CoreRegistriesPage />);
+
+      expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: /load more definitions/i })).toBeDisabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('bounds oversized Retry-After wake-up timers without retrying early', async () => {
     vi.useFakeTimers();
     const setTimeoutSpy = vi.spyOn(window, 'setTimeout');

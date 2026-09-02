@@ -475,6 +475,147 @@ describe('useRegistryInspection', () => {
     expect(client.listToolDefinitions).toHaveBeenCalledTimes(3);
   });
 
+  it('blocks refreshActiveTab while the active tab is still under Retry-After cooldown', async () => {
+    const client = makeClient();
+    vi.mocked(client.listAgents).mockResolvedValue({ items: [], nextCursor: null });
+    vi.mocked(client.listToolDefinitions)
+      .mockResolvedValueOnce({
+        items: [toolDefinitionSummary],
+        nextCursor: 'tool-definition-cursor-1',
+      })
+      .mockRejectedValueOnce(
+        new CoreRpcError('rate limited', 'unknown', 429, {
+          kind: 'YouPetCoreHttpError',
+          youpet: { http_status: 429, code: 'rate_limited', retry_after_seconds: 5 },
+        })
+      )
+      .mockResolvedValueOnce({
+        items: [{ ...toolDefinitionSummary, version: 4 }],
+        nextCursor: null,
+      });
+    vi.mocked(client.listToolEnablements).mockResolvedValue({ items: [toolEnablement] });
+
+    const { result } = renderHook(() => useRegistryInspection({ client }));
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.collections.agents.observation).toEqual({
+        kind: 'empty',
+        observedAt: '2026-09-01T12:00:00.000Z',
+      })
+    );
+
+    await act(async () => {
+      await result.current.setTab('tools');
+    });
+
+    await waitFor(() => expect(result.current.state.tabs.tools.summaryState).toBe('fresh'));
+
+    await act(async () => {
+      await result.current.retryCollection('toolDefinitions');
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.tools.collections.toolDefinitions.observation).toMatchObject(
+        {
+          kind: 'stale',
+          error: {
+            kind: 'YouPetCoreHttpError',
+            httpStatus: 429,
+            coreCode: 'rate_limited',
+            retryAfterSeconds: 5,
+          },
+        }
+      )
+    );
+
+    const retryDisabledUntil =
+      result.current.state.tabs.tools.collections.toolDefinitions.retryDisabledUntil;
+
+    await act(async () => {
+      await result.current.refreshActiveTab();
+    });
+
+    expect(result.current.state.tabs.tools.generation).toBe(2);
+    expect(result.current.state.tabs.tools.collections.toolDefinitions.retryDisabledUntil).toBe(
+      retryDisabledUntil
+    );
+    expect(client.listToolDefinitions).toHaveBeenCalledTimes(2);
+    expect(client.listToolEnablements).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks loadMoreCollection while the target collection is still under Retry-After cooldown', async () => {
+    const client = makeClient();
+    vi.mocked(client.listAgents).mockResolvedValue({ items: [], nextCursor: null });
+    vi.mocked(client.listToolDefinitions)
+      .mockResolvedValueOnce({
+        items: [toolDefinitionSummary],
+        nextCursor: 'tool-definition-cursor-1',
+      })
+      .mockRejectedValueOnce(
+        new CoreRpcError('rate limited', 'unknown', 429, {
+          kind: 'YouPetCoreHttpError',
+          youpet: { http_status: 429, code: 'rate_limited', retry_after_seconds: 5 },
+        })
+      )
+      .mockResolvedValueOnce({
+        items: [{ ...toolDefinitionSummary, version: 4 }],
+        nextCursor: null,
+      });
+    vi.mocked(client.listToolEnablements).mockResolvedValue({ items: [toolEnablement] });
+
+    const { result } = renderHook(() => useRegistryInspection({ client }));
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.collections.agents.observation).toEqual({
+        kind: 'empty',
+        observedAt: '2026-09-01T12:00:00.000Z',
+      })
+    );
+
+    await act(async () => {
+      await result.current.setTab('tools');
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.tools.collections.toolDefinitions.nextCursor).toBe(
+        'tool-definition-cursor-1'
+      )
+    );
+
+    await act(async () => {
+      await result.current.retryCollection('toolDefinitions');
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.tools.collections.toolDefinitions.observation).toMatchObject(
+        {
+          kind: 'stale',
+          error: {
+            kind: 'YouPetCoreHttpError',
+            httpStatus: 429,
+            coreCode: 'rate_limited',
+            retryAfterSeconds: 5,
+          },
+        }
+      )
+    );
+
+    const retryDisabledUntil =
+      result.current.state.tabs.tools.collections.toolDefinitions.retryDisabledUntil;
+
+    await act(async () => {
+      await result.current.loadMoreCollection('toolDefinitions');
+    });
+
+    expect(result.current.state.tabs.tools.collections.toolDefinitions.retryDisabledUntil).toBe(
+      retryDisabledUntil
+    );
+    expect(result.current.state.tabs.tools.collections.toolDefinitions.nextCursor).toBe(
+      'tool-definition-cursor-1'
+    );
+    expect(client.listToolDefinitions).toHaveBeenCalledTimes(2);
+  });
+
   it('consumes invalid-cursor restart budget once per collection generation even after a successful restart', async () => {
     const client = makeClient();
     vi.mocked(client.listAgents)
