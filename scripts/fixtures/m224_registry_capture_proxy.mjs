@@ -12,6 +12,7 @@ if (!targetBase || !outputPath || !listenPort) {
 }
 
 const PAGED_QUERY_KEYS = new Set(['limit', 'cursor']);
+const targetOrigin = new URL(targetBase).origin;
 
 const ALLOWED_GET_PATTERNS = [
   { pattern: /^\/api\/v1\/kernel\/agents$/, allowPagedQuery: true },
@@ -57,6 +58,14 @@ function sanitizePath(rawUrl) {
   return `${safe.pathname}${safe.search}`;
 }
 
+function parsePinnedRequestUrl(rawUrl) {
+  if (!rawUrl.startsWith('/') || rawUrl.startsWith('//')) {
+    return null;
+  }
+  const requestUrl = new URL(rawUrl, targetBase);
+  return requestUrl.origin === targetOrigin ? requestUrl : null;
+}
+
 function validatePagedQuery(search) {
   if (!search) {
     return true;
@@ -93,9 +102,10 @@ function assertAllowed(method, requestUrl) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const requestUrl = new URL(req.url ?? '/', targetBase);
-  const safePath = sanitizePath(req.url ?? '/');
-  if (!assertAllowed(req.method ?? '', requestUrl)) {
+  const rawUrl = req.url ?? '/';
+  const requestUrl = parsePinnedRequestUrl(rawUrl);
+  const safePath = sanitizePath(rawUrl);
+  if (!requestUrl || !assertAllowed(req.method ?? '', requestUrl)) {
     entries.push({
       method: req.method ?? 'UNKNOWN',
       path: safePath,
