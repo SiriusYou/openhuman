@@ -19,11 +19,13 @@ use super::{
     registry_get_connector_type_version, registry_get_tool_definition_version,
     registry_get_tool_enablement_version, registry_list_agents, registry_list_connector_bindings,
     registry_list_connector_types, registry_list_tool_definitions, registry_list_tool_enablements,
-    registry_schemas, RegistryCursorListResponse, RegistryGetAgentVersionRpcParams,
+    registry_schemas, AgentRegistryAgent, AgentRegistryAgentSummary,
+    ConnectorRegistryType, RegistryCursorListResponse, RegistryGetAgentVersionRpcParams,
     RegistryGetConnectorBindingVersionRpcParams, RegistryGetConnectorTypeVersionRpcParams,
     RegistryGetToolDefinitionVersionRpcParams, RegistryGetToolEnablementVersionRpcParams,
     RegistryListAgentsRpcParams, RegistryListConnectorBindingsRpcParams,
     RegistryListConnectorTypesRpcParams, RegistryListToolDefinitionsRpcParams,
+    ToolRegistryToolDefinition, ToolRegistryToolDefinitionSummary,
 };
 
 #[derive(Debug, Clone)]
@@ -387,4 +389,216 @@ fn registry_decoding_requires_next_cursor_for_cursor_lists() {
     }))
     .unwrap_err();
     assert!(err.to_string().contains("next_cursor"));
+}
+
+#[test]
+fn registry_agent_detail_accepts_published_knowledge_scope_shape() {
+    let agent: AgentRegistryAgent = serde_json::from_value(json!({
+        "id": "agent-version-123",
+        "agent_key": "agent.alpha",
+        "version": 7,
+        "lifecycle_state": "active",
+        "configuration": {
+            "schema_version": 1,
+            "domain_key": "care-plan",
+            "owner": {
+                "actor_type": "service",
+                "actor_id": "openhuman"
+            },
+            "allowed_tool_refs": [
+                {
+                    "tool_key": "tool.alpha",
+                    "version": 3
+                }
+            ],
+            "knowledge_scope_refs": [
+                {
+                    "source_key": "care-notes",
+                    "trust_version": "2026-08-31",
+                    "access_scope": "tenant"
+                }
+            ],
+            "risk_policy_ref": {
+                "policy_id": "policy.alpha",
+                "policy_version": "2026-08-31"
+            }
+        },
+        "configuration_fingerprint": "cfg_fp_123",
+        "owner_actor_type": "service",
+        "owner_actor_id": "openhuman",
+        "created_at": "2026-08-31T12:34:56Z"
+    }))
+    .expect("published agent detail payload should decode");
+
+    assert_eq!(agent.agent_key, "agent.alpha");
+    assert_eq!(agent.configuration.knowledge_scope_refs.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&agent.configuration.knowledge_scope_refs[0]).unwrap(),
+        json!({
+            "source_key": "care-notes",
+            "trust_version": "2026-08-31",
+            "access_scope": "tenant"
+        })
+    );
+}
+
+#[test]
+fn registry_agent_detail_rejects_unknown_owner_actor_type() {
+    let err = serde_json::from_value::<AgentRegistryAgent>(json!({
+        "id": "agent-version-123",
+        "agent_key": "agent.alpha",
+        "version": 7,
+        "lifecycle_state": "active",
+        "configuration": {
+            "schema_version": 1,
+            "domain_key": "care-plan",
+            "owner": {
+                "actor_type": "team",
+                "actor_id": "ops"
+            },
+            "allowed_tool_refs": [],
+            "knowledge_scope_refs": [],
+            "risk_policy_ref": null
+        },
+        "configuration_fingerprint": "cfg_fp_123",
+        "owner_actor_type": "service",
+        "owner_actor_id": "openhuman",
+        "created_at": "2026-08-31T12:34:56Z"
+    }))
+    .unwrap_err();
+
+    assert!(err.to_string().contains("actor_type"));
+}
+
+#[test]
+fn registry_agent_list_summary_rejects_non_active_lifecycle() {
+    for lifecycle_state in ["draft", "retired"] {
+        let err = serde_json::from_value::<RegistryCursorListResponse<AgentRegistryAgentSummary>>(
+            json!({
+                "items": [
+                    {
+                        "id": "agent-version-123",
+                        "agent_key": "agent.alpha",
+                        "version": 7,
+                        "lifecycle_state": lifecycle_state,
+                        "configuration_fingerprint": "cfg_fp_123",
+                        "owner_actor_type": "service",
+                        "owner_actor_id": "openhuman",
+                        "created_at": "2026-08-31T12:34:56Z"
+                    }
+                ],
+                "next_cursor": null
+            }),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("active"));
+    }
+}
+
+#[test]
+fn registry_tool_definition_list_summary_rejects_non_active_lifecycle() {
+    for lifecycle_state in ["draft", "retired"] {
+        let err = serde_json::from_value::<
+            RegistryCursorListResponse<ToolRegistryToolDefinitionSummary>,
+        >(json!({
+            "items": [
+                {
+                    "tool_key": "tool.alpha",
+                    "version": 3,
+                    "lifecycle_state": lifecycle_state,
+                    "definition_fingerprint": "def_fp_123",
+                    "schema_version": 1,
+                    "display_name": "Tool Alpha",
+                    "description": "Reads records",
+                    "tool_effect_class": "read_only",
+                    "abstract_auth_scopes": ["records:read"],
+                    "created_at": "2026-08-31T12:34:56Z"
+                }
+            ],
+            "next_cursor": null
+        }))
+        .unwrap_err();
+
+        assert!(err.to_string().contains("active"));
+    }
+}
+
+#[test]
+fn registry_tool_definition_requires_object_contract_fields() {
+    let valid_payload = json!({
+        "tool_key": "tool.alpha",
+        "version": 3,
+        "lifecycle_state": "active",
+        "definition_fingerprint": "def_fp_123",
+        "schema_version": 1,
+        "display_name": "Tool Alpha",
+        "description": "Reads records",
+        "tool_effect_class": "read_only",
+        "abstract_auth_scopes": ["records:read"],
+        "input_schema": { "type": "object", "future_field": { "nested": true } },
+        "output_schema": { "type": "object", "future_field": false },
+        "timeout_defaults": { "soft_ms": 5000, "extra": "ok" },
+        "retry_contract": { "policy": "none", "future_field": 1 },
+        "audit_contract": { "mode": "metadata_only", "future_field": ["kept"] },
+        "created_at": "2026-08-31T12:34:56Z"
+    });
+
+    let tool_definition: ToolRegistryToolDefinition =
+        serde_json::from_value(valid_payload.clone()).expect("object contract fields should decode");
+    assert!(tool_definition.input_schema.is_object());
+    assert!(tool_definition.output_schema.is_object());
+    assert!(tool_definition.timeout_defaults.is_object());
+    assert!(tool_definition.retry_contract.is_object());
+    assert!(tool_definition.audit_contract.is_object());
+
+    for (field_name, invalid_value) in [
+        ("input_schema", json!(["not", "object"])),
+        ("output_schema", json!("not-object")),
+        ("timeout_defaults", json!(42)),
+        ("retry_contract", json!(true)),
+        ("audit_contract", json!(null)),
+    ] {
+        let mut payload = valid_payload.clone();
+        payload[field_name] = invalid_value;
+        let err = serde_json::from_value::<ToolRegistryToolDefinition>(payload).unwrap_err();
+        assert!(err.to_string().contains(field_name));
+    }
+}
+
+#[test]
+fn registry_connector_type_requires_object_delivery_behavior() {
+    let valid_payload = json!({
+        "connector_key": "wecom",
+        "version": 2,
+        "lifecycle_state": "active",
+        "source_type": "wecom",
+        "connector_type_fingerprint": "conn_fp_123",
+        "capabilities": ["messages"],
+        "normalization_contracts": [
+            {
+                "evidence_family": "chat_message",
+                "kernel_event_type": "wecom.message",
+                "kernel_event_schema_version": 1
+            }
+        ],
+        "delivery_behavior": {
+            "mode": "push",
+            "future_field": {
+                "retry": true
+            }
+        },
+        "created_at": "2026-08-31T12:34:56Z"
+    });
+
+    let connector_type: ConnectorRegistryType =
+        serde_json::from_value(valid_payload.clone()).expect("object delivery_behavior should decode");
+    assert!(connector_type.delivery_behavior.is_object());
+
+    for invalid_value in [json!(["push"]), json!("push"), json!(1), json!(false), json!(null)] {
+        let mut payload = valid_payload.clone();
+        payload["delivery_behavior"] = invalid_value;
+        let err = serde_json::from_value::<ConnectorRegistryType>(payload).unwrap_err();
+        assert!(err.to_string().contains("delivery_behavior"));
+    }
 }
