@@ -12,7 +12,7 @@ use super::types::{
 };
 
 pub fn all_internal_controllers() -> Vec<RegisteredController> {
-    vec![
+    let mut controllers = vec![
         RegisteredController {
             schema: youpet_schemas("list_alerts"),
             handler: handle_list_alerts,
@@ -45,7 +45,9 @@ pub fn all_internal_controllers() -> Vec<RegisteredController> {
             schema: youpet_schemas("reject_action_request"),
             handler: handle_reject_action_request,
         },
-    ]
+    ];
+    controllers.extend(crate::openhuman::youpet::registry::all_internal_controllers());
+    controllers
 }
 
 pub fn youpet_schemas(function: &str) -> ControllerSchema {
@@ -289,12 +291,14 @@ mod tests {
     #[test]
     fn schemas_and_controllers_match() {
         let controllers = all_internal_controllers();
-        assert_eq!(controllers.len(), 8);
+        assert_eq!(controllers.len(), 18);
         for controller in controllers {
-            assert_eq!(
-                controller.schema,
+            let expected = if controller.schema.function.starts_with("registry_") {
+                crate::openhuman::youpet::registry::registry_schemas(controller.schema.function)
+            } else {
                 youpet_schemas(controller.schema.function)
-            );
+            };
+            assert_eq!(controller.schema, expected);
         }
     }
 

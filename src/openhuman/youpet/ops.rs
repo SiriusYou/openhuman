@@ -1,12 +1,9 @@
-use std::time::Duration;
-
-use reqwest::{Client, Method, StatusCode};
-use serde::de::DeserializeOwned;
+use reqwest::Method;
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
 use crate::openhuman::config::Config;
-use crate::rpc::{RpcOutcome, StructuredRpcError};
+use crate::rpc::RpcOutcome;
 
 use super::types::{
     ActionRequestDecisionRpcParams, ActionRequestLifecycleEnvelope, ActionRequestListResponse,
@@ -14,24 +11,21 @@ use super::types::{
     GetActionRequestRpcParams, ListActionRequestsRpcParams, ListAlertsRpcParams,
     TraceAlertRpcParams, WorkbenchAlertTrace,
 };
-
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const CONNECT_TIMEOUT_SECS: u64 = 10;
-const CLIENT_SERVICE_KEY: &str = "youpet.core";
+use super::{config_error, structured_error, YouPetTransport};
 
 pub async fn list_alerts(
     config: &Config,
     params: ListAlertsRpcParams,
 ) -> Result<RpcOutcome<Vec<CoreWorkbenchAlert>>, String> {
-    let client = youpet_client();
-    let mut request = client.get(build_url(config, "/api/v1/workbench/alerts")?);
+    let transport = YouPetTransport::new(config, config.youpet.workbench_actor_id());
+    let mut request = transport.get("/api/v1/workbench/alerts")?;
     if let Some(status) = params.status.as_query_param() {
         request = request.query(&[("status", status)]);
     }
     if let Some(severity) = params.severity {
         request = request.query(&[("severity", severity.as_str())]);
     }
-    let response: CoreWorkbenchAlertsResponse = send_request(config, request).await?;
+    let response: CoreWorkbenchAlertsResponse = transport.send(request).await?;
     Ok(RpcOutcome::single_log(
         response.items,
         "[youpet] listed Core workbench alerts",
@@ -90,15 +84,12 @@ pub async fn get_alert_trace(
     config: &Config,
     params: TraceAlertRpcParams,
 ) -> Result<RpcOutcome<WorkbenchAlertTrace>, String> {
-    let client = youpet_client();
-    let url = build_url(
-        config,
-        &format!(
-            "/api/v1/workbench/alerts/{}/trace",
-            urlencoding::encode(&params.alert_id)
-        ),
-    )?;
-    let trace: WorkbenchAlertTrace = send_request(config, client.get(url)).await?;
+    let transport = YouPetTransport::new(config, config.youpet.workbench_actor_id());
+    let path = format!(
+        "/api/v1/workbench/alerts/{}/trace",
+        urlencoding::encode(&params.alert_id)
+    );
+    let trace: WorkbenchAlertTrace = transport.send(transport.get(&path)?).await?;
     Ok(RpcOutcome::single_log(
         trace,
         "[youpet] loaded Core workbench alert trace",
@@ -110,9 +101,9 @@ pub async fn list_action_requests(
     params: ListActionRequestsRpcParams,
 ) -> Result<RpcOutcome<Vec<ActionRequestLifecycleEnvelope>>, String> {
     let tenant_id = resolve_tenant_id(config, params.tenant_id.as_deref())?;
-    let client = youpet_client();
-    let mut request = client
-        .get(build_url(config, "/api/v1/action-requests")?)
+    let transport = YouPetTransport::new(config, config.youpet.workbench_actor_id());
+    let mut request = transport
+        .get("/api/v1/action-requests")?
         .query(&[("tenant_id", tenant_id.as_str())]);
     if let Some(state) = params
         .approval_state
@@ -133,7 +124,7 @@ pub async fn list_action_requests(
     if let Some(limit) = params.limit {
         request = request.query(&[("limit", limit.to_string())]);
     }
-    let response: ActionRequestListResponse = send_request(config, request).await?;
+    let response: ActionRequestListResponse = transport.send(request).await?;
     Ok(RpcOutcome::single_log(
         response.items,
         "[youpet] listed Core action requests",
@@ -144,15 +135,12 @@ pub async fn get_action_request(
     config: &Config,
     params: GetActionRequestRpcParams,
 ) -> Result<RpcOutcome<ActionRequestLifecycleEnvelope>, String> {
-    let client = youpet_client();
-    let url = build_url(
-        config,
-        &format!(
-            "/api/v1/action-requests/{}",
-            urlencoding::encode(&params.action_request_id)
-        ),
-    )?;
-    let item: ActionRequestLifecycleEnvelope = send_request(config, client.get(url)).await?;
+    let transport = YouPetTransport::new(config, config.youpet.workbench_actor_id());
+    let path = format!(
+        "/api/v1/action-requests/{}",
+        urlencoding::encode(&params.action_request_id)
+    );
+    let item: ActionRequestLifecycleEnvelope = transport.send(transport.get(&path)?).await?;
     Ok(RpcOutcome::single_log(
         item,
         "[youpet] loaded Core action request",
@@ -222,21 +210,18 @@ async fn send_action_request_decision(
         "reason": reason,
         "expected_row_version": params.expected_row_version,
     });
-    let client = youpet_client();
-    let url = build_url(
-        config,
-        &format!(
-            "/api/v1/action-requests/{}/{}",
-            urlencoding::encode(&params.action_request_id),
-            action
-        ),
-    )?;
-    let request = client
-        .request(Method::POST, url)
+    let transport = YouPetTransport::new(config, config.youpet.workbench_actor_id());
+    let path = format!(
+        "/api/v1/action-requests/{}/{}",
+        urlencoding::encode(&params.action_request_id),
+        action
+    );
+    let request = transport
+        .request(Method::POST, &path)?
         .header("Content-Type", "application/json")
         .header("Idempotency-Key", key)
         .json(&body);
-    send_request(config, request).await
+    transport.send(request).await
 }
 
 fn resolve_tenant_id(config: &Config, override_id: Option<&str>) -> Result<String, String> {
@@ -262,129 +247,24 @@ async fn send_alert_action(
     body: Value,
     idempotency_key: Option<String>,
 ) -> Result<CoreWorkbenchAlert, String> {
-    let client = youpet_client();
+    let transport = YouPetTransport::new(config, config.youpet.workbench_actor_id());
     let key = idempotency_key
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let url = build_url(
-        config,
-        &format!(
-            "/api/v1/alerts/{}/{}",
-            urlencoding::encode(alert_id),
-            action
-        ),
-    )?;
-    let request = client
-        .request(Method::POST, url)
+    let path = format!(
+        "/api/v1/alerts/{}/{}",
+        urlencoding::encode(alert_id),
+        action
+    );
+    let request = transport
+        .request(Method::POST, &path)?
         .header("Content-Type", "application/json")
         .header("Idempotency-Key", key)
         .json(&body);
-    send_request(config, request).await
-}
-
-fn youpet_client() -> Client {
-    crate::openhuman::config::build_runtime_proxy_client_with_timeouts(
-        CLIENT_SERVICE_KEY,
-        REQUEST_TIMEOUT.as_secs(),
-        CONNECT_TIMEOUT_SECS,
-    )
-}
-
-async fn send_request<T: DeserializeOwned>(
-    config: &Config,
-    request: reqwest::RequestBuilder,
-) -> Result<T, String> {
-    let token = config
-        .youpet
-        .service_token()
-        .ok_or_else(|| config_error("youpet.service_token is required", "service_token"))?;
-    let response = request
-        .bearer_auth(token)
-        .header("X-Actor-Id", config.youpet.workbench_actor_id())
-        .send()
-        .await
-        .map_err(|e| transport_error(&e.to_string()))?;
-    parse_response(response).await
-}
-
-async fn parse_response<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, String> {
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|e| transport_error(&e.to_string()))?;
-    if !status.is_success() {
-        let value = if text.trim().is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_str::<Value>(&text).unwrap_or(Value::Null)
-        };
-        return Err(http_error(status, value));
-    }
-    let value = if text.trim().is_empty() {
-        Value::Object(Default::default())
-    } else {
-        serde_json::from_str::<Value>(&text).map_err(|e| {
-            structured_error(
-                "YouPet Core returned invalid JSON",
-                "YouPetCoreInvalidJson",
-                json!({ "parse_error": e.to_string() }),
-                false,
-            )
-        })?
-    };
-    serde_json::from_value::<T>(value).map_err(|e| {
-        structured_error(
-            "YouPet Core response shape mismatch",
-            "YouPetCoreResponseShape",
-            json!({ "parse_error": e.to_string() }),
-            false,
-        )
-    })
-}
-
-fn build_url(config: &Config, path: &str) -> Result<String, String> {
-    let base = format!("{}/", config.youpet.normalized_core_api_url());
-    let base = reqwest::Url::parse(&base).map_err(|e| {
-        structured_error(
-            "invalid YouPet Core API URL",
-            "YouPetConfigInvalid",
-            json!({ "field": "core_api_url", "error": e.to_string() }),
-            true,
-        )
-    })?;
-    base.join(path.trim_start_matches('/'))
-        .map(|url| url.to_string())
-        .map_err(|e| {
-            structured_error(
-                "invalid YouPet Core API path",
-                "YouPetRequestInvalid",
-                json!({ "path": path, "error": e.to_string() }),
-                false,
-            )
-        })
-}
-
-fn http_error(status: StatusCode, body: Value) -> String {
-    let detail = body.get("detail").and_then(Value::as_object);
-    let code = detail
-        .and_then(|d| d.get("code"))
-        .and_then(Value::as_str)
-        .unwrap_or("youpet_core_error");
-    let message = format!("YouPet Core request failed with HTTP {}", status.as_u16());
-    let expected_user_state = status.is_client_error();
-    structured_error(
-        &message,
-        "YouPetCoreHttpError",
-        json!({
-            "http_status": status.as_u16(),
-            "code": code,
-        }),
-        expected_user_state,
-    )
+    transport.send(request).await
 }
 
 fn required_operator_user_id(config: &Config) -> Result<&str, String> {
@@ -396,40 +276,12 @@ fn required_operator_user_id(config: &Config) -> Result<&str, String> {
     })
 }
 
-fn config_error(message: &str, field: &str) -> String {
-    structured_error(
-        message,
-        "YouPetConfigMissing",
-        json!({ "field": field }),
-        true,
-    )
-}
-
-fn transport_error(message: &str) -> String {
-    structured_error(
-        "YouPet Core request failed",
-        "YouPetCoreTransport",
-        json!({ "error": message }),
-        false,
-    )
-}
-
-fn structured_error(message: &str, kind: &str, data: Value, expected_user_state: bool) -> String {
-    StructuredRpcError {
-        message: message.to_string(),
-        data: Some(json!({
-            "kind": kind,
-            "youpet": data,
-        })),
-        expected_user_state,
-    }
-    .encode()
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::build_url;
     use super::super::types::{CoreAlertStatus, CoreAlertStatusFilter};
     use super::*;
+    use crate::rpc::StructuredRpcError;
     use axum::{
         body::Bytes,
         extract::State,
@@ -438,8 +290,10 @@ mod tests {
         routing::{get, post},
         Router,
     };
+    use reqwest::StatusCode;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use tempfile::TempDir;
 
     #[derive(Debug, Clone)]
