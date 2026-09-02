@@ -42,6 +42,20 @@ assert_not_contains() {
   fi
 }
 
+assert_line_order() {
+  local path="$1"
+  local first="$2"
+  local second="$3"
+  local first_line
+  local second_line
+  first_line="$(grep -Fn "$first" "$path" | head -n 1 | cut -d: -f1)"
+  second_line="$(grep -Fn "$second" "$path" | head -n 1 | cut -d: -f1)"
+  if [[ -z "$first_line" || -z "$second_line" || "$first_line" -ge "$second_line" ]]; then
+    printf 'ERROR: expected %s to order "%s" before "%s"\n' "$path" "$first" "$second" >&2
+    return 1
+  fi
+}
+
 mutate_copy() {
   local source="$1"
   local expected_count="$2"
@@ -81,6 +95,14 @@ validate_runner_source() {
   assert_contains "$runner_path" "status --short" || return 1
   assert_contains "$runner_path" "next_cursor" || return 1
   assert_contains "$runner_path" "cleanup_ok" || return 1
+  assert_contains "$runner_path" '"http://127.0.0.1:$CORE_PORT/healthz"' || return 1
+  assert_not_contains "$runner_path" '"http://127.0.0.1:$CORE_PORT/health"' || return 1
+  assert_contains "$runner_path" "write_meta 0" || return 1
+  assert_contains "$runner_path" 'write_meta "$cleanup_ok"' || return 1
+  assert_contains "$runner_path" "\"cleanup_ok\": sys.argv[8] == \"1\"" || return 1
+  assert_not_contains "$runner_path" "\"cleanup_ok\": True" || return 1
+  assert_contains "$runner_path" "artifact_dir_retained_after_cleanup" || return 1
+  assert_line_order "$runner_path" 'rm -rf "$RUN_ROOT"' 'write_meta "$cleanup_ok"' || return 1
   assert_contains "$runner_path" "cmp_snapshots" || return 1
   assert_not_contains "$runner_path" "rm -rf /" || return 1
 }
@@ -88,8 +110,18 @@ validate_runner_source() {
 validate_proxy_source() {
   local proxy_path="$1"
   assert_contains "$proxy_path" "ALLOWED_GET_PATTERNS" || return 1
+  assert_contains "$proxy_path" "PAGED_QUERY_KEYS" || return 1
+  assert_contains "$proxy_path" "new Set(['limit', 'cursor'])" || return 1
+  assert_contains "$proxy_path" "validatePagedQuery" || return 1
+  assert_contains "$proxy_path" "searchParams.entries()" || return 1
+  assert_contains "$proxy_path" "seenKeys" || return 1
+  assert_contains "$proxy_path" "rawPairs.some(segment => segment.length === 0)" || return 1
+  assert_contains "$proxy_path" "return seenKeys.size === rawPairs.length;" || return 1
+  assert_contains "$proxy_path" "requestUrl.search.length === 0" || return 1
+  assert_contains "$proxy_path" "limit" || return 1
   assert_contains "$proxy_path" "authorization" || return 1
-  assert_contains "$proxy_path" "cursor=" || return 1
+  assert_contains "$proxy_path" "safe.searchParams.set('cursor', '[redacted]')" || return 1
+  assert_not_contains "$proxy_path" "searchParams.has('cursor=')" || return 1
   assert_contains "$proxy_path" "statusCode" || return 1
   assert_contains "$proxy_path" "method" || return 1
   assert_contains "$proxy_path" "path" || return 1
@@ -144,6 +176,17 @@ fi
 mutate_copy \
   "$ROOT/$RUNNER_RELPATH" \
   1 \
+  '"http://127.0.0.1:$CORE_PORT/healthz"' \
+  '"http://127.0.0.1:$CORE_PORT/health"' \
+  "$TMP_DIR/runner-wrong-health.sh"
+if validate_runner_source "$TMP_DIR/runner-wrong-health.sh" 2>/dev/null; then
+  echo "ERROR: /healthz contract mutation did not fail closed" >&2
+  exit 1
+fi
+
+mutate_copy \
+  "$ROOT/$RUNNER_RELPATH" \
+  1 \
   "trap cleanup EXIT" \
   "# cleanup trap removed" \
   "$TMP_DIR/runner-no-trap.sh"
@@ -164,6 +207,17 @@ if validate_runner_source "$TMP_DIR/runner-no-equivalence.sh" 2>/dev/null; then
 fi
 
 mutate_copy \
+  "$ROOT/$RUNNER_RELPATH" \
+  1 \
+  "\"cleanup_ok\": sys.argv[8] == \"1\"" \
+  "\"cleanup_ok\": True" \
+  "$TMP_DIR/runner-hardcoded-cleanup.sh"
+if validate_runner_source "$TMP_DIR/runner-hardcoded-cleanup.sh" 2>/dev/null; then
+  echo "ERROR: hardcoded cleanup_ok mutation did not fail closed" >&2
+  exit 1
+fi
+
+mutate_copy \
   "$ROOT/$PROXY_RELPATH" \
   2 \
   "ALLOWED_GET_PATTERNS" \
@@ -171,6 +225,39 @@ mutate_copy \
   "$TMP_DIR/proxy-no-allowlist.mjs"
 if validate_proxy_source "$TMP_DIR/proxy-no-allowlist.mjs" 2>/dev/null; then
   echo "ERROR: proxy allowlist mutation did not fail closed" >&2
+  exit 1
+fi
+
+mutate_copy \
+  "$ROOT/$PROXY_RELPATH" \
+  1 \
+  "new Set(['limit', 'cursor'])" \
+  "new Set(['limit', 'cursor', 'foo'])" \
+  "$TMP_DIR/proxy-extra-query-key.mjs"
+if validate_proxy_source "$TMP_DIR/proxy-extra-query-key.mjs" 2>/dev/null; then
+  echo "ERROR: proxy paged-query key mutation did not fail closed" >&2
+  exit 1
+fi
+
+mutate_copy \
+  "$ROOT/$PROXY_RELPATH" \
+  1 \
+  "return seenKeys.size === rawPairs.length;" \
+  "return true;" \
+  "$TMP_DIR/proxy-duplicate-query-pass.mjs"
+if validate_proxy_source "$TMP_DIR/proxy-duplicate-query-pass.mjs" 2>/dev/null; then
+  echo "ERROR: proxy duplicate-query mutation did not fail closed" >&2
+  exit 1
+fi
+
+mutate_copy \
+  "$ROOT/$PROXY_RELPATH" \
+  1 \
+  "requestUrl.search.length === 0" \
+  "true" \
+  "$TMP_DIR/proxy-nonpaged-query-pass.mjs"
+if validate_proxy_source "$TMP_DIR/proxy-nonpaged-query-pass.mjs" 2>/dev/null; then
+  echo "ERROR: proxy non-paged query mutation did not fail closed" >&2
   exit 1
 fi
 
