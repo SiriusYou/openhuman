@@ -15,6 +15,7 @@ import type {
   ToolRegistryToolEnablement,
   UnpagedRegistryCollection,
 } from '../../services/api/coreRegistriesClient';
+import { CoreRpcError } from '../../services/coreRpcClient';
 import { LOAD_MORE_LIMIT } from './state';
 import { type RegistryInspectionClient, useRegistryInspection } from './useRegistryInspection';
 
@@ -49,6 +50,31 @@ const agentDetail: AgentRegistryAgent = {
     knowledgeScopeRefs: [],
     riskPolicyRef: null,
   },
+};
+
+const toolDefinitionSummary: ToolRegistryToolDefinitionSummary = {
+  toolKey: 'tool.alpha',
+  version: 3,
+  lifecycleState: 'active',
+  definitionFingerprint: 'b'.repeat(64),
+  schemaVersion: 1,
+  displayName: 'Tool Alpha',
+  description: 'Reads data',
+  toolEffectClass: 'read_only',
+  abstractAuthScopes: ['scope.read'],
+  createdAt: '2026-09-01T12:05:00Z',
+};
+
+const toolEnablement: ToolRegistryToolEnablement = {
+  toolKey: 'tool.alpha',
+  version: 5,
+  lifecycleState: 'enabled',
+  generation: 12,
+  timeoutCapMs: 5000,
+  approvalRequired: false,
+  allowTtlSeconds: null,
+  auditMode: 'metadata_only',
+  updatedAt: '2026-09-01T12:06:00Z',
 };
 
 function makeClient(): RegistryInspectionClient {
@@ -213,5 +239,175 @@ describe('useRegistryInspection', () => {
     expect(result.current.state.tabs.agents.collections.agents.items).toEqual([
       { ...agentSummary, agentKey: 'agent.beta' },
     ]);
+  });
+
+  it('reopens a same-tab cached detail from history after re-establishing selection state', async () => {
+    const client = makeClient();
+    vi.mocked(client.listAgents).mockResolvedValue({
+      items: [agentSummary],
+      nextCursor: null,
+    });
+    vi.mocked(client.getAgentVersion).mockResolvedValue(agentDetail);
+
+    const { result } = renderHook(() => useRegistryInspection({ client }));
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.collections.agents.items).toEqual([agentSummary])
+    );
+
+    await act(async () => {
+      await result.current.openDetail({ kind: 'agent', key: 'agent.alpha', version: 7 });
+    });
+
+    expect(client.getAgentVersion).toHaveBeenCalledTimes(1);
+    expect(result.current.state.tabs.agents.detail).toEqual({
+      kind: 'loaded',
+      detail: { kind: 'agent', key: 'agent.alpha', version: 7 },
+      record: agentDetail,
+    });
+
+    await act(async () => {
+      window.history.pushState({}, '', '/registries?tab=agents');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+
+    await waitFor(() => expect(result.current.state.tabs.agents.detail).toEqual({ kind: 'none' }));
+
+    await act(async () => {
+      await result.current.openDetail({ kind: 'agent', key: 'agent.alpha', version: 7 });
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.detail).toEqual({
+        kind: 'loaded',
+        detail: { kind: 'agent', key: 'agent.alpha', version: 7 },
+        record: agentDetail,
+      })
+    );
+    expect(client.getAgentVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries one collection without marking sibling collections loading for the new generation', async () => {
+    const client = makeClient();
+    const retriedDefinitions = deferred<CursorRegistryPage<ToolRegistryToolDefinitionSummary>>();
+    vi.mocked(client.listAgents).mockResolvedValue({ items: [], nextCursor: null });
+    vi.mocked(client.listToolDefinitions)
+      .mockResolvedValueOnce({
+        items: [toolDefinitionSummary],
+        nextCursor: null,
+      })
+      .mockReturnValueOnce(retriedDefinitions.promise);
+    vi.mocked(client.listToolEnablements).mockResolvedValue({
+      items: [toolEnablement],
+    });
+
+    const { result } = renderHook(() => useRegistryInspection({ client }));
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.collections.agents.observation).toEqual({
+        kind: 'empty',
+        observedAt: '2026-09-01T12:00:00.000Z',
+      })
+    );
+
+    await act(async () => {
+      await result.current.setTab('tools');
+    });
+
+    await waitFor(() => expect(result.current.state.tabs.tools.summaryState).toBe('fresh'));
+
+    act(() => {
+      void result.current.retryCollection('toolDefinitions');
+    });
+
+    expect(result.current.state.tabs.tools.collections.toolDefinitions.observation).toEqual({
+      kind: 'loading',
+      generation: 2,
+    });
+    expect(result.current.state.tabs.tools.collections.toolEnablements.observation).toEqual({
+      kind: 'loaded',
+      observedAt: '2026-09-01T12:00:00.000Z',
+      stale: false,
+    });
+
+    retriedDefinitions.resolve({
+      items: [{ ...toolDefinitionSummary, version: 4 }],
+      nextCursor: null,
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.tools.collections.toolDefinitions.items).toEqual([
+        { ...toolDefinitionSummary, version: 4 },
+      ])
+    );
+
+    expect(result.current.state.tabs.tools.collections.toolEnablements.items).toEqual([
+      toolEnablement,
+    ]);
+    expect(result.current.state.tabs.tools.summaryState).toBe('fresh');
+    expect(client.listToolEnablements).toHaveBeenCalledTimes(1);
+  });
+
+  it('consumes invalid-cursor restart budget once per collection generation even after a successful restart', async () => {
+    const client = makeClient();
+    vi.mocked(client.listAgents)
+      .mockResolvedValueOnce({
+        items: [agentSummary],
+        nextCursor: 'stale-cursor',
+      })
+      .mockRejectedValueOnce(
+        new CoreRpcError('invalid cursor', 'unknown', 422, {
+          kind: 'YouPetCoreHttpError',
+          youpet: { http_status: 422, code: 'invalid_cursor' },
+        })
+      )
+      .mockResolvedValueOnce({
+        items: [{ ...agentSummary, agentKey: 'agent.beta' }],
+        nextCursor: 'stale-cursor',
+      })
+      .mockRejectedValueOnce(
+        new CoreRpcError('invalid cursor', 'unknown', 422, {
+          kind: 'YouPetCoreHttpError',
+          youpet: { http_status: 422, code: 'invalid_cursor' },
+        })
+      )
+      .mockResolvedValueOnce({
+        items: [{ ...agentSummary, agentKey: 'agent.gamma' }],
+        nextCursor: null,
+      });
+
+    const { result } = renderHook(() => useRegistryInspection({ client }));
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.collections.agents.items).toEqual([agentSummary])
+    );
+
+    await act(async () => {
+      await result.current.loadMoreCollection('agents');
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.collections.agents.items).toEqual([
+        { ...agentSummary, agentKey: 'agent.beta' },
+      ])
+    );
+
+    await act(async () => {
+      await result.current.loadMoreCollection('agents');
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.collections.agents.observation).toEqual({
+        kind: 'blocked',
+        error: {
+          kind: 'YouPetCoreHttpError',
+          httpStatus: 422,
+          coreCode: 'invalid_cursor',
+        },
+      })
+    );
+
+    expect(client.listAgents).toHaveBeenCalledTimes(4);
+    expect(result.current.state.tabs.agents.collections.agents.items).toEqual([]);
   });
 });
