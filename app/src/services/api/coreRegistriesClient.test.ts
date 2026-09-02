@@ -2,15 +2,15 @@ import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import { CoreRpcError } from '../coreRpcClient';
 import {
-  coreRegistriesClient,
-  extractRegistryBridgeErrorMeta,
   type AgentRegistryAgent,
   type AgentRegistryAgentSummary,
   type ConnectorRegistryBinding,
   type ConnectorRegistryBindingSummary,
   type ConnectorRegistryType,
   type ConnectorRegistryTypeSummary,
+  coreRegistriesClient,
   type CursorRegistryPage,
+  extractRegistryBridgeErrorMeta,
   type RegistryBridgeErrorKind,
   type RegistryCursorListParams,
   type ToolRegistryToolDefinition,
@@ -21,10 +21,7 @@ import {
 
 vi.mock('../coreRpcClient', async () => {
   const actual = await vi.importActual<typeof import('../coreRpcClient')>('../coreRpcClient');
-  return {
-    ...actual,
-    callCoreRpc: vi.fn(),
-  };
+  return { ...actual, callCoreRpc: vi.fn() };
 });
 
 describe('coreRegistriesClient contracts', () => {
@@ -34,10 +31,7 @@ describe('coreRegistriesClient contracts', () => {
   });
 
   it('freezes list/exact method param surfaces', () => {
-    expectTypeOf<RegistryCursorListParams>().toMatchTypeOf<{
-      limit?: number;
-      cursor?: string;
-    }>();
+    expectTypeOf<RegistryCursorListParams>().toMatchTypeOf<{ limit?: number; cursor?: string }>();
     expectTypeOf<Extract<keyof RegistryCursorListParams, 'tenantId'>>().toEqualTypeOf<never>();
     expectTypeOf<Extract<keyof RegistryCursorListParams, 'coreUrl'>>().toEqualTypeOf<never>();
     expectTypeOf<Extract<keyof RegistryCursorListParams, 'token'>>().toEqualTypeOf<never>();
@@ -94,11 +88,12 @@ describe('coreRegistriesClient contracts', () => {
       items: [],
       nextCursor: 'tool-cursor',
     } satisfies CursorRegistryPage<ToolRegistryToolDefinitionSummary>);
-    await expect(coreRegistriesClient.listConnectorTypes({ cursor: 'connector-type-cursor' })).resolves
-      .toEqual({
-        items: [],
-        nextCursor: 'connector-type-cursor',
-      } satisfies CursorRegistryPage<ConnectorRegistryTypeSummary>);
+    await expect(
+      coreRegistriesClient.listConnectorTypes({ cursor: 'connector-type-cursor' })
+    ).resolves.toEqual({
+      items: [],
+      nextCursor: 'connector-type-cursor',
+    } satisfies CursorRegistryPage<ConnectorRegistryTypeSummary>);
     await expect(coreRegistriesClient.listConnectorBindings({ limit: 10 })).resolves.toEqual({
       items: [],
       nextCursor: 'binding-cursor',
@@ -165,9 +160,7 @@ describe('coreRegistriesClient contracts', () => {
 
   it('rejects cursor-backed responses that omit required nullable next_cursor', async () => {
     const { callCoreRpc } = await import('../coreRpcClient');
-    vi.mocked(callCoreRpc).mockResolvedValueOnce({
-      items: [],
-    });
+    vi.mocked(callCoreRpc).mockResolvedValueOnce({ items: [] });
 
     await expect(coreRegistriesClient.listAgents()).rejects.toThrow(
       'Registry bridge response shape mismatch'
@@ -188,7 +181,9 @@ describe('coreRegistriesClient contracts', () => {
             domain_key: 'ops',
             owner: { actor_type: 'service', actor_id: 'registry-reader' },
             allowed_tool_refs: [{ tool_key: 'tool.alpha', version: 3 }],
-            knowledge_scope_refs: [{ source_key: 'docs', trust_version: 'v1', access_scope: 'read' }],
+            knowledge_scope_refs: [
+              { source_key: 'docs', trust_version: 'v1', access_scope: 'read' },
+            ],
             risk_policy_ref: { policy_id: 'risk.default', policy_version: 'v2' },
           },
           configuration_fingerprint: 'a'.repeat(64),
@@ -256,10 +251,7 @@ describe('coreRegistriesClient contracts', () => {
           connector_type_key: 'wecom',
           connector_type_version: 2,
           connector_type_fingerprint: 'd'.repeat(64),
-          provider_account: {
-            namespace: 'wechat',
-            external_account_ref: 'acct-1',
-          },
+          provider_account: { namespace: 'wechat', external_account_ref: 'acct-1' },
           config_ref: 'config://wecom/primary',
           credential_ref: 'credential://wecom/primary',
           enabled_capabilities: ['messages.read'],
@@ -268,25 +260,26 @@ describe('coreRegistriesClient contracts', () => {
         },
       });
 
-    await expect(coreRegistriesClient.getAgentVersion({ agentKey: 'agent.alpha', version: 7 })).resolves
-      .toEqual({
-        id: 'agent-record',
-        agentKey: 'agent.alpha',
-        version: 7,
-        lifecycleState: 'active',
-        configuration: {
-          schemaVersion: 1,
-          domainKey: 'ops',
-          owner: { actorType: 'service', actorId: 'registry-reader' },
-          allowedToolRefs: [{ toolKey: 'tool.alpha', version: 3 }],
-          knowledgeScopeRefs: [{ sourceKey: 'docs', trustVersion: 'v1', accessScope: 'read' }],
-          riskPolicyRef: { policyId: 'risk.default', policyVersion: 'v2' },
-        },
-        configurationFingerprint: 'a'.repeat(64),
-        ownerActorType: 'service',
-        ownerActorId: 'registry-reader',
-        createdAt: '2026-09-01T12:00:00Z',
-      } satisfies AgentRegistryAgent);
+    await expect(
+      coreRegistriesClient.getAgentVersion({ agentKey: 'agent.alpha', version: 7 })
+    ).resolves.toEqual({
+      id: 'agent-record',
+      agentKey: 'agent.alpha',
+      version: 7,
+      lifecycleState: 'active',
+      configuration: {
+        schemaVersion: 1,
+        domainKey: 'ops',
+        owner: { actorType: 'service', actorId: 'registry-reader' },
+        allowedToolRefs: [{ toolKey: 'tool.alpha', version: 3 }],
+        knowledgeScopeRefs: [{ sourceKey: 'docs', trustVersion: 'v1', accessScope: 'read' }],
+        riskPolicyRef: { policyId: 'risk.default', policyVersion: 'v2' },
+      },
+      configurationFingerprint: 'a'.repeat(64),
+      ownerActorType: 'service',
+      ownerActorId: 'registry-reader',
+      createdAt: '2026-09-01T12:00:00Z',
+    } satisfies AgentRegistryAgent);
     await expect(
       coreRegistriesClient.getToolDefinitionVersion({ toolKey: 'tool.alpha', version: 3 })
     ).resolves.toEqual({
@@ -347,10 +340,7 @@ describe('coreRegistriesClient contracts', () => {
       connectorTypeKey: 'wecom',
       connectorTypeVersion: 2,
       connectorTypeFingerprint: 'd'.repeat(64),
-      providerAccount: {
-        namespace: 'wechat',
-        externalAccountRef: 'acct-1',
-      },
+      providerAccount: { namespace: 'wechat', externalAccountRef: 'acct-1' },
       configRef: 'config://wecom/primary',
       credentialRef: 'credential://wecom/primary',
       enabledCapabilities: ['messages.read'],

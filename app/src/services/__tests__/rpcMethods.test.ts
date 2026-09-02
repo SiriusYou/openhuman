@@ -14,7 +14,8 @@ const EXPECTED_REGISTRY_METHODS = {
   youpetRegistryListConnectorTypes: 'openhuman.youpet_registry_list_connector_types',
   youpetRegistryGetConnectorTypeVersion: 'openhuman.youpet_registry_get_connector_type_version',
   youpetRegistryListConnectorBindings: 'openhuman.youpet_registry_list_connector_bindings',
-  youpetRegistryGetConnectorBindingVersion: 'openhuman.youpet_registry_get_connector_binding_version',
+  youpetRegistryGetConnectorBindingVersion:
+    'openhuman.youpet_registry_get_connector_binding_version',
 } as const;
 
 describe('rpcMethods catalog', () => {
@@ -69,7 +70,10 @@ describe('rpcMethods catalog', () => {
   test('registers all ten Core Registries RPC methods with the Rust spellings', () => {
     expect(
       Object.fromEntries(
-        Object.entries(EXPECTED_REGISTRY_METHODS).map(([key]) => [key, CORE_RPC_METHODS[key]])
+        Object.keys(EXPECTED_REGISTRY_METHODS).map(key => [
+          key,
+          CORE_RPC_METHODS[key as keyof typeof EXPECTED_REGISTRY_METHODS],
+        ])
       )
     ).toEqual(EXPECTED_REGISTRY_METHODS);
   });
