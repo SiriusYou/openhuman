@@ -53,7 +53,7 @@ function sanitizePath(rawUrl) {
     safe.searchParams.set('limit', limit);
   }
   if (parsed.searchParams.has('cursor')) {
-    safe.searchParams.set('cursor', '[redacted]');
+    safe.searchParams.delete('cursor');
   }
   return `${safe.pathname}${safe.search}`;
 }
