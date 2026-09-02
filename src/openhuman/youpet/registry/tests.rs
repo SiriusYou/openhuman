@@ -98,14 +98,33 @@ async fn capture(
 fn kind_cursor(kind: &str) -> String {
     use base64::Engine as _;
 
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        json!({
-            "after": ["logical-key", 7],
-            "kind": kind,
-            "schema_version": 1
-        })
-        .to_string(),
-    )
+    let payload = match kind {
+        "agent" => json!({
+            "agent_id": "20000000-0000-4000-8000-000000000101",
+            "agent_key": "logical-key",
+            "tenant_id": "10000000-0000-4000-8000-000000000001",
+            "v": 1
+        }),
+        "tool_definition" => json!({
+            "definition_id": "30000000-0000-4000-8000-000000000101",
+            "tool_key": "logical-key",
+            "v": 1
+        }),
+        "connector_type" => json!({
+            "key": "logical-key",
+            "kind": "connector_types",
+            "schema_version": 1,
+            "version": 7
+        }),
+        "connector_binding" => json!({
+            "key": "logical-key",
+            "kind": "connector_bindings",
+            "schema_version": 1,
+            "version": 7
+        }),
+        _ => panic!("unsupported cursor fixture kind: {kind}"),
+    };
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string())
 }
 
 #[test]
@@ -162,6 +181,39 @@ fn registry_schemas_do_not_expose_authority_inputs() {
 
 #[test]
 fn registry_params_reject_invalid_versions_and_cross_family_cursors() {
+    for kind in [
+        "agent",
+        "tool_definition",
+        "connector_type",
+        "connector_binding",
+    ] {
+        let cursor = kind_cursor(kind);
+        let accepted = match kind {
+            "agent" => RegistryListAgentsRpcParams {
+                limit: Some(50),
+                cursor: Some(cursor),
+            }
+            .validate(),
+            "tool_definition" => RegistryListToolDefinitionsRpcParams {
+                limit: Some(50),
+                cursor: Some(cursor),
+            }
+            .validate(),
+            "connector_type" => RegistryListConnectorTypesRpcParams {
+                limit: Some(50),
+                cursor: Some(cursor),
+            }
+            .validate(),
+            "connector_binding" => RegistryListConnectorBindingsRpcParams {
+                limit: Some(50),
+                cursor: Some(cursor),
+            }
+            .validate(),
+            _ => unreachable!(),
+        };
+        assert!(accepted.is_ok(), "published {kind} cursor must be accepted");
+    }
+
     let wrong_cursor = kind_cursor("connector_binding");
     let err = RegistryListAgentsRpcParams {
         limit: Some(50),
