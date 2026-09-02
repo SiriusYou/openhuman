@@ -328,11 +328,28 @@ start_postgres() {
 
 apply_migrations() {
   local migration
-  # The pinned live proof must include 0014_connector_registry.sql from the
-  # exact Core checkout; the glob below intentionally stops there.
-  for migration in "$CORE_DIR"/migrations/00{01..09}_*.sql "$CORE_DIR"/migrations/001{0,1,2,3,4}_*.sql; do
+  local applied_count=0
+  local last_migration=""
+  # The exact frozen Core contains 0001 through 0014. A four-digit glob is
+  # portable to macOS Bash 3.2, unlike zero-padded brace sequences.
+  for migration in "$CORE_DIR"/migrations/00??_*.sql; do
+    [[ -f "$migration" ]] || {
+      echo "ERROR: no Core migrations found" >&2
+      return 1
+    }
     run_psql -f "$migration" >/dev/null
+    applied_count=$((applied_count + 1))
+    last_migration="${migration##*/}"
   done
+  [[ "$applied_count" -eq 14 ]] || {
+    printf 'ERROR: expected 14 Core migrations through 0014, applied %s\n' "$applied_count" >&2
+    return 1
+  }
+  [[ "$last_migration" == "0014_connector_registry.sql" ]] || {
+    printf 'ERROR: final Core migration was %s, expected 0014_connector_registry.sql\n' \
+      "$last_migration" >&2
+    return 1
+  }
 }
 
 start_core() {
