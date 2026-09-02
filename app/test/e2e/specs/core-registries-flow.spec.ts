@@ -53,7 +53,7 @@ describe('M2.2.4 Core registries live desktop flow', function () {
     expect(initial.loadMoreButtons).toContain('Load more agents');
     expect(initial.text).toContain('This screen never writes configuration, secrets, or runtime state.');
     expect(initial.text).toContain('Observed at');
-    expect(initial.text).toContain('Fresh');
+    expect(initial.text).toContain('Agents · Observed');
     expect(initial.text).not.toContain('Save');
     expect(initial.text).not.toContain('Apply');
     expect(initial.text).not.toContain('Delete');
