@@ -321,7 +321,7 @@ verify_checksums() {
 
 start_postgres() {
   mkdir -p "$PG_DATA" "$PG_SOCKET"
-  initdb -D "$PG_DATA" >/dev/null
+  initdb -U postgres -D "$PG_DATA" >/dev/null
   pg_ctl -D "$PG_DATA" -l "$RUNNER_LOG" -o "-k '$PG_SOCKET' -h ''" -w start >/dev/null
   createdb "$DB_NAME"
 }
