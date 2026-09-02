@@ -53,6 +53,22 @@ const REQUIRED_REGISTRY_INSPECTION_KEYS = [
   'registries.drawer.title',
 ] as const;
 
+function isExplicitTechnicalLiteral(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed === '') return true;
+  if (!/[A-Za-z]{2,}/.test(trimmed)) return true;
+  if (/^\{[^}]*\}[%s]?$/.test(trimmed)) return true;
+  if (/^https?:\/\//.test(trimmed)) return true;
+  if (
+    !/\s/.test(trimmed) &&
+    /[0-9._:/@+%{}#-]/.test(trimmed) &&
+    /^[A-Za-z0-9._:/@+%·✓•…#—–{}'-]+$/.test(trimmed)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 describe('i18n coverage', () => {
   it.each(LOCALES)('locale %s has a translation file', locale => {
     expect(localeModules[`../${locale}.ts`]).toBeDefined();
@@ -82,4 +98,18 @@ describe('i18n coverage', () => {
       expect(flat[key]).toBeDefined();
     }
   });
+
+  it.each(LOCALES)(
+    'locale %s translates ordinary registry inspection values instead of copying English',
+    locale => {
+      const flat = loadLocale(locale);
+      const identicalEnglish = Object.keys(enFlat).filter(
+        key =>
+          (key.startsWith('home.coreRegistries') || key.startsWith('registries.')) &&
+          flat[key] === enFlat[key] &&
+          !isExplicitTechnicalLiteral(flat[key]),
+      );
+      expect(identicalEnglish).toEqual([]);
+    },
+  );
 });
