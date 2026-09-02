@@ -86,6 +86,7 @@ validate_runner_source() {
   assert_contains "$runner_path" "$EXPECTED_CORE_SHA" || return 1
   assert_contains "$runner_path" "trap cleanup EXIT" || return 1
   assert_contains "$runner_path" "initdb" || return 1
+  assert_contains "$runner_path" 'initdb -U postgres -D "$PG_DATA"' || return 1
   assert_contains "$runner_path" "pg_ctl" || return 1
   assert_contains "$runner_path" "psql" || return 1
   assert_contains "$runner_path" "$PROXY_RELPATH" || return 1
