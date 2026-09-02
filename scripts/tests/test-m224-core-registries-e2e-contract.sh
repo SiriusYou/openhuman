@@ -130,6 +130,20 @@ validate_runner_source() {
   assert_contains "$runner_path" 'port_is_closed "$APPIUM_PORT"' || return 1
   assert_line_order "$runner_path" 'rm -rf "$RUN_ROOT"' 'write_meta "$cleanup_ok"' || return 1
   assert_contains "$runner_path" "cmp_snapshots" || return 1
+  assert_contains "$runner_path" "cursorPresent" || return 1
+  assert_contains "$runner_path" 'if set(entry) - {"method", "path", "statusCode", "blocked", "cursorPresent"}:' || return 1
+  assert_contains "$runner_path" 'if not isinstance(entry["cursorPresent"], bool):' || return 1
+  assert_contains "$runner_path" "paged_base_paths = (" || return 1
+  assert_contains "$runner_path" '"/api/v1/kernel/agents",' || return 1
+  assert_contains "$runner_path" '"/api/v1/kernel/tool-definitions",' || return 1
+  assert_contains "$runner_path" '"/api/v1/kernel/connector-types",' || return 1
+  assert_contains "$runner_path" '"/api/v1/kernel/connector-bindings",' || return 1
+  assert_contains "$runner_path" 'cursor_states_by_path = {base_path: set() for base_path in paged_base_paths}' || return 1
+  assert_contains "$runner_path" 'cursor_states_by_path[base_path].add(entry["cursorPresent"])' || return 1
+  assert_contains "$runner_path" "if False not in cursor_states:" || return 1
+  assert_contains "$runner_path" "if True not in cursor_states:" || return 1
+  assert_contains "$runner_path" 'tool_enablement_paths = {' || return 1
+  assert_contains "$runner_path" 'if entry["path"] in tool_enablement_paths and entry["cursorPresent"]:' || return 1
   assert_not_contains "$runner_path" "rm -rf /" || return 1
 }
 
@@ -148,6 +162,9 @@ validate_proxy_source() {
   assert_contains "$proxy_path" "requestUrl.search.length === 0" || return 1
   assert_contains "$proxy_path" "limit" || return 1
   assert_contains "$proxy_path" "authorization" || return 1
+  assert_contains "$proxy_path" "cursorPresent" || return 1
+  assert_contains "$proxy_path" "const cursorPresent = parsed.searchParams.has('cursor');" || return 1
+  assert_line_order "$proxy_path" "const cursorPresent = parsed.searchParams.has('cursor');" "safe.searchParams.delete('cursor')" || return 1
   assert_contains "$proxy_path" "safe.searchParams.delete('cursor')" || return 1
   assert_not_contains "$proxy_path" "safe.searchParams.set('cursor', '[redacted]')" || return 1
   assert_not_contains "$proxy_path" "searchParams.has('cursor=')" || return 1
@@ -270,6 +287,17 @@ if validate_runner_source "$TMP_DIR/runner-hardcoded-cleanup.sh" 2>/dev/null; th
 fi
 
 mutate_copy \
+  "$ROOT/$RUNNER_RELPATH" \
+  1 \
+  'if True not in cursor_states:' \
+  'if True in cursor_states:' \
+  "$TMP_DIR/runner-no-follow-up-cursor-proof.sh"
+if validate_runner_source "$TMP_DIR/runner-no-follow-up-cursor-proof.sh" 2>/dev/null; then
+  echo "ERROR: follow-up cursor proof mutation did not fail closed" >&2
+  exit 1
+fi
+
+mutate_copy \
   "$ROOT/$PROXY_RELPATH" \
   2 \
   "ALLOWED_GET_PATTERNS" \
@@ -321,6 +349,17 @@ mutate_copy \
   "$TMP_DIR/proxy-foreign-origin-pass.mjs"
 if validate_proxy_source "$TMP_DIR/proxy-foreign-origin-pass.mjs" 2>/dev/null; then
   echo "ERROR: proxy foreign-origin mutation did not fail closed" >&2
+  exit 1
+fi
+
+mutate_copy \
+  "$ROOT/$PROXY_RELPATH" \
+  1 \
+  "const cursorPresent = parsed.searchParams.has('cursor');" \
+  "const cursorPresent = false;" \
+  "$TMP_DIR/proxy-hardcoded-cursor-present.mjs"
+if validate_proxy_source "$TMP_DIR/proxy-hardcoded-cursor-present.mjs" 2>/dev/null; then
+  echo "ERROR: hardcoded cursor presence mutation did not fail closed" >&2
   exit 1
 fi
 
