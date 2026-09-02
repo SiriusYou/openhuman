@@ -4,6 +4,19 @@ import { describe, expect, test } from 'vitest';
 
 import { CORE_RPC_METHODS, LEGACY_METHOD_ALIASES, normalizeRpcMethod } from '../rpcMethods';
 
+const EXPECTED_REGISTRY_METHODS = {
+  youpetRegistryListAgents: 'openhuman.youpet_registry_list_agents',
+  youpetRegistryGetAgentVersion: 'openhuman.youpet_registry_get_agent_version',
+  youpetRegistryListToolDefinitions: 'openhuman.youpet_registry_list_tool_definitions',
+  youpetRegistryGetToolDefinitionVersion: 'openhuman.youpet_registry_get_tool_definition_version',
+  youpetRegistryListToolEnablements: 'openhuman.youpet_registry_list_tool_enablements',
+  youpetRegistryGetToolEnablementVersion: 'openhuman.youpet_registry_get_tool_enablement_version',
+  youpetRegistryListConnectorTypes: 'openhuman.youpet_registry_list_connector_types',
+  youpetRegistryGetConnectorTypeVersion: 'openhuman.youpet_registry_get_connector_type_version',
+  youpetRegistryListConnectorBindings: 'openhuman.youpet_registry_list_connector_bindings',
+  youpetRegistryGetConnectorBindingVersion: 'openhuman.youpet_registry_get_connector_binding_version',
+} as const;
+
 describe('rpcMethods catalog', () => {
   describe('normalizeRpcMethod', () => {
     test('resolves all legacy aliases to their canonical core method', () => {
@@ -51,6 +64,14 @@ describe('rpcMethods catalog', () => {
     expect(LEGACY_METHOD_ALIASES['openhuman.workspace_onboarding_flag_set']).toBe(
       CORE_RPC_METHODS.configWorkspaceOnboardingFlagSet
     );
+  });
+
+  test('registers all ten Core Registries RPC methods with the Rust spellings', () => {
+    expect(
+      Object.fromEntries(
+        Object.entries(EXPECTED_REGISTRY_METHODS).map(([key]) => [key, CORE_RPC_METHODS[key]])
+      )
+    ).toEqual(EXPECTED_REGISTRY_METHODS);
   });
 
   describe('MCP client legacy alias resolution (Sentry CORE-RUST-DW/DV/DT/DS/DR)', () => {
@@ -145,6 +166,10 @@ describe('rpcMethods catalog', () => {
       ),
       fs.readFileSync(
         path.resolve(__dirname, '../../../../src/openhuman/youpet/schemas.rs'),
+        'utf8'
+      ),
+      fs.readFileSync(
+        path.resolve(__dirname, '../../../../src/openhuman/youpet/registry/schemas.rs'),
         'utf8'
       ),
     ].join('\n');
