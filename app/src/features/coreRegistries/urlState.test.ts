@@ -8,14 +8,8 @@ import {
 
 describe('registry URL state', () => {
   it('defaults to the Agents tab with no selection', () => {
-    expect(parseRegistryUrlState('')).toEqual({
-      tab: 'agents',
-      detail: null,
-    });
-    expect(parseRegistryUrlState('?ignored=value')).toEqual({
-      tab: 'agents',
-      detail: null,
-    });
+    expect(parseRegistryUrlState('')).toEqual({ tab: 'agents', detail: null });
+    expect(parseRegistryUrlState('?ignored=value')).toEqual({ tab: 'agents', detail: null });
   });
 
   it('parses and canonicalizes closed tab/kind/key/version identity', () => {
@@ -25,11 +19,7 @@ describe('registry URL state', () => {
 
     expect(state).toEqual({
       tab: 'tools',
-      detail: {
-        kind: 'tool-definition',
-        key: 'tool.alpha',
-        version: 7,
-      },
+      detail: { kind: 'tool-definition', key: 'tool.alpha', version: 7 },
     });
     expect(serializeRegistryUrlState(state)).toBe(
       'tab=tools&kind=tool-definition&key=tool.alpha&version=7'
@@ -37,19 +27,16 @@ describe('registry URL state', () => {
   });
 
   it('drops invalid or cross-tab detail selectors as a unit', () => {
-    expect(
-      parseRegistryUrlState('?tab=connectors&kind=agent&key=agent.alpha&version=7')
-    ).toEqual({
+    expect(parseRegistryUrlState('?tab=connectors&kind=agent&key=agent.alpha&version=7')).toEqual({
       tab: 'connectors',
       detail: null,
     });
 
     expect(
-      parseRegistryUrlState(`?tab=agents&kind=agent&key=${'a'.repeat(REGISTRY_KEY_MAX_LENGTH + 1)}&version=7`)
-    ).toEqual({
-      tab: 'agents',
-      detail: null,
-    });
+      parseRegistryUrlState(
+        `?tab=agents&kind=agent&key=${'a'.repeat(REGISTRY_KEY_MAX_LENGTH + 1)}&version=7`
+      )
+    ).toEqual({ tab: 'agents', detail: null });
 
     expect(parseRegistryUrlState('?tab=agents&kind=agent&key=agent.alpha&version=0')).toEqual({
       tab: 'agents',

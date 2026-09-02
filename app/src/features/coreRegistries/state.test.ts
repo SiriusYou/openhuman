@@ -102,7 +102,9 @@ describe('registry inspection state', () => {
     expect(state.tabs.agents.collections.agents.items).toEqual([agentSummary]);
     expect(state.tabs.agents.collections.agents.nextCursor).toBe('agent-cursor-1');
     expect(state.tabs.tools.collections.toolDefinitions.items).toEqual([toolDefinitionSummary]);
-    expect(state.tabs.tools.collections.toolDefinitions.nextCursor).toBe('tool-definition-cursor-1');
+    expect(state.tabs.tools.collections.toolDefinitions.nextCursor).toBe(
+      'tool-definition-cursor-1'
+    );
     expect(state.tabs.tools.collections.toolEnablements.items).toEqual([toolEnablement]);
     expect('nextCursor' in state.tabs.tools.collections.toolEnablements).toBe(false);
     expect(LOAD_MORE_LIMIT).toBe(50);

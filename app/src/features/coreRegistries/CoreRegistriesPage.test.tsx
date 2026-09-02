@@ -792,11 +792,9 @@ describe('RegistryDetailDrawer', () => {
     launcher.focus();
 
     const drawer = render(
-      <RegistryDetailDrawer
-        title="Registry detail"
-        onClose={handleClose}
-        children={<button type="button">Focusable detail action</button>}
-      />
+      <RegistryDetailDrawer title="Registry detail" onClose={handleClose}>
+        <button type="button">Focusable detail action</button>
+      </RegistryDetailDrawer>
     );
 
     const dialog = screen.getByRole('dialog', { name: 'Registry detail' });

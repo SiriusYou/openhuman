@@ -21,12 +21,10 @@ import { startMockServer, stopMockServer } from '../mock-server';
 const USER_ID = 'e2e-m224-core-registries';
 const PRIMARY_AGENT_KEY = 'agent.registry.001-primary';
 const PRIMARY_AGENT_DETAIL = 'agent.registry.001-primary v1';
-const PRIMARY_TOOL_LABEL = 'Registry Reader';
 const PRIMARY_TOOL_KEY = 'tool.registry.reader';
 const PRIMARY_TOOL_DETAIL = 'tool.registry.reader v1';
 const PRIMARY_BINDING_KEY = 'binding.registry-primary';
 const PRIMARY_BINDING_DETAIL = 'binding.registry-primary v2';
-const PRIMARY_CONNECTOR_KEY = 'connector.registry.feed';
 const PRIMARY_CONNECTOR_DETAIL = 'connector.registry.feed v2';
 const PRIMARY_FINGERPRINT = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
