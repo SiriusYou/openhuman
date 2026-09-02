@@ -70,7 +70,11 @@ vi.mock('../../store/hooks', () => ({
 /* eslint-enable react-hooks/rules-of-hooks */
 
 vi.mock('../../store/socketSelectors', () => ({ selectSocketStatus: vi.fn() }));
-vi.mock('../../store/connectivitySelectors', () => ({ selectBlockingState: vi.fn() }));
+vi.mock('../../store/connectivitySelectors', () => ({
+  selectBlockingState: () => 'ok',
+  selectConnectivityErrors: (state: { connectivity: { lastError: { core?: string } } }) =>
+    state.connectivity.lastError,
+}));
 
 vi.mock('../../utils/openUrl', () => ({ openUrl: vi.fn() }));
 

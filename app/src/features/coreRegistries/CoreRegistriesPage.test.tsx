@@ -470,7 +470,9 @@ describe('CoreRegistriesPage', () => {
 
     expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument();
     expect(screen.getByText(description)).toBeInTheDocument();
-    expect(screen.getByText('This screen is read-only and cannot write configuration for you.')).toBeInTheDocument();
+    expect(
+      screen.getByText('This screen is read-only and cannot write configuration for you.')
+    ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /save|connect|apply/i })).not.toBeInTheDocument();
   });
@@ -589,10 +591,7 @@ describe('RegistryDetailPane', () => {
             enabledCapabilities: ['messages.read'],
             bindingFingerprint: 'e'.repeat(64),
             createdAt: '2026-09-01T12:21:00Z',
-            providerAccount: {
-              namespace: 'wechat',
-              externalAccountRef: 'acct-primary',
-            },
+            providerAccount: { namespace: 'wechat', externalAccountRef: 'acct-primary' },
             configRef: 'cfg://binding/ops-primary',
             credentialRef: 'cred://binding/ops-primary',
           },
@@ -630,7 +629,6 @@ describe('RegistryDetailDrawer', () => {
     const dialog = screen.getByRole('dialog', { name: 'Registry detail' });
     expect(dialog).toBeInTheDocument();
 
-    await user.tab();
     expect(within(dialog).getByRole('button', { name: 'Close' })).toHaveFocus();
 
     await user.tab();
