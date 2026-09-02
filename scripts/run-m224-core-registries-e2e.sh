@@ -1,6 +1,7 @@
 #!/bin/bash -p
 set -euo pipefail
 set -o pipefail
+export GIT_NO_REPLACE_OBJECTS=1
 
 EXPECTED_CORE_SHA="7515ba2796239311dab1381836184d188c498e5b"
 RUNNER_RELPATH="scripts/run-m224-core-registries-e2e.sh"
@@ -8,12 +9,30 @@ PROXY_RELPATH="scripts/fixtures/m224_registry_capture_proxy.mjs"
 FIXTURE_RELPATH="app/test/e2e/fixtures/m224_registry_fixture.sql"
 SPEC_RELPATH="app/test/e2e/specs/core-registries-flow.spec.ts"
 OPENHUMAN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+OPENHUMAN_SHA="$(git -C "$OPENHUMAN_DIR" rev-parse HEAD)"
 CORE_DIR_DEFAULT="$(cd "$OPENHUMAN_DIR/.." && pwd -P)/youpet-core"
 CORE_DIR="${M224_CORE_DIR:-$CORE_DIR_DEFAULT}"
 FIXTURE_PATH="$OPENHUMAN_DIR/$FIXTURE_RELPATH"
 PROXY_PATH="$OPENHUMAN_DIR/$PROXY_RELPATH"
 SPEC_PATH="$OPENHUMAN_DIR/$SPEC_RELPATH"
 OPT_IN="${M224_ALLOW_DISPOSABLE_DB:-0}"
+
+if [[ ! "$OPENHUMAN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "ERROR: OpenHuman HEAD must resolve to one exact commit" >&2
+  exit 2
+fi
+if [[ -n "$(git -C "$OPENHUMAN_DIR" status --short)" ]]; then
+  echo "ERROR: OpenHuman checkout must be clean before live evidence capture" >&2
+  exit 2
+fi
+if [[ -n "$(git -C "$OPENHUMAN_DIR" replace -l)" ]]; then
+  echo "ERROR: OpenHuman checkout must not use git replace refs" >&2
+  exit 2
+fi
+if [[ -n "$(git -C "$OPENHUMAN_DIR" ls-files -v | grep -Ev '^H ' || true)" ]]; then
+  echo "ERROR: OpenHuman checkout must not use hidden index flags" >&2
+  exit 2
+fi
 
 if [[ "$OPT_IN" != "1" ]]; then
   echo "ERROR: set M224_ALLOW_DISPOSABLE_DB=1 to authorize the disposable PostgreSQL ceremony" >&2
@@ -518,7 +537,7 @@ run_openhuman_e2e() {
 }
 
 write_meta() {
-  python3 - "$ARTIFACT_DIR/meta.json" "$EXPECTED_CORE_SHA" "$CORE_PORT" "$PROXY_PORT" "$MOCK_PORT" "$APPIUM_PORT" "$CEF_CDP_PORT" "${1:-0}" <<'PY'
+  python3 - "$ARTIFACT_DIR/meta.json" "$EXPECTED_CORE_SHA" "$OPENHUMAN_SHA" "$CORE_PORT" "$PROXY_PORT" "$MOCK_PORT" "$APPIUM_PORT" "$CEF_CDP_PORT" "${1:-0}" <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -528,12 +547,13 @@ path.write_text(
     json.dumps(
         {
             "coreSha": sys.argv[2],
-            "corePort": int(sys.argv[3]),
-            "proxyPort": int(sys.argv[4]),
-            "mockPort": int(sys.argv[5]),
-            "appiumPort": int(sys.argv[6]),
-            "cefCdpPort": int(sys.argv[7]),
-            "cleanup_ok": sys.argv[8] == "1",
+            "openhumanSha": sys.argv[3],
+            "corePort": int(sys.argv[4]),
+            "proxyPort": int(sys.argv[5]),
+            "mockPort": int(sys.argv[6]),
+            "appiumPort": int(sys.argv[7]),
+            "cefCdpPort": int(sys.argv[8]),
+            "cleanup_ok": sys.argv[9] == "1",
             "next_cursor": "redacted",
         },
         indent=2,
@@ -558,5 +578,5 @@ write_meta 0
 write_checksums
 verify_checksums
 scan_retained_artifacts
-printf 'M224 core registries live proof passed\nartifacts=%s\ncore_sha=%s\ncleanup_ok=pending-exit-trap\n' \
-  "$ARTIFACT_DIR" "$EXPECTED_CORE_SHA"
+printf 'M224 core registries live proof passed\nartifacts=%s\ncore_sha=%s\nopenhuman_sha=%s\ncleanup_ok=pending-exit-trap\n' \
+  "$ARTIFACT_DIR" "$EXPECTED_CORE_SHA" "$OPENHUMAN_SHA"
