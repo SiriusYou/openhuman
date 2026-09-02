@@ -213,7 +213,7 @@ describe('CoreRegistriesPage', () => {
     expect(screen.getByRole('tab', { name: 'Tools' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('heading', { name: 'Definitions' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Enablements' })).toBeInTheDocument();
-    expect(screen.getByText('Partial')).toBeInTheDocument();
+    expect(screen.getByText('Tools · Partial')).toBeInTheDocument();
     expect(screen.getByText('Stale')).toBeInTheDocument();
     expect(screen.getByText('Disabled')).toBeInTheDocument();
     expect(screen.getByText('Missing enablement')).toBeInTheDocument();
@@ -256,7 +256,7 @@ describe('CoreRegistriesPage', () => {
 describe('RegistryDetailPane', () => {
   it('shows exact cross-links, unresolved references, lifecycle explanations, and inert JSON', async () => {
     const writeText = vi.fn();
-    Object.assign(navigator, { clipboard: { writeText } });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
 
     render(
       <RegistryDetailPane
