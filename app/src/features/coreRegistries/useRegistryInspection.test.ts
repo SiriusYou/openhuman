@@ -243,10 +243,7 @@ describe('useRegistryInspection', () => {
 
   it('reopens a same-tab cached detail from history after re-establishing selection state', async () => {
     const client = makeClient();
-    vi.mocked(client.listAgents).mockResolvedValue({
-      items: [agentSummary],
-      nextCursor: null,
-    });
+    vi.mocked(client.listAgents).mockResolvedValue({ items: [agentSummary], nextCursor: null });
     vi.mocked(client.getAgentVersion).mockResolvedValue(agentDetail);
 
     const { result } = renderHook(() => useRegistryInspection({ client }));
@@ -292,14 +289,9 @@ describe('useRegistryInspection', () => {
     const retriedDefinitions = deferred<CursorRegistryPage<ToolRegistryToolDefinitionSummary>>();
     vi.mocked(client.listAgents).mockResolvedValue({ items: [], nextCursor: null });
     vi.mocked(client.listToolDefinitions)
-      .mockResolvedValueOnce({
-        items: [toolDefinitionSummary],
-        nextCursor: null,
-      })
+      .mockResolvedValueOnce({ items: [toolDefinitionSummary], nextCursor: null })
       .mockReturnValueOnce(retriedDefinitions.promise);
-    vi.mocked(client.listToolEnablements).mockResolvedValue({
-      items: [toolEnablement],
-    });
+    vi.mocked(client.listToolEnablements).mockResolvedValue({ items: [toolEnablement] });
 
     const { result } = renderHook(() => useRegistryInspection({ client }));
 
@@ -315,6 +307,8 @@ describe('useRegistryInspection', () => {
     });
 
     await waitFor(() => expect(result.current.state.tabs.tools.summaryState).toBe('fresh'));
+    const initialEnablementsObservation =
+      result.current.state.tabs.tools.collections.toolEnablements.observation;
 
     act(() => {
       void result.current.retryCollection('toolDefinitions');
@@ -324,11 +318,9 @@ describe('useRegistryInspection', () => {
       kind: 'loading',
       generation: 2,
     });
-    expect(result.current.state.tabs.tools.collections.toolEnablements.observation).toEqual({
-      kind: 'loaded',
-      observedAt: '2026-09-01T12:00:00.000Z',
-      stale: false,
-    });
+    expect(result.current.state.tabs.tools.collections.toolEnablements.observation).toEqual(
+      initialEnablementsObservation
+    );
 
     retriedDefinitions.resolve({
       items: [{ ...toolDefinitionSummary, version: 4 }],
@@ -351,10 +343,7 @@ describe('useRegistryInspection', () => {
   it('consumes invalid-cursor restart budget once per collection generation even after a successful restart', async () => {
     const client = makeClient();
     vi.mocked(client.listAgents)
-      .mockResolvedValueOnce({
-        items: [agentSummary],
-        nextCursor: 'stale-cursor',
-      })
+      .mockResolvedValueOnce({ items: [agentSummary], nextCursor: 'stale-cursor' })
       .mockRejectedValueOnce(
         new CoreRpcError('invalid cursor', 'unknown', 422, {
           kind: 'YouPetCoreHttpError',
@@ -399,11 +388,7 @@ describe('useRegistryInspection', () => {
     await waitFor(() =>
       expect(result.current.state.tabs.agents.collections.agents.observation).toEqual({
         kind: 'blocked',
-        error: {
-          kind: 'YouPetCoreHttpError',
-          httpStatus: 422,
-          coreCode: 'invalid_cursor',
-        },
+        error: { kind: 'YouPetCoreHttpError', httpStatus: 422, coreCode: 'invalid_cursor' },
       })
     );
 

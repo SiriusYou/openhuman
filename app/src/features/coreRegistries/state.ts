@@ -104,6 +104,12 @@ type DetailSuccessEvent =
 export type RegistryInspectionAction =
   | { type: 'tab_selected'; tab: RegistryTab; source: 'user' | 'history' | 'programmatic' }
   | { type: 'tab_request_started'; tab: RegistryTab; generation: number }
+  | {
+      type: 'collection_request_started';
+      tab: RegistryTab;
+      collection: RegistryCollectionKey;
+      generation: number;
+    }
   | CursorCollectionSuccessEvent
   | UnpagedCollectionSuccessEvent
   | CollectionFailureEvent
@@ -373,6 +379,26 @@ function markTabLoading(
   }
 }
 
+function markCollectionLoading(
+  state: RegistryInspectionState,
+  tab: RegistryTab,
+  collection: RegistryCollectionKey,
+  generation: number
+): void {
+  const tabState = state.tabs[tab];
+  if (generation < tabState.generation) {
+    return;
+  }
+
+  const collectionState = getCollectionState(state, tab, collection);
+  if (!collectionState) {
+    return;
+  }
+
+  tabState.generation = generation;
+  collectionState.observation = { kind: 'loading', generation };
+}
+
 function resetCollectionForRestart(
   collectionState: CursorRegistryCollectionState<unknown> | UnpagedRegistryCollectionState<unknown>,
   generation: number
@@ -433,6 +459,13 @@ export function registryInspectionReducer(
       return next;
     }
 
+    case 'collection_request_started': {
+      next.surfaceError = null;
+      markCollectionLoading(next, action.tab, action.collection, action.generation);
+      next.tabs[action.tab].summaryState = summarizeTab(next, action.tab);
+      return next;
+    }
+
     case 'cursor_collection_request_succeeded': {
       const tabState = next.tabs[action.tab];
       if (action.generation !== tabState.generation) {
@@ -451,7 +484,6 @@ export function registryInspectionReducer(
       collectionState.nextCursor = action.nextCursor;
       collectionState.lastObservedAt = action.observedAt;
       collectionState.successGeneration = action.generation;
-      collectionState.restartGeneration = null;
       collectionState.observation = collectionObservationSuccess(action.observedAt, items.length);
       updateObservedAt(next, action.tab, action.observedAt);
       tabState.summaryState = summarizeTab(next, action.tab);
@@ -472,7 +504,6 @@ export function registryInspectionReducer(
       collectionState.items = [...action.items];
       collectionState.lastObservedAt = action.observedAt;
       collectionState.successGeneration = action.generation;
-      collectionState.restartGeneration = null;
       collectionState.observation = collectionObservationSuccess(
         action.observedAt,
         action.items.length

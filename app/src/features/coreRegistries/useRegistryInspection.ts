@@ -143,6 +143,34 @@ function collectionTab(collection: RegistryCollectionKey): RegistryTab {
   }
 }
 
+function getCollectionState(
+  state: RegistryInspectionState,
+  tab: RegistryTab,
+  collection: RegistryCollectionKey
+) {
+  if (tab === 'agents' && collection === 'agents') {
+    return state.tabs.agents.collections.agents;
+  }
+
+  if (tab === 'tools' && collection === 'toolDefinitions') {
+    return state.tabs.tools.collections.toolDefinitions;
+  }
+
+  if (tab === 'tools' && collection === 'toolEnablements') {
+    return state.tabs.tools.collections.toolEnablements;
+  }
+
+  if (tab === 'connectors' && collection === 'connectorTypes') {
+    return state.tabs.connectors.collections.connectorTypes;
+  }
+
+  if (tab === 'connectors' && collection === 'connectorBindings') {
+    return state.tabs.connectors.collections.connectorBindings;
+  }
+
+  return null;
+}
+
 export function useRegistryInspection(
   options: UseRegistryInspectionOptions = {}
 ): UseRegistryInspectionResult {
@@ -176,6 +204,7 @@ export function useRegistryInspection(
     async (tab: RegistryTab, detail: RegistryDetailRef, generation: number) => {
       const cached = detailCacheRef.current.get(cacheKey(detail));
       if (cached) {
+        dispatch({ type: 'detail_request_started', tab, generation, detail });
         dispatch({
           type: 'detail_request_succeeded',
           tab,
@@ -355,8 +384,12 @@ export function useRegistryInspection(
           return;
         }
 
+        const collectionState = getCollectionState(stateRef.current, tab, collection);
         const shouldRestart = Boolean(
-          options.cursor && !options.restarted && isInvalidCursorError(meta)
+          options.cursor &&
+          !options.restarted &&
+          isInvalidCursorError(meta) &&
+          collectionState?.restartGeneration !== generation
         );
         dispatch({
           type: 'collection_request_failed',
@@ -482,7 +515,7 @@ export function useRegistryInspection(
       const tab = collectionTab(collection);
       visitedTabsRef.current.add(tab);
       const generation = nextGeneration(tab);
-      dispatch({ type: 'tab_request_started', tab, generation });
+      dispatch({ type: 'collection_request_started', tab, collection, generation });
       await runCollectionRequest(tab, collection, generation, { append: false });
     },
     [dispatch, nextGeneration, runCollectionRequest]
