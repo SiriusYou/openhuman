@@ -302,7 +302,11 @@ function AgentDetail({
             record.configuration.allowedToolRefs.map(ref => {
               const resolution = canResolveToolDefinition(state, ref.toolKey, ref.version);
               const label = `${ref.toolKey} v${ref.version}`;
-              if (resolution.match) {
+              if (
+                resolution.match ||
+                resolution.observation === 'not_loaded' ||
+                resolution.observation === 'loading'
+              ) {
                 return (
                   <ReferenceButton
                     key={label}
