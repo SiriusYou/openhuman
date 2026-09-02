@@ -65,7 +65,7 @@ PY
 require_disposable_path() {
   local path="$1"
   case "$path" in
-    /private/tmp/*|/tmp/*|/private/var/folders/*) ;;
+    /private/tmp/*|/tmp/*|/private/var/folders/*|/var/folders/*) ;;
     *)
       printf 'ERROR: refusing persistent path: %s\n' "$path" >&2
       exit 2
