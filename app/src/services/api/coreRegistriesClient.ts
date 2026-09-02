@@ -621,7 +621,7 @@ function parseCursorRegistryPage<T>(
     .transform(
       ({ items, next_cursor }): CursorRegistryPage<T> => ({ items, nextCursor: next_cursor })
     )
-    .parse(response);
+    .parse(unwrapLoggedCoreResult(response));
 }
 
 function parseUnpagedRegistryCollection<T>(
@@ -631,7 +631,21 @@ function parseUnpagedRegistryCollection<T>(
   return z
     .object({ items: z.array(itemSchema) })
     .transform(({ items }): UnpagedRegistryCollection<T> => ({ items }))
-    .parse(response);
+    .parse(unwrapLoggedCoreResult(response));
+}
+
+function unwrapLoggedCoreResult(response: unknown): unknown {
+  if (
+    response &&
+    typeof response === 'object' &&
+    !Array.isArray(response) &&
+    'result' in response &&
+    'logs' in response &&
+    Array.isArray((response as { logs?: unknown }).logs)
+  ) {
+    return (response as { result: unknown }).result;
+  }
+  return response;
 }
 
 function normalizeRegistrySchemaError(error: z.ZodError): never {
@@ -652,6 +666,7 @@ function parseWithSchema<T>(response: unknown, schema: z.ZodType<T>): T {
 }
 
 function unwrapExactRecord(response: unknown, recordKey: string): unknown {
+  response = unwrapLoggedCoreResult(response);
   if (response && typeof response === 'object' && recordKey in response) {
     return (response as Record<string, unknown>)[recordKey];
   }
