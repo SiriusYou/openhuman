@@ -125,6 +125,17 @@ describe('Home page — handleRestartCore and blocking state rendering', () => {
     expect(navigateMock).toHaveBeenCalledWith('/workbench');
   });
 
+  it('links to Core Registries from Home', async () => {
+    useAppSelectorMock.mockReturnValue('ok');
+    mockShouldShowBanner.mockReturnValue(false);
+
+    const { default: Home } = await import('../Home');
+    render(<Home />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Core Registries/i }));
+    expect(navigateMock).toHaveBeenCalledWith('/registries');
+  });
+
   it('shows "Restart Core" button when blocking=core-unreachable (lines 194, 200)', async () => {
     useAppSelectorMock.mockReturnValue('core-unreachable');
     mockShouldShowBanner.mockReturnValue(false);

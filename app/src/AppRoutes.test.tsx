@@ -33,6 +33,9 @@ vi.mock('./pages/Channels', () => ({
   default: () => <div data-testid="page-channels">channels</div>,
 }));
 vi.mock('./pages/Home', () => ({ default: () => <div data-testid="page-home">home</div> }));
+vi.mock('./features/coreRegistries/CoreRegistriesPage', () => ({
+  default: () => <div data-testid="page-core-registries">core-registries</div>,
+}));
 vi.mock('./pages/Intelligence', () => ({
   default: () => <div data-testid="page-intelligence">intelligence</div>,
 }));
@@ -77,6 +80,17 @@ vi.mock('./pages/ActionRequestInbox', () => ({
 const AppRoutes = (await import('./AppRoutes')).default;
 
 describe('AppRoutes', () => {
+  it('registers the Core Registries route behind the protected desktop shell', () => {
+    render(
+      <MemoryRouter initialEntries={['/registries']}>
+        <AppRoutes />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByTestId('page-core-registries')).toBeInTheDocument();
+    expect(screen.getByTestId('protected-route')).toHaveAttribute('data-require-auth', 'true');
+  });
+
   it('registers the Workbench route behind the protected desktop shell', () => {
     render(
       <MemoryRouter initialEntries={['/workbench']}>
