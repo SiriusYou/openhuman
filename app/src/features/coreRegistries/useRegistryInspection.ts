@@ -143,6 +143,16 @@ function collectionTab(collection: RegistryCollectionKey): RegistryTab {
   }
 }
 
+function browserSelectsDetail(tab: RegistryTab, detail: RegistryDetailRef): boolean {
+  const current = parseRegistryUrlState(window.location.search);
+  return (
+    current.tab === tab &&
+    current.detail?.kind === detail.kind &&
+    current.detail.key === detail.key &&
+    current.detail.version === detail.version
+  );
+}
+
 function getCollectionState(
   state: RegistryInspectionState,
   tab: RegistryTab,
@@ -453,6 +463,9 @@ export function useRegistryInspection(
 
   const ensureTabLoaded = useCallback(
     async (tab: RegistryTab) => {
+      if (stateRef.current.surfaceError) {
+        visitedTabsRef.current.delete(tab);
+      }
       if (visitedTabsRef.current.has(tab)) {
         return;
       }
@@ -518,6 +531,10 @@ export function useRegistryInspection(
         pushUrlState({ tab, detail }, 'push');
       }
 
+      if (stateRef.current.surfaceError || !browserSelectsDetail(tab, detail)) {
+        return;
+      }
+
       const generation = stateRef.current.tabs[tab].generation;
       await runDetailRequest(tab, detail, generation);
     },
@@ -546,7 +563,11 @@ export function useRegistryInspection(
     }
 
     void ensureTabLoaded(initialUrlState.tab).then(async () => {
-      if (initialUrlState.detail) {
+      if (
+        initialUrlState.detail &&
+        !stateRef.current.surfaceError &&
+        browserSelectsDetail(initialUrlState.tab, initialUrlState.detail)
+      ) {
         await runDetailRequest(
           initialUrlState.tab,
           initialUrlState.detail,
@@ -560,7 +581,11 @@ export function useRegistryInspection(
       dispatch({ type: 'tab_selected', tab: nextUrlState.tab, source: 'history' });
 
       void ensureTabLoaded(nextUrlState.tab).then(async () => {
-        if (!nextUrlState.detail) {
+        if (
+          !nextUrlState.detail ||
+          stateRef.current.surfaceError ||
+          !browserSelectsDetail(nextUrlState.tab, nextUrlState.detail)
+        ) {
           return;
         }
 

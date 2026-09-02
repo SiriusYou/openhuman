@@ -447,7 +447,6 @@ export function registryInspectionReducer(
   switch (action.type) {
     case 'tab_selected': {
       next.urlState = { tab: action.tab, detail: null };
-      next.surfaceError = null;
       clearAllDetails(next);
       next.tabs[action.tab].summaryState = summarizeTab(next, action.tab);
       return next;
