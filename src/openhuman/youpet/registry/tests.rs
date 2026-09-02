@@ -19,8 +19,8 @@ use super::{
     registry_get_connector_type_version, registry_get_tool_definition_version,
     registry_get_tool_enablement_version, registry_list_agents, registry_list_connector_bindings,
     registry_list_connector_types, registry_list_tool_definitions, registry_list_tool_enablements,
-    registry_schemas, AgentRegistryAgent, AgentRegistryAgentSummary,
-    ConnectorRegistryType, RegistryCursorListResponse, RegistryGetAgentVersionRpcParams,
+    registry_schemas, AgentRegistryAgent, AgentRegistryAgentSummary, ConnectorRegistryType,
+    RegistryCursorListResponse, RegistryGetAgentVersionRpcParams,
     RegistryGetConnectorBindingVersionRpcParams, RegistryGetConnectorTypeVersionRpcParams,
     RegistryGetToolDefinitionVersionRpcParams, RegistryGetToolEnablementVersionRpcParams,
     RegistryListAgentsRpcParams, RegistryListConnectorBindingsRpcParams,
@@ -544,8 +544,8 @@ fn registry_tool_definition_requires_object_contract_fields() {
         "created_at": "2026-08-31T12:34:56Z"
     });
 
-    let tool_definition: ToolRegistryToolDefinition =
-        serde_json::from_value(valid_payload.clone()).expect("object contract fields should decode");
+    let tool_definition: ToolRegistryToolDefinition = serde_json::from_value(valid_payload.clone())
+        .expect("object contract fields should decode");
     assert!(tool_definition.input_schema.is_object());
     assert!(tool_definition.output_schema.is_object());
     assert!(tool_definition.timeout_defaults.is_object());
@@ -591,11 +591,17 @@ fn registry_connector_type_requires_object_delivery_behavior() {
         "created_at": "2026-08-31T12:34:56Z"
     });
 
-    let connector_type: ConnectorRegistryType =
-        serde_json::from_value(valid_payload.clone()).expect("object delivery_behavior should decode");
+    let connector_type: ConnectorRegistryType = serde_json::from_value(valid_payload.clone())
+        .expect("object delivery_behavior should decode");
     assert!(connector_type.delivery_behavior.is_object());
 
-    for invalid_value in [json!(["push"]), json!("push"), json!(1), json!(false), json!(null)] {
+    for invalid_value in [
+        json!(["push"]),
+        json!("push"),
+        json!(1),
+        json!(false),
+        json!(null),
+    ] {
         let mut payload = valid_payload.clone();
         payload["delivery_behavior"] = invalid_value;
         let err = serde_json::from_value::<ConnectorRegistryType>(payload).unwrap_err();

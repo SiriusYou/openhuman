@@ -8,6 +8,111 @@ const DEFAULT_REGISTRY_LIMIT: i64 = 50;
 const MAX_REGISTRY_LIMIT: i64 = 200;
 const MAX_REGISTRY_KEY_LEN: usize = 128;
 
+fn deserialize_json_object<'de, D>(
+    deserializer: D,
+    field_name: &'static str,
+) -> Result<Value, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    if value.is_object() {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "{field_name} must be a JSON object"
+        )))
+    }
+}
+
+fn deserialize_active_agent_lifecycle<'de, D>(
+    deserializer: D,
+) -> Result<AgentRegistryLifecycleState, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = AgentRegistryLifecycleState::deserialize(deserializer)?;
+    if value == AgentRegistryLifecycleState::Active {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom(
+            "lifecycle_state must be active in agent registry summaries",
+        ))
+    }
+}
+
+fn deserialize_active_tool_definition_lifecycle<'de, D>(
+    deserializer: D,
+) -> Result<ToolDefinitionLifecycleState, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = ToolDefinitionLifecycleState::deserialize(deserializer)?;
+    if value == ToolDefinitionLifecycleState::Active {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom(
+            "lifecycle_state must be active in tool definition summaries",
+        ))
+    }
+}
+
+fn deserialize_input_schema<'de, D>(deserializer: D) -> Result<Value, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_json_object(deserializer, "input_schema")
+}
+
+fn deserialize_output_schema<'de, D>(deserializer: D) -> Result<Value, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_json_object(deserializer, "output_schema")
+}
+
+fn deserialize_timeout_defaults<'de, D>(deserializer: D) -> Result<Value, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_json_object(deserializer, "timeout_defaults")
+}
+
+fn deserialize_retry_contract<'de, D>(deserializer: D) -> Result<Value, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_json_object(deserializer, "retry_contract")
+}
+
+fn deserialize_audit_contract<'de, D>(deserializer: D) -> Result<Value, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_json_object(deserializer, "audit_contract")
+}
+
+fn deserialize_delivery_behavior<'de, D>(deserializer: D) -> Result<Value, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_json_object(deserializer, "delivery_behavior")
+}
+
+fn deserialize_owner_actor_type<'de, D>(deserializer: D) -> Result<RegistryOwnerActorType, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    match value.as_str() {
+        "service" => Ok(RegistryOwnerActorType::Service),
+        "user" => Ok(RegistryOwnerActorType::User),
+        _ => Err(serde::de::Error::custom(
+            "actor_type must be one of: service, user",
+        )),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RegistryCursorListResponse<T> {
     pub items: Vec<T>,
@@ -113,7 +218,8 @@ pub enum ConnectorBindingLifecycleState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentOwnerRef {
-    pub actor_type: String,
+    #[serde(deserialize_with = "deserialize_owner_actor_type")]
+    pub actor_type: RegistryOwnerActorType,
     pub actor_id: String,
 }
 
@@ -125,8 +231,9 @@ pub struct ToolRefV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KnowledgeScopeRefV1 {
-    pub scope_key: String,
-    pub version: String,
+    pub source_key: String,
+    pub trust_version: String,
+    pub access_scope: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -150,6 +257,7 @@ pub struct AgentRegistryAgentSummary {
     pub id: String,
     pub agent_key: String,
     pub version: i64,
+    #[serde(deserialize_with = "deserialize_active_agent_lifecycle")]
     pub lifecycle_state: AgentRegistryLifecycleState,
     pub configuration_fingerprint: String,
     pub owner_actor_type: RegistryOwnerActorType,
@@ -174,6 +282,7 @@ pub struct AgentRegistryAgent {
 pub struct ToolRegistryToolDefinitionSummary {
     pub tool_key: String,
     pub version: i64,
+    #[serde(deserialize_with = "deserialize_active_tool_definition_lifecycle")]
     pub lifecycle_state: ToolDefinitionLifecycleState,
     pub definition_fingerprint: String,
     pub schema_version: i64,
@@ -195,10 +304,15 @@ pub struct ToolRegistryToolDefinition {
     pub description: String,
     pub tool_effect_class: ToolEffectClass,
     pub abstract_auth_scopes: Vec<String>,
+    #[serde(deserialize_with = "deserialize_input_schema")]
     pub input_schema: Value,
+    #[serde(deserialize_with = "deserialize_output_schema")]
     pub output_schema: Value,
+    #[serde(deserialize_with = "deserialize_timeout_defaults")]
     pub timeout_defaults: Value,
+    #[serde(deserialize_with = "deserialize_retry_contract")]
     pub retry_contract: Value,
+    #[serde(deserialize_with = "deserialize_audit_contract")]
     pub audit_contract: Value,
     pub created_at: String,
 }
@@ -243,6 +357,7 @@ pub struct ConnectorRegistryType {
     pub connector_type_fingerprint: String,
     pub capabilities: Vec<String>,
     pub normalization_contracts: Vec<ConnectorNormalizationContract>,
+    #[serde(deserialize_with = "deserialize_delivery_behavior")]
     pub delivery_behavior: Value,
     pub created_at: String,
 }
