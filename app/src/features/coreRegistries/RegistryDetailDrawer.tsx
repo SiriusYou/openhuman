@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
 interface RegistryDetailDrawerProps {
@@ -19,14 +19,11 @@ export default function RegistryDetailDrawer({
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     previousFocusRef.current = document.activeElement as HTMLElement | null;
-    const rafId = window.requestAnimationFrame(() => {
-      closeButtonRef.current?.focus();
-    });
+    closeButtonRef.current?.focus();
 
     return () => {
-      window.cancelAnimationFrame(rafId);
       previousFocusRef.current?.focus?.();
     };
   }, []);

@@ -63,6 +63,37 @@ function badgeClass(tone: ObservationTone) {
   }
 }
 
+function focusSiblingRow(
+  current: HTMLButtonElement,
+  target: { kind: 'offset'; value: number } | { kind: 'first' } | { kind: 'last' }
+) {
+  const container = current.closest<HTMLElement>('[data-registry-collection-items]');
+  if (!container) {
+    return;
+  }
+
+  const rows = Array.from(
+    container.querySelectorAll<HTMLButtonElement>('[data-registry-collection-row="true"]')
+  );
+  const currentIndex = rows.indexOf(current);
+  if (currentIndex === -1 || rows.length === 0) {
+    return;
+  }
+
+  if (target.kind === 'first') {
+    rows[0]?.focus();
+    return;
+  }
+
+  if (target.kind === 'last') {
+    rows[rows.length - 1]?.focus();
+    return;
+  }
+
+  const nextIndex = (currentIndex + target.value + rows.length) % rows.length;
+  rows[nextIndex]?.focus();
+}
+
 export default function RegistryCollectionPane({
   title,
   description,
@@ -91,7 +122,7 @@ export default function RegistryCollectionPane({
 
       <p className="mt-3 text-xs text-stone-500 dark:text-neutral-400">{summary.body}</p>
 
-      <div className="mt-4 space-y-3">
+      <div className="mt-4 space-y-3" data-registry-collection-items="true">
         {items.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-stone-200 px-4 py-5 text-sm text-stone-500 dark:border-neutral-800 dark:text-neutral-400">
             No exact records available in this collection yet.
@@ -102,6 +133,31 @@ export default function RegistryCollectionPane({
               key={item.id}
               type="button"
               onClick={item.onSelect}
+              data-registry-collection-row="true"
+              onKeyDown={event => {
+                switch (event.key) {
+                  case 'ArrowDown':
+                  case 'ArrowRight':
+                    event.preventDefault();
+                    focusSiblingRow(event.currentTarget, { kind: 'offset', value: 1 });
+                    break;
+                  case 'ArrowUp':
+                  case 'ArrowLeft':
+                    event.preventDefault();
+                    focusSiblingRow(event.currentTarget, { kind: 'offset', value: -1 });
+                    break;
+                  case 'Home':
+                    event.preventDefault();
+                    focusSiblingRow(event.currentTarget, { kind: 'first' });
+                    break;
+                  case 'End':
+                    event.preventDefault();
+                    focusSiblingRow(event.currentTarget, { kind: 'last' });
+                    break;
+                  default:
+                    break;
+                }
+              }}
               className="w-full rounded-2xl border border-stone-200 px-4 py-3 text-left transition hover:border-primary-300 hover:bg-stone-50 dark:border-neutral-800 dark:hover:border-primary-500/50 dark:hover:bg-neutral-800/80">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { RegistryBridgeErrorMeta } from '../../services/api/coreRegistriesClient';
 import RegistryCollectionPane, { type RegistryCollectionPaneItem } from './RegistryCollectionPane';
@@ -19,6 +19,10 @@ function shortFingerprint(value: string): string {
   return value.slice(0, 12);
 }
 
+function fingerprintLabel(family: string, value: string): string {
+  return `${family} fp:${shortFingerprint(value)}`;
+}
+
 function tabSummary(tab: RegistryTab, summaryState: string) {
   const label = formatLiteral(summaryState);
   if (summaryState === 'fresh') {
@@ -27,24 +31,105 @@ function tabSummary(tab: RegistryTab, summaryState: string) {
   return `${formatLiteral(tab)} · ${label}`;
 }
 
-function blockerMessage(error: RegistryBridgeErrorMeta) {
+function describeBlocker(error: RegistryBridgeErrorMeta) {
   if (error.kind === 'YouPetConfigMissing' || error.kind === 'YouPetConfigInvalid') {
-    return 'Core integration is blocking registry inspection.';
+    return error.kind === 'YouPetConfigMissing'
+      ? {
+          title: 'Core integration required',
+          description: 'No Core integration configuration was found for registry inspection.',
+        }
+      : {
+          title: 'Core integration invalid',
+          description:
+            'The current Core integration configuration is invalid for registry inspection.',
+        };
   }
+
+  if (error.kind === 'YouPetCoreHttpError' && error.httpStatus === 401) {
+    return {
+      title: 'Core authentication required',
+      description: 'Registry inspection could not authenticate with Core for this session.',
+    };
+  }
+
   if (
     error.kind === 'YouPetCoreHttpError' &&
-    (error.httpStatus === 401 || error.httpStatus === 403)
+    error.httpStatus === 403 &&
+    error.coreCode === 'forbidden_actor'
   ) {
-    return 'Core rejected this registry session.';
+    return {
+      title: 'Registry inspection forbidden',
+      description: 'Core rejected this actor for tenant registry inspection.',
+    };
   }
-  if (error.kind === 'YouPetCoreHttpError' && error.httpStatus === 503) {
-    return 'Core is temporarily unavailable for this tenant.';
+
+  if (
+    error.kind === 'YouPetCoreHttpError' &&
+    error.httpStatus === 503 &&
+    error.coreCode === 'kernel_tenant_unavailable'
+  ) {
+    return {
+      title: 'Tenant unavailable',
+      description:
+        'Core reported that this tenant is temporarily unavailable for registry inspection.',
+    };
   }
-  return 'Core integration is blocking registry inspection.';
+
+  if (
+    error.kind === 'YouPetCoreHttpError' &&
+    error.httpStatus === 503 &&
+    error.coreCode === 'kernel_tenant_invariant_violation'
+  ) {
+    return {
+      title: 'Tenant invariant violation',
+      description: 'Core reported a tenant invariant violation for registry inspection.',
+    };
+  }
+
+  return {
+    title: 'Core integration required',
+    description: 'Core integration is currently blocking registry inspection.',
+  };
 }
 
 function hasMore(nextCursor: string | null) {
   return typeof nextCursor === 'string' && nextCursor.length > 0;
+}
+
+function useMinWidth(query: string): boolean {
+  const getMatches = () =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia(query).matches
+      : false;
+  const [matches, setMatches] = useState(getMatches);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia(query);
+    const update = (event?: MediaQueryListEvent) =>
+      setMatches(event?.matches ?? mediaQuery.matches);
+
+    update();
+    mediaQuery.addEventListener?.('change', update);
+    mediaQuery.addListener?.(update);
+    return () => {
+      mediaQuery.removeEventListener?.('change', update);
+      mediaQuery.removeListener?.(update);
+    };
+  }, [query]);
+
+  return matches;
+}
+
+function tabId(tab: RegistryTab): string {
+  return `registry-tab-${tab}`;
+}
+
+function tabPanelId(tab: RegistryTab): string {
+  return `registry-panel-${tab}`;
 }
 
 export default function CoreRegistriesPage() {
@@ -52,6 +137,13 @@ export default function CoreRegistriesPage() {
     useRegistryInspection();
   const activeTab = state.urlState.tab;
   const detailState = state.tabs[activeTab].detail;
+  const isWideLayout = useMinWidth('(min-width: 1280px)');
+  const tabRefs = useRef<Record<RegistryTab, HTMLButtonElement | null>>({
+    agents: null,
+    tools: null,
+    connectors: null,
+  });
+  const blocker = state.surfaceError ? describeBlocker(state.surfaceError) : null;
 
   const agentItems = useMemo<RegistryCollectionPaneItem[]>(
     () =>
@@ -61,7 +153,7 @@ export default function CoreRegistriesPage() {
         subtitle: `v${agent.version} · ${formatLiteral(agent.ownerActorType)} · ${agent.ownerActorId}`,
         meta: [`Created ${new Date(agent.createdAt).toLocaleDateString()}`],
         statusLabel: formatLiteral(agent.lifecycleState),
-        fingerprintLabel: `fp:${shortFingerprint(agent.configurationFingerprint)}`,
+        fingerprintLabel: fingerprintLabel('Config', agent.configurationFingerprint),
         onSelect: () =>
           void openDetail({ kind: 'agent', key: agent.agentKey, version: agent.version }),
       })),
@@ -72,13 +164,13 @@ export default function CoreRegistriesPage() {
     () =>
       state.tabs.tools.collections.toolDefinitions.items.map(definition => {
         const enablement = state.tabs.tools.collections.toolEnablements.items.find(
-          item => item.toolKey === definition.toolKey
+          item => item.toolKey === definition.toolKey && item.version === definition.version
         );
         const statusLabel = enablement
           ? enablement.lifecycleState === 'enabled'
             ? 'Enabled'
             : 'Disabled'
-          : 'Missing enablement';
+          : 'No Tenant Enablement returned';
 
         return {
           id: `${definition.toolKey}:${definition.version}`,
@@ -86,7 +178,7 @@ export default function CoreRegistriesPage() {
           subtitle: `${definition.toolKey} v${definition.version}`,
           meta: [formatLiteral(definition.toolEffectClass)],
           statusLabel,
-          fingerprintLabel: `fp:${shortFingerprint(definition.definitionFingerprint)}`,
+          fingerprintLabel: fingerprintLabel('Definition', definition.definitionFingerprint),
           onSelect: () =>
             void openDetail({
               kind: 'tool-definition',
@@ -131,7 +223,7 @@ export default function CoreRegistriesPage() {
         subtitle: `v${connectorType.version} · ${connectorType.sourceType}`,
         meta: connectorType.capabilities,
         statusLabel: formatLiteral(connectorType.lifecycleState),
-        fingerprintLabel: `fp:${shortFingerprint(connectorType.connectorTypeFingerprint)}`,
+        fingerprintLabel: fingerprintLabel('Type', connectorType.connectorTypeFingerprint),
         onSelect: () =>
           void openDetail({
             kind: 'connector-type',
@@ -150,7 +242,7 @@ export default function CoreRegistriesPage() {
         subtitle: `${binding.connectorTypeKey} v${binding.connectorTypeVersion}`,
         meta: binding.enabledCapabilities,
         statusLabel: formatLiteral(binding.lifecycleState),
-        fingerprintLabel: `fp:${shortFingerprint(binding.bindingFingerprint)}`,
+        fingerprintLabel: fingerprintLabel('Binding', binding.bindingFingerprint),
         onSelect: () =>
           void openDetail({
             kind: 'connector-binding',
@@ -170,9 +262,61 @@ export default function CoreRegistriesPage() {
     void setTab(activeTab);
   };
 
+  const liveMessage = blocker
+    ? `${blocker.title}. ${blocker.description}`
+    : detailState.kind === 'loaded'
+      ? `${formatLiteral(activeTab)} tab active. Selected ${detailState.detail.key} version ${detailState.detail.version}.`
+      : detailState.kind === 'loading'
+        ? `${formatLiteral(activeTab)} tab active. Loading ${detailState.detail.key} version ${detailState.detail.version}.`
+        : `${formatLiteral(activeTab)} tab active. No detail selected.`;
+
+  const handleTabKeyDown = async (event: KeyboardEvent<HTMLButtonElement>, tab: RegistryTab) => {
+    const currentIndex = REGISTRY_TABS.indexOf(tab);
+    if (currentIndex === -1) {
+      return;
+    }
+
+    let nextIndex: number | null = null;
+    switch (event.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        nextIndex = (currentIndex + 1) % REGISTRY_TABS.length;
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        nextIndex = (currentIndex - 1 + REGISTRY_TABS.length) % REGISTRY_TABS.length;
+        break;
+      case 'Home':
+        nextIndex = 0;
+        break;
+      case 'End':
+        nextIndex = REGISTRY_TABS.length - 1;
+        break;
+      case 'Enter':
+      case ' ':
+        event.preventDefault();
+        await setTab(tab);
+        return;
+      default:
+        return;
+    }
+
+    event.preventDefault();
+    const nextTab = REGISTRY_TABS[nextIndex];
+    if (!nextTab) {
+      return;
+    }
+    tabRefs.current[nextTab]?.focus();
+    await setTab(nextTab);
+  };
+
   return (
     <div className="min-h-full bg-stone-50 px-4 py-8 dark:bg-neutral-950">
       <div className="mx-auto max-w-7xl space-y-6">
+        <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+          {liveMessage}
+        </div>
+
         <header className="rounded-[28px] border border-stone-200 bg-white px-6 py-6 shadow-soft dark:border-neutral-800 dark:bg-neutral-900">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="max-w-3xl">
@@ -201,7 +345,8 @@ export default function CoreRegistriesPage() {
 
         {state.surfaceError ? (
           <section className="rounded-[28px] border border-amber-200 bg-amber-50 px-6 py-6 text-amber-900 shadow-soft">
-            <h2 className="text-lg font-semibold">{blockerMessage(state.surfaceError)}</h2>
+            <h2 className="text-lg font-semibold">{blocker?.title}</h2>
+            <p className="mt-2 text-sm">{blocker?.description}</p>
             <p className="mt-2 text-sm">
               This screen is read-only and cannot write configuration for you.
             </p>
@@ -226,11 +371,20 @@ export default function CoreRegistriesPage() {
                   return (
                     <button
                       key={tab}
+                      id={tabId(tab)}
+                      ref={node => {
+                        tabRefs.current[tab] = node;
+                      }}
                       type="button"
                       role="tab"
+                      aria-controls={tabPanelId(tab)}
                       aria-selected={selected}
+                      tabIndex={selected ? 0 : -1}
                       onClick={() => {
                         void setTab(tab);
+                      }}
+                      onKeyDown={event => {
+                        void handleTabKeyDown(event, tab);
                       }}
                       className={`inline-flex items-center rounded-2xl px-4 py-2 text-sm font-medium transition ${
                         selected
@@ -255,7 +409,12 @@ export default function CoreRegistriesPage() {
             </section>
 
             <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
-              <div className="space-y-6">
+              <section
+                id={tabPanelId(activeTab)}
+                role="tabpanel"
+                aria-labelledby={tabId(activeTab)}
+                className="space-y-6"
+                tabIndex={0}>
                 {activeTab === 'agents' ? (
                   <RegistryCollectionPane
                     title="Agents"
@@ -335,24 +494,26 @@ export default function CoreRegistriesPage() {
                     />
                   </div>
                 ) : null}
-              </div>
+              </section>
 
-              <aside className="hidden xl:block">
-                <div className="sticky top-8">
-                  <RegistryDetailPane
-                    activeTab={activeTab}
-                    detailState={detailState.kind === 'loaded' ? { kind: 'none' } : detailState}
-                    state={state}
-                    onOpenDetail={openDetail}
-                  />
-                </div>
-              </aside>
+              {isWideLayout ? (
+                <aside className="block">
+                  <div className="sticky top-8">
+                    <RegistryDetailPane
+                      activeTab={activeTab}
+                      detailState={detailState}
+                      state={state}
+                      onOpenDetail={openDetail}
+                    />
+                  </div>
+                </aside>
+              ) : null}
             </div>
           </>
         )}
       </div>
 
-      {detailState.kind !== 'none' ? (
+      {!isWideLayout && detailState.kind !== 'none' ? (
         <RegistryDetailDrawer title={selectedDetailTitle} onClose={closeDetail}>
           <RegistryDetailPane
             activeTab={activeTab}

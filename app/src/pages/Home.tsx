@@ -14,7 +14,7 @@ import { useUsageState } from '../hooks/useUsageState';
 import { useUser } from '../hooks/useUser';
 import { useT } from '../lib/i18n/I18nContext';
 import { restartCoreProcess } from '../services/coreProcessControl';
-import { selectBlockingState } from '../store/connectivitySelectors';
+import { selectBlockingState, selectConnectivityErrors } from '../store/connectivitySelectors';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { resolveTheme, setThemeMode, type ThemeMode } from '../store/themeSlice';
 import { APP_VERSION } from '../utils/config';
@@ -43,6 +43,43 @@ export function resolveHomeUserName(user: unknown): string {
   if (username) return username.startsWith('@') ? username : `@${username}`;
   if (email) return email.split('@')[0] || 'User';
   return 'User';
+}
+
+function registryCardCopy(
+  blocking: 'internet-offline' | 'core-unreachable' | 'backend-only' | 'ok',
+  coreError: string | undefined
+) {
+  if (blocking === 'core-unreachable') {
+    const normalized = coreError?.toLowerCase() ?? '';
+    if (normalized.includes('config missing')) {
+      return {
+        title: 'Core integration required',
+        description: 'Complete the desktop Core integration before inspecting registries.',
+      };
+    }
+    if (normalized.includes('config invalid')) {
+      return {
+        title: 'Core integration required',
+        description: 'Repair the desktop Core integration before inspecting registries.',
+      };
+    }
+    return {
+      title: 'Core integration required',
+      description: 'Reconnect the local Core bridge before inspecting registries.',
+    };
+  }
+
+  if (blocking === 'internet-offline') {
+    return {
+      title: 'Core integration required',
+      description: 'Reconnect to the internet before inspecting registries.',
+    };
+  }
+
+  return {
+    title: 'Core Registries',
+    description: 'Inspect exact Agent, Tool, and Connector records from Core.',
+  };
 }
 
 const Home = () => {
@@ -78,6 +115,7 @@ const Home = () => {
   // failure mode now has its own copy so the user knows *which* link is
   // broken instead of seeing a single conflated "device offline" line.
   const blocking = useAppSelector(selectBlockingState);
+  const connectivityErrors = useAppSelector(selectConnectivityErrors);
   const [isRestartingCore, setIsRestartingCore] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
 
@@ -122,6 +160,7 @@ const Home = () => {
     'core-unreachable': t('home.statusCoreUnreachable'),
     'internet-offline': t('home.statusInternetOffline'),
   }[blocking];
+  const registriesCard = registryCardCopy(blocking, connectivityErrors.core);
 
   // Open in-app chat.
   const handleStartCooking = async () => {
@@ -334,13 +373,14 @@ const Home = () => {
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-stone-900 dark:text-neutral-100">
-              {t('home.coreRegistries', 'Core Registries')}
+              {blocking === 'ok' || blocking === 'backend-only'
+                ? t('home.coreRegistries', registriesCard.title)
+                : registriesCard.title}
             </div>
             <div className="text-xs text-stone-500 dark:text-neutral-400">
-              {t(
-                'home.coreRegistriesDescription',
-                'Inspect exact Agent, Tool, and Connector records from Core.'
-              )}
+              {blocking === 'ok' || blocking === 'backend-only'
+                ? t('home.coreRegistriesDescription', registriesCard.description)
+                : registriesCard.description}
             </div>
           </div>
           <svg

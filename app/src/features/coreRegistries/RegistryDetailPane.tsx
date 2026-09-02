@@ -1,6 +1,9 @@
+import { useId, useState } from 'react';
+
 import { useT } from '../../lib/i18n/I18nContext';
 import type {
   AgentRegistryAgent,
+  ConnectorNormalizationContract,
   ConnectorRegistryBinding,
   ConnectorRegistryType,
   ToolRegistryToolDefinition,
@@ -51,11 +54,14 @@ function canResolveToolDefinition(
   return { match, observation: collection.observation.kind };
 }
 
-function canResolveToolEnablement(state: RegistryInspectionState, toolKey: string) {
-  return (
-    state.tabs.tools.collections.toolEnablements.items.find(item => item.toolKey === toolKey) ??
-    null
-  );
+function canResolveToolEnablement(
+  state: RegistryInspectionState,
+  toolKey: string,
+  version: number
+) {
+  const collection = state.tabs.tools.collections.toolEnablements;
+  const match = collection.items.find(item => item.toolKey === toolKey && item.version === version);
+  return { match, observation: collection.observation.kind };
 }
 
 function canResolveConnectorType(
@@ -123,6 +129,79 @@ function FingerprintRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function summarizeSchema(value: Record<string, unknown>): string {
+  const schemaType = typeof value.type === 'string' ? value.type : null;
+  const propertyCount =
+    value.properties && typeof value.properties === 'object'
+      ? Object.keys(value.properties as Record<string, unknown>).length
+      : 0;
+  const requiredCount = Array.isArray(value.required) ? value.required.length : 0;
+
+  if (Object.keys(value).length === 0) {
+    return 'Empty schema object';
+  }
+
+  const summary = [
+    schemaType ? `Type ${schemaType}` : null,
+    propertyCount > 0 ? `${propertyCount} properties` : null,
+    requiredCount > 0 ? `${requiredCount} required` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  return summary || summarizeRecordShape(value);
+}
+
+function summarizeRecordShape(value: Record<string, unknown>): string {
+  const keys = Object.keys(value);
+  if (keys.length === 0) {
+    return 'No fields';
+  }
+
+  const sample = keys.slice(0, 3).join(', ');
+  return keys.length > 3
+    ? `${keys.length} fields · ${sample}…`
+    : `${keys.length} fields · ${sample}`;
+}
+
+function summarizeNormalizationContracts(contracts: ConnectorNormalizationContract[]): string {
+  if (contracts.length === 0) {
+    return 'No normalization contracts';
+  }
+
+  return contracts
+    .map(
+      contract =>
+        `${contract.evidenceFamily} -> ${contract.kernelEventType}@${contract.kernelEventSchemaVersion}`
+    )
+    .join(', ');
+}
+
+function CollapsibleJson({ label, value }: { label: string; value: unknown }) {
+  const [expanded, setExpanded] = useState(false);
+  const panelId = useId();
+
+  return (
+    <div className="rounded-2xl border border-stone-200 bg-stone-50 px-3 py-2 dark:border-neutral-800 dark:bg-neutral-950">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={panelId}
+        onClick={() => {
+          setExpanded(current => !current);
+        }}
+        className="text-sm font-medium text-stone-800 dark:text-neutral-100">
+        {label}
+      </button>
+      {expanded ? (
+        <div id={panelId} className="mt-3">
+          <ReadOnlyJson value={value} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ReferenceButton({
   label,
   detail,
@@ -171,7 +250,7 @@ function AgentDetail({
 }) {
   return (
     <div className="space-y-4">
-      <FingerprintRow label="Fingerprint" value={record.configurationFingerprint} />
+      <FingerprintRow label="Configuration fingerprint" value={record.configurationFingerprint} />
 
       <Section title="Agent lifecycle">
         <FieldList
@@ -260,16 +339,16 @@ function ToolDefinitionDetail({
   state: RegistryInspectionState;
   onOpenDetail: (detail: RegistryDetailRef) => void | Promise<void>;
 }) {
-  const enablement = canResolveToolEnablement(state, record.toolKey);
-  const enablementLabel = enablement
-    ? enablement.lifecycleState === 'enabled'
+  const enablement = canResolveToolEnablement(state, record.toolKey, record.version);
+  const enablementLabel = enablement.match
+    ? enablement.match.lifecycleState === 'enabled'
       ? 'Enabled'
       : 'Disabled'
-    : 'Missing enablement';
+    : 'No Tenant Enablement returned';
 
   return (
     <div className="space-y-4">
-      <FingerprintRow label="Fingerprint" value={record.definitionFingerprint} />
+      <FingerprintRow label="Definition fingerprint" value={record.definitionFingerprint} />
 
       <Section title="Definition lifecycle">
         <FieldList
@@ -283,13 +362,13 @@ function ToolDefinitionDetail({
         <p className="text-sm text-stone-600 dark:text-neutral-300">
           Active records are publish states, not runtime permission grants.
         </p>
-        {enablement ? (
+        {enablement.match ? (
           <ReferenceButton
-            label={`${enablement.toolKey} v${enablement.version}`}
+            label={`${enablement.match.toolKey} v${enablement.match.version}`}
             detail={{
               kind: 'tool-enablement',
-              key: enablement.toolKey,
-              version: enablement.version,
+              key: enablement.match.toolKey,
+              version: enablement.match.version,
             }}
             onOpenDetail={onOpenDetail}
           />
@@ -297,7 +376,17 @@ function ToolDefinitionDetail({
       </Section>
 
       <Section title="Schemas">
-        <ReadOnlyJson
+        <FieldList
+          entries={[
+            ['Input schema', summarizeSchema(record.inputSchema)],
+            ['Output schema', summarizeSchema(record.outputSchema)],
+            ['Timeout defaults', summarizeRecordShape(record.timeoutDefaults)],
+            ['Retry contract', summarizeRecordShape(record.retryContract)],
+            ['Audit contract', summarizeRecordShape(record.auditContract)],
+          ]}
+        />
+        <CollapsibleJson
+          label="View raw JSON"
           value={{
             inputSchema: record.inputSchema,
             outputSchema: record.outputSchema,
@@ -364,7 +453,7 @@ function ToolEnablementDetail({
 function ConnectorTypeDetail({ record }: { record: ConnectorRegistryType }) {
   return (
     <div className="space-y-4">
-      <FingerprintRow label="Fingerprint" value={record.connectorTypeFingerprint} />
+      <FingerprintRow label="Connector type fingerprint" value={record.connectorTypeFingerprint} />
 
       <Section title="Type lifecycle">
         <FieldList
@@ -378,7 +467,17 @@ function ConnectorTypeDetail({ record }: { record: ConnectorRegistryType }) {
       </Section>
 
       <Section title="Contracts">
-        <ReadOnlyJson
+        <FieldList
+          entries={[
+            [
+              'Normalization contracts',
+              summarizeNormalizationContracts(record.normalizationContracts),
+            ],
+            ['Delivery behavior', summarizeRecordShape(record.deliveryBehavior)],
+          ]}
+        />
+        <CollapsibleJson
+          label="View raw JSON"
           value={{
             normalizationContracts: record.normalizationContracts,
             deliveryBehavior: record.deliveryBehavior,
@@ -406,15 +505,15 @@ function ConnectorBindingDetail({
 
   return (
     <div className="space-y-4">
-      <FingerprintRow label="Fingerprint" value={record.bindingFingerprint} />
+      <FingerprintRow label="Binding fingerprint" value={record.bindingFingerprint} />
 
       <Section title="Binding lifecycle">
         <FieldList
           entries={[
             ['Lifecycle', formatLiteral(record.lifecycleState)],
             [
-              'Provider account',
-              `${record.providerAccount.namespace} · ${record.providerAccount.externalAccountRef}`,
+              'Provider account reference',
+              `${record.providerAccount.namespace}:${record.providerAccount.externalAccountRef}`,
             ],
             ['Capabilities', record.enabledCapabilities.join(', ') || 'None'],
             ['Created', formatDate(record.createdAt)],
@@ -445,14 +544,14 @@ function ConnectorBindingDetail({
         )}
       </Section>
 
-      <Section title="Logical reference warnings">
+      <Section title="Logical references">
         <p className="text-sm text-stone-600 dark:text-neutral-300">
-          Logical references need follow-up outside this read-only view.
+          Logical reference only—secret not displayed
         </p>
         <FieldList
           entries={[
-            ['Config ref', record.configRef],
-            ['Credential ref', record.credentialRef],
+            ['Config reference', record.configRef],
+            ['Credential reference', record.credentialRef],
           ]}
         />
       </Section>
