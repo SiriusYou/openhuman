@@ -44,6 +44,7 @@ describe('M2.2.4 Core registries live desktop flow', function () {
   it('walks the Core registries route through exact links, read-only state, freshness, and fingerprint copy', async () => {
     await openCoreRegistriesFromHome();
     await waitForCoreRegistriesPage();
+    await waitForText('Load more agents');
 
     const initial = await collectionSnapshot();
     expect(initial.tabStates).toContain('Agents:selected');
