@@ -113,6 +113,8 @@ validate_proxy_source() {
   assert_contains "$proxy_path" "PAGED_QUERY_KEYS" || return 1
   assert_contains "$proxy_path" "new Set(['limit', 'cursor'])" || return 1
   assert_contains "$proxy_path" "validatePagedQuery" || return 1
+  assert_contains "$proxy_path" "rawUrl.startsWith('/')" || return 1
+  assert_contains "$proxy_path" "requestUrl.origin === targetOrigin" || return 1
   assert_contains "$proxy_path" "searchParams.entries()" || return 1
   assert_contains "$proxy_path" "seenKeys" || return 1
   assert_contains "$proxy_path" "rawPairs.some(segment => segment.length === 0)" || return 1
@@ -258,6 +260,17 @@ mutate_copy \
   "$TMP_DIR/proxy-nonpaged-query-pass.mjs"
 if validate_proxy_source "$TMP_DIR/proxy-nonpaged-query-pass.mjs" 2>/dev/null; then
   echo "ERROR: proxy non-paged query mutation did not fail closed" >&2
+  exit 1
+fi
+
+mutate_copy \
+  "$ROOT/$PROXY_RELPATH" \
+  1 \
+  "requestUrl.origin === targetOrigin" \
+  "true" \
+  "$TMP_DIR/proxy-foreign-origin-pass.mjs"
+if validate_proxy_source "$TMP_DIR/proxy-foreign-origin-pass.mjs" 2>/dev/null; then
+  echo "ERROR: proxy foreign-origin mutation did not fail closed" >&2
   exit 1
 fi
 
