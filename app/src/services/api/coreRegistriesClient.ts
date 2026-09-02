@@ -72,21 +72,22 @@ export interface AgentRegistryAgentSummary {
   id: string;
   agentKey: string;
   version: number;
-  lifecycleState: AgentRegistryLifecycleState;
+  lifecycleState: 'active';
   configurationFingerprint: string;
   ownerActorType: RegistryOwnerActorType;
   ownerActorId: string;
   createdAt: string;
 }
 
-export interface AgentRegistryAgent extends AgentRegistryAgentSummary {
+export interface AgentRegistryAgent extends Omit<AgentRegistryAgentSummary, 'lifecycleState'> {
+  lifecycleState: AgentRegistryLifecycleState;
   configuration: AgentConfigurationV1;
 }
 
 export interface ToolRegistryToolDefinitionSummary {
   toolKey: string;
   version: number;
-  lifecycleState: ToolDefinitionLifecycleState;
+  lifecycleState: 'active';
   definitionFingerprint: string;
   schemaVersion: number;
   displayName: string;
@@ -96,7 +97,11 @@ export interface ToolRegistryToolDefinitionSummary {
   createdAt: string;
 }
 
-export interface ToolRegistryToolDefinition extends ToolRegistryToolDefinitionSummary {
+export interface ToolRegistryToolDefinition extends Omit<
+  ToolRegistryToolDefinitionSummary,
+  'lifecycleState'
+> {
+  lifecycleState: ToolDefinitionLifecycleState;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   timeoutDefaults: Record<string, unknown>;
@@ -240,7 +245,7 @@ const agentSummarySchema = z
     id: z.string(),
     agent_key: z.string(),
     version: z.number().int(),
-    lifecycle_state: agentLifecycleStateSchema,
+    lifecycle_state: z.literal('active'),
     configuration_fingerprint: z.string(),
     owner_actor_type: registryOwnerActorTypeSchema,
     owner_actor_id: z.string(),
@@ -308,7 +313,7 @@ const toolDefinitionSummarySchema = z
   .object({
     tool_key: z.string(),
     version: z.number().int(),
-    lifecycle_state: toolDefinitionLifecycleStateSchema,
+    lifecycle_state: z.literal('active'),
     definition_fingerprint: z.string(),
     schema_version: z.number().int(),
     display_name: z.string(),
