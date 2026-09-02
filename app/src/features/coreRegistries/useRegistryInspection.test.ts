@@ -394,6 +394,71 @@ describe('useRegistryInspection', () => {
     expect(result.current.state.tabs.tools.summaryState).toBe('blocked');
   });
 
+  it('reobserves a selected Tool Enablement detail on Tools refresh instead of serving stale cached detail', async () => {
+    const client = makeClient();
+    const refreshedEnablement: ToolRegistryToolEnablement = {
+      ...toolEnablement,
+      generation: 13,
+      updatedAt: '2026-09-01T12:08:00Z',
+    };
+
+    vi.mocked(client.listAgents).mockResolvedValue({ items: [], nextCursor: null });
+    vi.mocked(client.listToolDefinitions)
+      .mockResolvedValueOnce({ items: [toolDefinitionSummary], nextCursor: null })
+      .mockResolvedValueOnce({ items: [toolDefinitionSummary], nextCursor: null });
+    vi.mocked(client.listToolEnablements)
+      .mockResolvedValueOnce({ items: [toolEnablement] })
+      .mockResolvedValueOnce({ items: [refreshedEnablement] });
+    vi.mocked(client.getToolEnablementVersion)
+      .mockResolvedValueOnce(toolEnablement)
+      .mockResolvedValueOnce(refreshedEnablement);
+
+    const { result } = renderHook(() => useRegistryInspection({ client }));
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.collections.agents.observation).toEqual({
+        kind: 'empty',
+        observedAt: '2026-09-01T12:00:00.000Z',
+      })
+    );
+
+    await act(async () => {
+      await result.current.setTab('tools');
+    });
+
+    await waitFor(() => expect(result.current.state.tabs.tools.summaryState).toBe('fresh'));
+
+    await act(async () => {
+      await result.current.openDetail({ kind: 'tool-enablement', key: 'tool.alpha', version: 5 });
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.tools.detail).toEqual({
+        kind: 'loaded',
+        detail: { kind: 'tool-enablement', key: 'tool.alpha', version: 5 },
+        record: toolEnablement,
+      })
+    );
+    expect(client.getToolEnablementVersion).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await result.current.refreshActiveTab();
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.tools.collections.toolEnablements.items).toEqual([
+        refreshedEnablement,
+      ])
+    );
+
+    expect(client.getToolEnablementVersion).toHaveBeenCalledTimes(2);
+    expect(result.current.state.tabs.tools.detail).toEqual({
+      kind: 'loaded',
+      detail: { kind: 'tool-enablement', key: 'tool.alpha', version: 5 },
+      record: refreshedEnablement,
+    });
+  });
+
   it('enforces Retry-After before allowing a manual collection retry and does not auto-retry on timer advance', async () => {
     const client = makeClient();
     vi.mocked(client.listAgents).mockResolvedValue({ items: [], nextCursor: null });
