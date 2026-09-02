@@ -143,6 +143,17 @@ function collectionTab(collection: RegistryCollectionKey): RegistryTab {
   }
 }
 
+function relevantCollectionKeysForTab(tab: RegistryTab): RegistryCollectionKey[] {
+  switch (tab) {
+    case 'agents':
+      return ['agents'];
+    case 'tools':
+      return ['toolDefinitions', 'toolEnablements'];
+    case 'connectors':
+      return ['connectorTypes', 'connectorBindings'];
+  }
+}
+
 function browserSelectsDetail(tab: RegistryTab, detail: RegistryDetailRef): boolean {
   const current = parseRegistryUrlState(window.location.search);
   return (
@@ -179,6 +190,10 @@ function getCollectionState(
   }
 
   return null;
+}
+
+function isRetryCooldownActive(retryDisabledUntil: number | null | undefined): boolean {
+  return typeof retryDisabledUntil === 'number' && retryDisabledUntil > Date.now();
 }
 
 export function useRegistryInspection(
@@ -489,6 +504,13 @@ export function useRegistryInspection(
 
   const refreshActiveTab = useCallback(async () => {
     const tab = stateRef.current.urlState.tab;
+    for (const collection of relevantCollectionKeysForTab(tab)) {
+      const collectionState = getCollectionState(stateRef.current, tab, collection);
+      if (isRetryCooldownActive(collectionState?.retryDisabledUntil)) {
+        return;
+      }
+    }
+
     visitedTabsRef.current.add(tab);
     const generation = nextGeneration(tab);
     await loadTabGeneration(tab, generation);
@@ -510,6 +532,10 @@ export function useRegistryInspection(
               : current.tabs.connectors.collections.connectorBindings;
 
       if (!('nextCursor' in collectionState) || !collectionState.nextCursor) {
+        return;
+      }
+
+      if (isRetryCooldownActive(collectionState.retryDisabledUntil)) {
         return;
       }
 
@@ -546,7 +572,7 @@ export function useRegistryInspection(
     async (collection: RegistryCollectionKey) => {
       const tab = collectionTab(collection);
       const collectionState = getCollectionState(stateRef.current, tab, collection);
-      if (collectionState?.retryDisabledUntil && collectionState.retryDisabledUntil > Date.now()) {
+      if (isRetryCooldownActive(collectionState?.retryDisabledUntil)) {
         return;
       }
 

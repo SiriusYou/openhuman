@@ -389,7 +389,6 @@ function markTabLoading(
       continue;
     }
     collectionState.observation = { kind: 'loading', generation };
-    collectionState.retryDisabledUntil = null;
   }
 
   if (state.urlState.tab === tab && state.urlState.detail) {
@@ -415,7 +414,6 @@ function markCollectionLoading(
 
   tabState.generation = generation;
   collectionState.observation = { kind: 'loading', generation };
-  collectionState.retryDisabledUntil = null;
 }
 
 function resetCollectionForRestart(

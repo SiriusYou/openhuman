@@ -20,6 +20,7 @@ interface RegistryCollectionPaneProps {
   onLoadMore?: () => void;
   onRetry?: () => void;
   retryDisabled?: boolean;
+  loadMoreDisabled?: boolean;
   hasMore?: boolean;
 }
 
@@ -126,6 +127,7 @@ export default function RegistryCollectionPane({
   onLoadMore,
   onRetry,
   retryDisabled = false,
+  loadMoreDisabled = false,
   hasMore = false,
 }: RegistryCollectionPaneProps) {
   const { t } = useT();
@@ -238,7 +240,8 @@ export default function RegistryCollectionPane({
           <button
             type="button"
             onClick={onLoadMore}
-            className="inline-flex items-center rounded-xl bg-primary-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-primary-600">
+            disabled={loadMoreDisabled}
+            className="inline-flex items-center rounded-xl bg-primary-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-50">
             {loadMoreLabel ?? t('common.showMore')}
           </button>
         ) : null}

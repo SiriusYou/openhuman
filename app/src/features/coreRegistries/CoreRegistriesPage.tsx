@@ -187,6 +187,8 @@ export default function CoreRegistriesPage() {
     ];
   }, [activeTab, state.tabs]);
 
+  const activeTabRetryDisabled = activeRetryDisabledUntilValues.some(isRetryDisabled);
+
   useEffect(() => {
     const now = Date.now();
     const nextRetryWakeAt = activeRetryDisabledUntilValues
@@ -413,10 +415,11 @@ export default function CoreRegistriesPage() {
 
             <button
               type="button"
+              disabled={activeTabRetryDisabled}
               onClick={() => {
                 void refreshActiveTab();
               }}
-              className="inline-flex items-center rounded-2xl border border-stone-200 px-4 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-100 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800">
+              className="inline-flex items-center rounded-2xl border border-stone-200 px-4 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800">
               {t('common.refresh')}
             </button>
           </div>
@@ -510,6 +513,9 @@ export default function CoreRegistriesPage() {
                     retryDisabled={isRetryDisabled(
                       state.tabs.agents.collections.agents.retryDisabledUntil
                     )}
+                    loadMoreDisabled={isRetryDisabled(
+                      state.tabs.agents.collections.agents.retryDisabledUntil
+                    )}
                   />
                 ) : null}
 
@@ -529,6 +535,9 @@ export default function CoreRegistriesPage() {
                         void retryCollection('toolDefinitions');
                       }}
                       retryDisabled={isRetryDisabled(
+                        state.tabs.tools.collections.toolDefinitions.retryDisabledUntil
+                      )}
+                      loadMoreDisabled={isRetryDisabled(
                         state.tabs.tools.collections.toolDefinitions.retryDisabledUntil
                       )}
                     />
@@ -565,6 +574,9 @@ export default function CoreRegistriesPage() {
                       retryDisabled={isRetryDisabled(
                         state.tabs.connectors.collections.connectorTypes.retryDisabledUntil
                       )}
+                      loadMoreDisabled={isRetryDisabled(
+                        state.tabs.connectors.collections.connectorTypes.retryDisabledUntil
+                      )}
                     />
                     <RegistryCollectionPane
                       title={t('registries.collections.connectorBindings.title')}
@@ -582,6 +594,9 @@ export default function CoreRegistriesPage() {
                         void retryCollection('connectorBindings');
                       }}
                       retryDisabled={isRetryDisabled(
+                        state.tabs.connectors.collections.connectorBindings.retryDisabledUntil
+                      )}
+                      loadMoreDisabled={isRetryDisabled(
                         state.tabs.connectors.collections.connectorBindings.retryDisabledUntil
                       )}
                     />
