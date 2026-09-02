@@ -441,7 +441,7 @@ describe('useRegistryInspection', () => {
     expect(replaceStateSpy).toHaveBeenCalledWith({}, '', '/registries?tab=tools');
   });
 
-  it('does not resurrect cached detail from history after a surface blocker already cleared the selection', async () => {
+  it('keeps cached detail cleared when a blocked history restore follows a later surface blocker', async () => {
     const client = makeClient();
     const blockedError = new CoreRpcError('forbidden actor', 'unknown', 403, {
       kind: 'YouPetCoreHttpError',
@@ -452,10 +452,7 @@ describe('useRegistryInspection', () => {
       .mockResolvedValueOnce({ items: [agentSummary], nextCursor: null })
       .mockRejectedValueOnce(blockedError);
     vi.mocked(client.listToolDefinitions)
-      .mockResolvedValueOnce({
-        items: [toolDefinitionSummary],
-        nextCursor: null,
-      })
+      .mockResolvedValueOnce({ items: [toolDefinitionSummary], nextCursor: null })
       .mockRejectedValueOnce(blockedError);
     vi.mocked(client.listToolEnablements)
       .mockResolvedValueOnce({ items: [toolEnablement] })
@@ -492,12 +489,35 @@ describe('useRegistryInspection', () => {
 
     await act(async () => {
       await result.current.refreshActiveTab();
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.surfaceError).toEqual({
+        kind: 'YouPetCoreHttpError',
+        httpStatus: 403,
+        coreCode: 'forbidden_actor',
+      })
+    );
+
+    await act(async () => {
       window.history.pushState(
         {},
         '',
         '/registries?tab=tools&kind=tool-definition&key=tool.alpha&version=3'
       );
       window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.surfaceError).toEqual({
+        kind: 'YouPetCoreHttpError',
+        httpStatus: 403,
+        coreCode: 'forbidden_actor',
+      })
+    );
+
+    await act(async () => {
+      await Promise.resolve();
     });
 
     expect(result.current.state.urlState).toEqual({ tab: 'tools', detail: null });
