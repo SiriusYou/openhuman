@@ -16,7 +16,7 @@ import type {
   UnpagedRegistryCollection,
 } from '../../services/api/coreRegistriesClient';
 import { LOAD_MORE_LIMIT } from './state';
-import { useRegistryInspection, type RegistryInspectionClient } from './useRegistryInspection';
+import { type RegistryInspectionClient, useRegistryInspection } from './useRegistryInspection';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -53,38 +53,47 @@ const agentDetail: AgentRegistryAgent = {
 
 function makeClient(): RegistryInspectionClient {
   return {
-    listAgents: vi.fn<(_: RegistryCursorListParams | undefined) => Promise<CursorRegistryPage<AgentRegistryAgentSummary>>>(),
-    getAgentVersion: vi.fn<
-      (_: { agentKey: string; version: number }) => Promise<AgentRegistryAgent>
-    >(),
-    listToolDefinitions: vi.fn<
-      (_: RegistryCursorListParams | undefined) => Promise<CursorRegistryPage<ToolRegistryToolDefinitionSummary>>
-    >(),
-    getToolDefinitionVersion: vi.fn<
-      (_: { toolKey: string; version: number }) => Promise<ToolRegistryToolDefinition>
-    >(),
+    listAgents:
+      vi.fn<
+        (
+          _: RegistryCursorListParams | undefined
+        ) => Promise<CursorRegistryPage<AgentRegistryAgentSummary>>
+      >(),
+    getAgentVersion:
+      vi.fn<(_: { agentKey: string; version: number }) => Promise<AgentRegistryAgent>>(),
+    listToolDefinitions:
+      vi.fn<
+        (
+          _: RegistryCursorListParams | undefined
+        ) => Promise<CursorRegistryPage<ToolRegistryToolDefinitionSummary>>
+      >(),
+    getToolDefinitionVersion:
+      vi.fn<(_: { toolKey: string; version: number }) => Promise<ToolRegistryToolDefinition>>(),
     listToolEnablements:
       vi.fn<() => Promise<UnpagedRegistryCollection<ToolRegistryToolEnablement>>>(),
-    getToolEnablementVersion: vi.fn<
-      (_: { toolKey: string; version: number }) => Promise<ToolRegistryToolEnablement>
-    >(),
-    listConnectorTypes: vi.fn<
-      (_: RegistryCursorListParams | undefined) => Promise<CursorRegistryPage<ConnectorRegistryTypeSummary>>
-    >(),
-    getConnectorTypeVersion: vi.fn<
-      (_: { connectorKey: string; version: number }) => Promise<ConnectorRegistryType>
-    >(),
-    listConnectorBindings: vi.fn<
-      (_: RegistryCursorListParams | undefined) => Promise<CursorRegistryPage<ConnectorRegistryBindingSummary>>
-    >(),
-    getConnectorBindingVersion: vi.fn<
-      (_: { bindingKey: string; version: number }) => Promise<ConnectorRegistryBinding>
-    >(),
+    getToolEnablementVersion:
+      vi.fn<(_: { toolKey: string; version: number }) => Promise<ToolRegistryToolEnablement>>(),
+    listConnectorTypes:
+      vi.fn<
+        (
+          _: RegistryCursorListParams | undefined
+        ) => Promise<CursorRegistryPage<ConnectorRegistryTypeSummary>>
+      >(),
+    getConnectorTypeVersion:
+      vi.fn<(_: { connectorKey: string; version: number }) => Promise<ConnectorRegistryType>>(),
+    listConnectorBindings:
+      vi.fn<
+        (
+          _: RegistryCursorListParams | undefined
+        ) => Promise<CursorRegistryPage<ConnectorRegistryBindingSummary>>
+      >(),
+    getConnectorBindingVersion:
+      vi.fn<(_: { bindingKey: string; version: number }) => Promise<ConnectorRegistryBinding>>(),
   };
 }
 
 beforeEach(() => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date('2026-09-01T12:00:00Z'));
   window.history.replaceState({}, '', '/registries');
 });
@@ -117,14 +126,10 @@ describe('useRegistryInspection', () => {
 
   it('loads more with limit 50 and restores exact history identity from the page-session detail cache', async () => {
     const client = makeClient();
-    vi.mocked(client.listAgents).mockResolvedValue({
-      items: [agentSummary],
-      nextCursor: 'agent-cursor-1',
-    });
-    vi.mocked(client.listToolDefinitions).mockResolvedValue({
-      items: [],
-      nextCursor: null,
-    });
+    vi.mocked(client.listAgents)
+      .mockResolvedValueOnce({ items: [agentSummary], nextCursor: 'agent-cursor-1' })
+      .mockResolvedValueOnce({ items: [], nextCursor: null });
+    vi.mocked(client.listToolDefinitions).mockResolvedValue({ items: [], nextCursor: null });
     vi.mocked(client.listToolEnablements).mockResolvedValue({ items: [] });
     vi.mocked(client.getAgentVersion).mockResolvedValue(agentDetail);
 
@@ -193,20 +198,14 @@ describe('useRegistryInspection', () => {
 
     expect(result.current.state.tabs.agents.generation).toBe(2);
 
-    second.resolve({
-      items: [{ ...agentSummary, agentKey: 'agent.beta' }],
-      nextCursor: null,
-    });
+    second.resolve({ items: [{ ...agentSummary, agentKey: 'agent.beta' }], nextCursor: null });
     await waitFor(() =>
       expect(result.current.state.tabs.agents.collections.agents.items).toEqual([
         { ...agentSummary, agentKey: 'agent.beta' },
       ])
     );
 
-    first.resolve({
-      items: [agentSummary],
-      nextCursor: null,
-    });
+    first.resolve({ items: [agentSummary], nextCursor: null });
     await act(async () => {
       await first.promise;
     });
