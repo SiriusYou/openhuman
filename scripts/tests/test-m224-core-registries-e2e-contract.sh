@@ -115,6 +115,12 @@ validate_runner_source() {
   assert_contains "$runner_path" 'CEF_CDP_PORT="${M224_CEF_CDP_PORT:-19222}"' || return 1
   assert_contains "$runner_path" '[[ "$CEF_CDP_PORT" == "19222" ]]' || return 1
   assert_contains "$runner_path" 'require_free_port "$CEF_CDP_PORT" "CEF CDP"' || return 1
+  assert_contains "$runner_path" "collect_process_tree" || return 1
+  assert_contains "$runner_path" 'stop_process_tree "$CORE_PID"' || return 1
+  assert_contains "$runner_path" 'port_is_closed "$CORE_PORT"' || return 1
+  assert_contains "$runner_path" 'port_is_closed "$PROXY_PORT"' || return 1
+  assert_contains "$runner_path" 'port_is_closed "$CEF_CDP_PORT"' || return 1
+  assert_contains "$runner_path" 'port_is_closed "$APPIUM_PORT"' || return 1
   assert_line_order "$runner_path" 'rm -rf "$RUN_ROOT"' 'write_meta "$cleanup_ok"' || return 1
   assert_contains "$runner_path" "cmp_snapshots" || return 1
   assert_not_contains "$runner_path" "rm -rf /" || return 1
@@ -187,6 +193,17 @@ mutate_copy \
   "$TMP_DIR/runner-wrong-sha.sh"
 if validate_runner_source "$TMP_DIR/runner-wrong-sha.sh" 2>/dev/null; then
   echo "ERROR: wrong Core SHA mutation did not fail closed" >&2
+  exit 1
+fi
+
+mutate_copy \
+  "$ROOT/$RUNNER_RELPATH" \
+  1 \
+  'stop_process_tree "$CORE_PID"' \
+  'kill "$CORE_PID"' \
+  "$TMP_DIR/runner-core-child-leak.sh"
+if validate_runner_source "$TMP_DIR/runner-core-child-leak.sh" 2>/dev/null; then
+  echo "ERROR: Core child-process cleanup mutation did not fail closed" >&2
   exit 1
 fi
 
