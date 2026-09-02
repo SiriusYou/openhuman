@@ -616,22 +616,26 @@ function parseCursorRegistryPage<T>(
   response: unknown,
   itemSchema: z.ZodType<T>
 ): CursorRegistryPage<T> {
-  return z
-    .object({ items: z.array(itemSchema), next_cursor: z.string().nullable() })
-    .transform(
-      ({ items, next_cursor }): CursorRegistryPage<T> => ({ items, nextCursor: next_cursor })
-    )
-    .parse(unwrapLoggedCoreResult(response));
+  return parseWithSchema(
+    unwrapLoggedCoreResult(response),
+    z
+      .object({ items: z.array(itemSchema), next_cursor: z.string().nullable() })
+      .transform(
+        ({ items, next_cursor }): CursorRegistryPage<T> => ({ items, nextCursor: next_cursor })
+      )
+  );
 }
 
 function parseUnpagedRegistryCollection<T>(
   response: unknown,
   itemSchema: z.ZodType<T>
 ): UnpagedRegistryCollection<T> {
-  return z
-    .object({ items: z.array(itemSchema) })
-    .transform(({ items }): UnpagedRegistryCollection<T> => ({ items }))
-    .parse(unwrapLoggedCoreResult(response));
+  return parseWithSchema(
+    unwrapLoggedCoreResult(response),
+    z
+      .object({ items: z.array(itemSchema) })
+      .transform(({ items }): UnpagedRegistryCollection<T> => ({ items }))
+  );
 }
 
 function unwrapLoggedCoreResult(response: unknown): unknown {
@@ -649,8 +653,11 @@ function unwrapLoggedCoreResult(response: unknown): unknown {
 }
 
 function normalizeRegistrySchemaError(error: z.ZodError): never {
-  throw new Error(
-    `Registry bridge response shape mismatch: ${error.issues[0]?.message ?? 'invalid payload'}`
+  throw new CoreRpcError(
+    `Registry bridge response shape mismatch: ${error.issues[0]?.message ?? 'invalid payload'}`,
+    'unknown',
+    undefined,
+    { kind: 'YouPetCoreResponseShape' }
   );
 }
 
@@ -786,21 +793,12 @@ export const coreRegistriesClient = {
   listAgents: async (
     params?: RegistryCursorListParams
   ): Promise<CursorRegistryPage<AgentRegistryAgentSummary>> =>
-    parseWithSchema(
+    parseCursorRegistryPage(
       await callCoreRpc<unknown>({
         method: CORE_RPC_METHODS.youpetRegistryListAgents,
         params: buildCursorParams(params),
       }),
-      z
-        .custom<CursorRegistryPage<AgentRegistryAgentSummary>>(value => {
-          try {
-            parseCursorRegistryPage(value, agentSummarySchema);
-            return true;
-          } catch {
-            return false;
-          }
-        })
-        .transform(value => parseCursorRegistryPage(value, agentSummarySchema))
+      agentSummarySchema
     ),
 
   getAgentVersion: (params: { agentKey: string; version: number }): Promise<AgentRegistryAgent> =>
@@ -814,21 +812,12 @@ export const coreRegistriesClient = {
   listToolDefinitions: async (
     params?: RegistryCursorListParams
   ): Promise<CursorRegistryPage<ToolRegistryToolDefinitionSummary>> =>
-    parseWithSchema(
+    parseCursorRegistryPage(
       await callCoreRpc<unknown>({
         method: CORE_RPC_METHODS.youpetRegistryListToolDefinitions,
         params: buildCursorParams(params),
       }),
-      z
-        .custom<CursorRegistryPage<ToolRegistryToolDefinitionSummary>>(value => {
-          try {
-            parseCursorRegistryPage(value, toolDefinitionSummarySchema);
-            return true;
-          } catch {
-            return false;
-          }
-        })
-        .transform(value => parseCursorRegistryPage(value, toolDefinitionSummarySchema))
+      toolDefinitionSummarySchema
     ),
 
   getToolDefinitionVersion: (params: {
@@ -843,21 +832,12 @@ export const coreRegistriesClient = {
     ),
 
   listToolEnablements: async (): Promise<UnpagedRegistryCollection<ToolRegistryToolEnablement>> =>
-    parseWithSchema(
+    parseUnpagedRegistryCollection(
       await callCoreRpc<unknown>({
         method: CORE_RPC_METHODS.youpetRegistryListToolEnablements,
         params: {},
       }),
-      z
-        .custom<UnpagedRegistryCollection<ToolRegistryToolEnablement>>(value => {
-          try {
-            parseUnpagedRegistryCollection(value, toolEnablementSchema);
-            return true;
-          } catch {
-            return false;
-          }
-        })
-        .transform(value => parseUnpagedRegistryCollection(value, toolEnablementSchema))
+      toolEnablementSchema
     ),
 
   getToolEnablementVersion: (params: {
@@ -874,21 +854,12 @@ export const coreRegistriesClient = {
   listConnectorTypes: async (
     params?: RegistryCursorListParams
   ): Promise<CursorRegistryPage<ConnectorRegistryTypeSummary>> =>
-    parseWithSchema(
+    parseCursorRegistryPage(
       await callCoreRpc<unknown>({
         method: CORE_RPC_METHODS.youpetRegistryListConnectorTypes,
         params: buildCursorParams(params),
       }),
-      z
-        .custom<CursorRegistryPage<ConnectorRegistryTypeSummary>>(value => {
-          try {
-            parseCursorRegistryPage(value, connectorTypeSummarySchema);
-            return true;
-          } catch {
-            return false;
-          }
-        })
-        .transform(value => parseCursorRegistryPage(value, connectorTypeSummarySchema))
+      connectorTypeSummarySchema
     ),
 
   getConnectorTypeVersion: (params: {
@@ -905,21 +876,12 @@ export const coreRegistriesClient = {
   listConnectorBindings: async (
     params?: RegistryCursorListParams
   ): Promise<CursorRegistryPage<ConnectorRegistryBindingSummary>> =>
-    parseWithSchema(
+    parseCursorRegistryPage(
       await callCoreRpc<unknown>({
         method: CORE_RPC_METHODS.youpetRegistryListConnectorBindings,
         params: buildCursorParams(params),
       }),
-      z
-        .custom<CursorRegistryPage<ConnectorRegistryBindingSummary>>(value => {
-          try {
-            parseCursorRegistryPage(value, connectorBindingSummarySchema);
-            return true;
-          } catch {
-            return false;
-          }
-        })
-        .transform(value => parseCursorRegistryPage(value, connectorBindingSummarySchema))
+      connectorBindingSummarySchema
     ),
 
   getConnectorBindingVersion: (params: {
