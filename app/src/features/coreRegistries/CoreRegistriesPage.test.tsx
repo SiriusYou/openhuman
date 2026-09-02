@@ -746,6 +746,40 @@ describe('RegistryDetailPane', () => {
     expect(screen.getByText('wechat:acct-primary')).toBeInTheDocument();
     expect(screen.getByText('Logical reference only; secret not displayed.')).toBeInTheDocument();
   });
+
+  it('shows scalar Connector delivery behavior in the structured summary', () => {
+    render(
+      <RegistryDetailPane
+        activeTab="connectors"
+        detailState={{
+          kind: 'loaded',
+          detail: { kind: 'connector-type', key: 'connector.wecom', version: 4 },
+          record: {
+            connectorKey: 'connector.wecom',
+            version: 4,
+            lifecycleState: 'active',
+            sourceType: 'wecom',
+            connectorTypeFingerprint: 'd'.repeat(64),
+            capabilities: ['messages.read'],
+            createdAt: '2026-09-01T12:20:00Z',
+            normalizationContracts: [
+              {
+                evidenceFamily: 'messages',
+                kernelEventType: 'message.created',
+                kernelEventSchemaVersion: 1,
+              },
+            ],
+            deliveryBehavior: { mode: 'push', channel: 'events' },
+          },
+        }}
+        state={cloneState({ urlState: { tab: 'connectors', detail: null } })}
+        onOpenDetail={openDetailMock}
+      />
+    );
+
+    expect(screen.getByText(/mode: push/)).toBeInTheDocument();
+    expect(screen.getByText(/channel: events/)).toBeInTheDocument();
+  });
 });
 
 describe('RegistryDetailDrawer', () => {
