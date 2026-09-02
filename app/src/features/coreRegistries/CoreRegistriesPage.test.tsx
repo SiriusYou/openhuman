@@ -215,7 +215,7 @@ describe('CoreRegistriesPage', () => {
     expect(screen.getByRole('heading', { name: 'Enablements' })).toBeInTheDocument();
     expect(screen.getByText('Tools · Partial')).toBeInTheDocument();
     expect(screen.getByText('Stale')).toBeInTheDocument();
-    expect(screen.getByText('Disabled')).toBeInTheDocument();
+    expect(screen.getAllByText('Disabled')).toHaveLength(2);
     expect(screen.getByText('Missing enablement')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /load more definitions/i }));
