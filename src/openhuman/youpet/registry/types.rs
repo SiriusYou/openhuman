@@ -1,6 +1,7 @@
 use base64::Engine as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::openhuman::youpet::invalid_request_error;
 
@@ -561,22 +562,30 @@ enum CursorKind {
     ConnectorBinding,
 }
 
-impl CursorKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Agent => "agent",
-            Self::ToolDefinition => "tool_definition",
-            Self::ConnectorType => "connector_type",
-            Self::ConnectorBinding => "connector_binding",
-        }
-    }
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentCursorEnvelope {
+    agent_id: Uuid,
+    agent_key: String,
+    tenant_id: Uuid,
+    v: i64,
 }
 
 #[derive(Debug, Deserialize)]
-struct CursorEnvelope {
-    after: Vec<Value>,
+#[serde(deny_unknown_fields)]
+struct ToolDefinitionCursorEnvelope {
+    definition_id: Uuid,
+    tool_key: String,
+    v: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectorCursorEnvelope {
+    key: String,
     kind: String,
     schema_version: i64,
+    version: i64,
 }
 
 fn validate_cursor_list_params(
@@ -608,25 +617,61 @@ fn validate_cursor(cursor: Option<&str>, expected_kind: CursorKind) -> Result<()
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(raw)
         .map_err(|_| invalid_request_error("cursor", "cursor must be base64url JSON"))?;
-    let payload: CursorEnvelope = serde_json::from_slice(&decoded)
-        .map_err(|_| invalid_request_error("cursor", "cursor must be canonical JSON"))?;
-    if payload.schema_version != 1 {
-        return Err(invalid_request_error(
-            "cursor",
-            "cursor schema_version must be 1",
-        ));
-    }
-    if payload.kind != expected_kind.as_str() {
-        return Err(invalid_request_error(
-            "cursor",
-            "cursor kind does not match this Registry collection",
-        ));
-    }
-    if payload.after.len() != 2 {
-        return Err(invalid_request_error(
-            "cursor",
-            "cursor after tuple must contain exactly two values",
-        ));
+    match expected_kind {
+        CursorKind::Agent => {
+            let payload: AgentCursorEnvelope = serde_json::from_slice(&decoded).map_err(|_| {
+                invalid_request_error("cursor", "cursor does not match the Agent Registry")
+            })?;
+            if payload.v != 1
+                || payload.agent_key.trim().is_empty()
+                || payload.agent_key.len() > MAX_REGISTRY_KEY_LEN
+                || payload.agent_id.is_nil()
+                || payload.tenant_id.is_nil()
+            {
+                return Err(invalid_request_error("cursor", "Agent cursor is invalid"));
+            }
+        }
+        CursorKind::ToolDefinition => {
+            let payload: ToolDefinitionCursorEnvelope =
+                serde_json::from_slice(&decoded).map_err(|_| {
+                    invalid_request_error(
+                        "cursor",
+                        "cursor does not match the Tool Definition Registry",
+                    )
+                })?;
+            if payload.v != 1
+                || payload.tool_key.trim().is_empty()
+                || payload.tool_key.len() > MAX_REGISTRY_KEY_LEN
+                || payload.definition_id.is_nil()
+            {
+                return Err(invalid_request_error(
+                    "cursor",
+                    "Tool Definition cursor is invalid",
+                ));
+            }
+        }
+        CursorKind::ConnectorType | CursorKind::ConnectorBinding => {
+            let payload: ConnectorCursorEnvelope =
+                serde_json::from_slice(&decoded).map_err(|_| {
+                    invalid_request_error("cursor", "cursor does not match the Connector Registry")
+                })?;
+            let expected = match expected_kind {
+                CursorKind::ConnectorType => "connector_types",
+                CursorKind::ConnectorBinding => "connector_bindings",
+                _ => unreachable!(),
+            };
+            if payload.schema_version != 1
+                || payload.kind != expected
+                || payload.key.trim().is_empty()
+                || payload.key.len() > MAX_REGISTRY_KEY_LEN
+                || payload.version < 1
+            {
+                return Err(invalid_request_error(
+                    "cursor",
+                    "Connector cursor kind or fields are invalid",
+                ));
+            }
+        }
     }
     Ok(())
 }
