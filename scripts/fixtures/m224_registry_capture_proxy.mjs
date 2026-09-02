@@ -48,14 +48,18 @@ function persist() {
 function sanitizePath(rawUrl) {
   const parsed = new URL(rawUrl, targetBase);
   const safe = new URL(parsed.pathname, targetBase);
+  const cursorPresent = parsed.searchParams.has('cursor');
   const limit = parsed.searchParams.get('limit');
   if (limit) {
     safe.searchParams.set('limit', limit);
   }
-  if (parsed.searchParams.has('cursor')) {
+  if (cursorPresent) {
     safe.searchParams.delete('cursor');
   }
-  return `${safe.pathname}${safe.search}`;
+  return {
+    path: `${safe.pathname}${safe.search}`,
+    cursorPresent,
+  };
 }
 
 function parsePinnedRequestUrl(rawUrl) {
@@ -104,11 +108,12 @@ function assertAllowed(method, requestUrl) {
 const server = http.createServer(async (req, res) => {
   const rawUrl = req.url ?? '/';
   const requestUrl = parsePinnedRequestUrl(rawUrl);
-  const safePath = sanitizePath(rawUrl);
+  const { path: safePath, cursorPresent } = sanitizePath(rawUrl);
   if (!requestUrl || !assertAllowed(req.method ?? '', requestUrl)) {
     entries.push({
       method: req.method ?? 'UNKNOWN',
       path: safePath,
+      cursorPresent,
       statusCode: 405,
       blocked: true,
     });
@@ -131,6 +136,7 @@ const server = http.createServer(async (req, res) => {
   entries.push({
     method: req.method ?? 'GET',
     path: safePath,
+    cursorPresent,
     statusCode: upstream.status,
   });
   persist();

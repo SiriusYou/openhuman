@@ -368,22 +368,45 @@ expected = {
     "/api/v1/kernel/connector-bindings",
     "/api/v1/kernel/connector-bindings/binding.registry-primary/versions/2",
 }
+paged_base_paths = (
+    "/api/v1/kernel/agents",
+    "/api/v1/kernel/tool-definitions",
+    "/api/v1/kernel/connector-types",
+    "/api/v1/kernel/connector-bindings",
+)
+tool_enablement_paths = {
+    "/api/v1/kernel/tool-enablement",
+    "/api/v1/kernel/tool-enablement/tool.registry.reader/versions/1",
+}
+cursor_states_by_path = {base_path: set() for base_path in paged_base_paths}
 seen = set()
 for entry in entries:
-    if set(entry) - {"method", "path", "statusCode", "blocked"}:
+    if set(entry) - {"method", "path", "statusCode", "blocked", "cursorPresent"}:
         raise SystemExit("ERROR: proxy log retained unexpected fields")
     if entry["method"] != "GET":
         raise SystemExit(f"ERROR: non-GET registry bridge request captured: {entry}")
+    if not isinstance(entry["cursorPresent"], bool):
+        raise SystemExit(f"ERROR: proxy log omitted boolean cursor evidence: {entry}")
     if "cursor=" in entry["path"]:
         raise SystemExit(f"ERROR: cursor leaked into proxy artifact: {entry['path']}")
     if "authorization" in entry["path"].lower():
         raise SystemExit(f"ERROR: authorization leaked into proxy artifact: {entry['path']}")
     if entry.get("blocked"):
         raise SystemExit(f"ERROR: blocked registry bridge request observed: {entry}")
-    seen.add(entry["path"].split("?", 1)[0])
+    base_path = entry["path"].split("?", 1)[0]
+    if base_path in cursor_states_by_path:
+        cursor_states_by_path[base_path].add(entry["cursorPresent"])
+    if entry["path"] in tool_enablement_paths and entry["cursorPresent"]:
+        raise SystemExit(f"ERROR: unpaged tool enablement request reported cursor usage: {entry}")
+    seen.add(base_path)
 missing = expected - seen
 if missing:
     raise SystemExit(f"ERROR: expected registry paths were not observed: {sorted(missing)}")
+for base_path, cursor_states in cursor_states_by_path.items():
+    if False not in cursor_states:
+        raise SystemExit(f"ERROR: missing initial paged registry request for {base_path}")
+    if True not in cursor_states:
+        raise SystemExit(f"ERROR: missing follow-up paged registry request for {base_path}")
 PY
 }
 
