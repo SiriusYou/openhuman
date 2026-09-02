@@ -65,6 +65,15 @@ const toolDefinitionSummary: ToolRegistryToolDefinitionSummary = {
   createdAt: '2026-09-01T12:05:00Z',
 };
 
+const toolDefinitionDetail: ToolRegistryToolDefinition = {
+  ...toolDefinitionSummary,
+  inputSchema: {},
+  outputSchema: {},
+  timeoutDefaults: {},
+  retryContract: {},
+  auditContract: {},
+};
+
 const toolEnablement: ToolRegistryToolEnablement = {
   toolKey: 'tool.alpha',
   version: 5,
@@ -457,7 +466,7 @@ describe('useRegistryInspection', () => {
     vi.mocked(client.listToolEnablements)
       .mockResolvedValueOnce({ items: [toolEnablement] })
       .mockResolvedValueOnce({ items: [toolEnablement] });
-    vi.mocked(client.getToolDefinitionVersion).mockResolvedValue(toolDefinitionSummary);
+    vi.mocked(client.getToolDefinitionVersion).mockResolvedValue(toolDefinitionDetail);
 
     const { result } = renderHook(() => useRegistryInspection({ client }));
 
@@ -479,7 +488,7 @@ describe('useRegistryInspection', () => {
       expect(result.current.state.tabs.tools.detail).toEqual({
         kind: 'loaded',
         detail: { kind: 'tool-definition', key: 'tool.alpha', version: 3 },
-        record: toolDefinitionSummary,
+        record: toolDefinitionDetail,
       })
     );
 
