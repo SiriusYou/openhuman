@@ -30,6 +30,7 @@ vi.mock('../../hooks/useUsageState', () => ({ useUsageState: mockUseUsageState }
 const useAppSelectorMock = vi.fn(() => 'ok' as string);
 const useAppDispatchMock = vi.fn(() => vi.fn());
 const themeModeProbe = { current: 'system' as 'system' | 'light' | 'dark' };
+const connectivityErrorsProbe = { current: {} as { core?: string } };
 /* eslint-disable react-hooks/rules-of-hooks -- mock factories, not real hooks */
 vi.mock('../../store/hooks', () => ({
   useAppSelector: (selector: unknown) => {
@@ -37,9 +38,26 @@ vi.mock('../../store/hooks', () => ({
       try {
         const probed = (selector as (s: unknown) => unknown)({
           theme: { mode: themeModeProbe.current },
+          connectivity: {
+            internet: 'online',
+            core: 'reachable',
+            backend: 'connected',
+            lastError: connectivityErrorsProbe.current,
+          },
         });
         if (probed === 'system' || probed === 'light' || probed === 'dark') {
           return probed;
+        }
+        if (
+          probed === 'ok' ||
+          probed === 'backend-only' ||
+          probed === 'core-unreachable' ||
+          probed === 'internet-offline'
+        ) {
+          return useAppSelectorMock();
+        }
+        if (probed && typeof probed === 'object') {
+          return connectivityErrorsProbe.current;
         }
       } catch {
         // Selector didn't tolerate the probe — fall through to default.
@@ -73,6 +91,7 @@ vi.mock('../../components/upsell/upsellDismissState', () => ({
 
 beforeEach(() => {
   navigateMock.mockReset();
+  connectivityErrorsProbe.current = {};
 });
 
 describe('resolveHomeUserName', () => {
@@ -134,6 +153,34 @@ describe('Home page — handleRestartCore and blocking state rendering', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Core Registries/i }));
     expect(navigateMock).toHaveBeenCalledWith('/registries');
+  });
+
+  it('shows "Core integration required" copy on the Core Registries card when core config is missing', async () => {
+    useAppSelectorMock.mockReturnValue('core-unreachable');
+    connectivityErrorsProbe.current = { core: 'config missing' };
+    mockShouldShowBanner.mockReturnValue(false);
+
+    const { default: Home } = await import('../Home');
+    render(<Home />);
+
+    expect(screen.getByRole('button', { name: /Core integration required/i })).toBeInTheDocument();
+    expect(
+      screen.getByText('Complete the desktop Core integration before inspecting registries.')
+    ).toBeInTheDocument();
+  });
+
+  it('shows repair copy on the Core Registries card when core config is invalid', async () => {
+    useAppSelectorMock.mockReturnValue('core-unreachable');
+    connectivityErrorsProbe.current = { core: 'config invalid' };
+    mockShouldShowBanner.mockReturnValue(false);
+
+    const { default: Home } = await import('../Home');
+    render(<Home />);
+
+    expect(screen.getByRole('button', { name: /Core integration required/i })).toBeInTheDocument();
+    expect(
+      screen.getByText('Repair the desktop Core integration before inspecting registries.')
+    ).toBeInTheDocument();
   });
 
   it('shows "Restart Core" button when blocking=core-unreachable (lines 194, 200)', async () => {
