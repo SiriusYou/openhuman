@@ -107,6 +107,10 @@ validate_runner_source() {
   assert_contains "$runner_path" "\"cleanup_ok\": sys.argv[8] == \"1\"" || return 1
   assert_not_contains "$runner_path" "\"cleanup_ok\": True" || return 1
   assert_contains "$runner_path" "artifact_dir_retained_after_cleanup" || return 1
+  assert_contains "$runner_path" 'REAL_CARGO_HOME="${CARGO_HOME:-$REAL_HOME/.cargo}"' || return 1
+  assert_contains "$runner_path" 'REAL_RUSTUP_HOME="${RUSTUP_HOME:-$REAL_HOME/.rustup}"' || return 1
+  assert_contains "$runner_path" 'CARGO_HOME="$REAL_CARGO_HOME"' || return 1
+  assert_contains "$runner_path" 'RUSTUP_HOME="$REAL_RUSTUP_HOME"' || return 1
   assert_line_order "$runner_path" 'rm -rf "$RUN_ROOT"' 'write_meta "$cleanup_ok"' || return 1
   assert_contains "$runner_path" "cmp_snapshots" || return 1
   assert_not_contains "$runner_path" "rm -rf /" || return 1
