@@ -461,12 +461,7 @@ describe('useRegistryInspection', () => {
       .mockResolvedValueOnce({ items: [toolEnablement] })
       .mockResolvedValueOnce({
         items: [
-          {
-            ...toolEnablement,
-            version: 6,
-            generation: 13,
-            updatedAt: '2026-09-01T12:07:00Z',
-          },
+          { ...toolEnablement, version: 6, generation: 13, updatedAt: '2026-09-01T12:07:00Z' },
         ],
       });
 
@@ -507,12 +502,7 @@ describe('useRegistryInspection', () => {
       ])
     );
     expect(result.current.state.tabs.tools.collections.toolEnablements.items).toEqual([
-      {
-        ...toolEnablement,
-        version: 6,
-        generation: 13,
-        updatedAt: '2026-09-01T12:07:00Z',
-      },
+      { ...toolEnablement, version: 6, generation: 13, updatedAt: '2026-09-01T12:07:00Z' },
     ]);
     expect(client.listToolDefinitions).toHaveBeenCalledTimes(3);
     expect(client.listToolEnablements).toHaveBeenCalledTimes(3);

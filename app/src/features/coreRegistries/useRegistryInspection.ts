@@ -187,6 +187,20 @@ export function useRegistryInspection(
     stateRef.current = state;
   }, [state]);
 
+  useEffect(() => {
+    if (!state.surfaceError) {
+      return;
+    }
+
+    visitedTabsRef.current.clear();
+
+    const serialized = serializeRegistryUrlState(state.urlState);
+    const nextSearch = serialized.length > 0 ? `?${serialized}` : '';
+    if (window.location.search !== nextSearch) {
+      pushUrlState(state.urlState, 'replace');
+    }
+  }, [state.surfaceError, state.urlState]);
+
   const dispatch = useCallback((action: Parameters<typeof registryInspectionReducer>[1]) => {
     setState(current => {
       const next = registryInspectionReducer(current, action);
