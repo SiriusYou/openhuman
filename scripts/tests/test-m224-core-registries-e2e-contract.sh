@@ -140,6 +140,7 @@ validate_fixture_source() {
   local fixture_path="$1"
   assert_contains "$fixture_path" "INSERT INTO kernel_tenants" || return 1
   assert_contains "$fixture_path" "INSERT INTO kernel_agents" || return 1
+  assert_contains "$fixture_path" "format('20000000-0000-4000-8000-%012s', lpad((n + 100)::text, 12, '0'))::uuid" || return 1
   assert_contains "$fixture_path" "INSERT INTO kernel_tool_definitions" || return 1
   assert_contains "$fixture_path" "INSERT INTO kernel_tool_enablements" || return 1
   assert_contains "$fixture_path" "INSERT INTO kernel_connector_types" || return 1
