@@ -141,14 +141,7 @@ fn registry_schemas_do_not_expose_authority_inputs() {
         .collect::<Vec<_>>();
     assert_eq!(input_names, vec!["limit", "cursor"]);
     for forbidden in [
-        "tenantId",
-        "coreUrl",
-        "token",
-        "actorId",
-        "method",
-        "path",
-        "headers",
-        "query",
+        "tenantId", "coreUrl", "token", "actorId", "method", "path", "headers", "query",
     ] {
         assert!(
             !input_names.contains(&forbidden),
@@ -189,18 +182,22 @@ fn registry_params_reject_invalid_versions_and_cross_family_cursors() {
     .unwrap_err();
     let structured = StructuredRpcError::decode(&err).expect("structured error");
     assert_eq!(structured.message, "invalid Registry request");
-    assert_eq!(structured.data.unwrap()["kind"], json!("YouPetRequestInvalid"));
+    assert_eq!(
+        structured.data.unwrap()["kind"],
+        json!("YouPetRequestInvalid")
+    );
 }
 
 #[tokio::test]
 async fn registry_request_builders_use_exact_get_paths_and_headers() {
     let requests: Requests = Default::default();
+    let agent_cursor = kind_cursor("agent");
+    let tool_definition_cursor = kind_cursor("tool_definition");
+    let connector_type_cursor = kind_cursor("connector_type");
+    let connector_binding_cursor = kind_cursor("connector_binding");
     let app = Router::new()
         .route("/api/v1/kernel/agents", get(capture))
-        .route(
-            "/api/v1/kernel/agents/agent.alpha/versions/7",
-            get(capture),
-        )
+        .route("/api/v1/kernel/agents/agent.alpha/versions/7", get(capture))
         .route("/api/v1/kernel/tool-definitions", get(capture))
         .route(
             "/api/v1/kernel/tool-definitions/tool.alpha/versions/3",
@@ -230,7 +227,7 @@ async fn registry_request_builders_use_exact_get_paths_and_headers() {
         &config,
         RegistryListAgentsRpcParams {
             limit: Some(50),
-            cursor: Some(kind_cursor("agent")),
+            cursor: Some(agent_cursor.clone()),
         },
     )
     .await;
@@ -246,7 +243,7 @@ async fn registry_request_builders_use_exact_get_paths_and_headers() {
         &config,
         RegistryListToolDefinitionsRpcParams {
             limit: Some(50),
-            cursor: Some(kind_cursor("tool_definition")),
+            cursor: Some(tool_definition_cursor.clone()),
         },
     )
     .await;
@@ -271,7 +268,7 @@ async fn registry_request_builders_use_exact_get_paths_and_headers() {
         &config,
         RegistryListConnectorTypesRpcParams {
             limit: Some(50),
-            cursor: Some(kind_cursor("connector_type")),
+            cursor: Some(connector_type_cursor.clone()),
         },
     )
     .await;
@@ -287,7 +284,7 @@ async fn registry_request_builders_use_exact_get_paths_and_headers() {
         &config,
         RegistryListConnectorBindingsRpcParams {
             limit: Some(50),
-            cursor: Some(kind_cursor("connector_binding")),
+            cursor: Some(connector_binding_cursor.clone()),
         },
     )
     .await;
@@ -307,29 +304,25 @@ async fn registry_request_builders_use_exact_get_paths_and_headers() {
             .map(|request| request.path_and_query.as_str())
             .collect::<Vec<_>>(),
         vec![
-            "/api/v1/kernel/agents?limit=50&cursor=",
-            "/api/v1/kernel/agents/agent.alpha/versions/7",
-            "/api/v1/kernel/tool-definitions?limit=50&cursor=",
-            "/api/v1/kernel/tool-definitions/tool.alpha/versions/3",
-            "/api/v1/kernel/tool-enablement",
-            "/api/v1/kernel/tool-enablement/tool.alpha/versions/5",
-            "/api/v1/kernel/connector-types?limit=50&cursor=",
-            "/api/v1/kernel/connector-types/wecom/versions/2",
-            "/api/v1/kernel/connector-bindings?limit=50&cursor=",
-            "/api/v1/kernel/connector-bindings/wecom-primary/versions/11",
+            format!("/api/v1/kernel/agents?limit=50&cursor={agent_cursor}"),
+            "/api/v1/kernel/agents/agent.alpha/versions/7".to_string(),
+            format!("/api/v1/kernel/tool-definitions?limit=50&cursor={tool_definition_cursor}"),
+            "/api/v1/kernel/tool-definitions/tool.alpha/versions/3".to_string(),
+            "/api/v1/kernel/tool-enablement".to_string(),
+            "/api/v1/kernel/tool-enablement/tool.alpha/versions/5".to_string(),
+            format!("/api/v1/kernel/connector-types?limit=50&cursor={connector_type_cursor}"),
+            "/api/v1/kernel/connector-types/wecom/versions/2".to_string(),
+            format!("/api/v1/kernel/connector-bindings?limit=50&cursor={connector_binding_cursor}"),
+            "/api/v1/kernel/connector-bindings/wecom-primary/versions/11".to_string(),
         ]
     );
     assert!(requests.iter().all(|request| request.method == Method::GET));
-    assert!(
-        requests
-            .iter()
-            .all(|request| request.authorization.as_deref() == Some("Bearer svc-token"))
-    );
-    assert!(
-        requests
-            .iter()
-            .all(|request| request.actor.as_deref() == Some("registry-reader"))
-    );
+    assert!(requests
+        .iter()
+        .all(|request| request.authorization.as_deref() == Some("Bearer svc-token")));
+    assert!(requests
+        .iter()
+        .all(|request| request.actor.as_deref() == Some("registry-reader")));
 }
 
 #[tokio::test]
@@ -365,7 +358,10 @@ async fn registry_http_errors_preserve_retry_after_without_leaking_body() {
     .unwrap_err();
     let structured = StructuredRpcError::decode(&err).expect("structured error");
     let data = structured.data.unwrap();
-    assert_eq!(structured.message, "YouPet Core request failed with HTTP 429");
+    assert_eq!(
+        structured.message,
+        "YouPet Core request failed with HTTP 429"
+    );
     assert_eq!(data["kind"], json!("YouPetCoreHttpError"));
     assert_eq!(data["youpet"]["http_status"], json!(429));
     assert_eq!(data["youpet"]["code"], json!("rate_limited"));
