@@ -19,8 +19,8 @@ import { resetApp } from '../helpers/reset-app';
 import { startMockServer, stopMockServer } from '../mock-server';
 
 const USER_ID = 'e2e-m224-core-registries';
-const PRIMARY_AGENT_KEY = 'agent.registry_reader';
-const PRIMARY_AGENT_DETAIL = 'agent.registry_reader v1';
+const PRIMARY_AGENT_KEY = 'agent.registry.001-primary';
+const PRIMARY_AGENT_DETAIL = 'agent.registry.001-primary v1';
 const PRIMARY_TOOL_LABEL = 'Registry Reader';
 const PRIMARY_TOOL_KEY = 'tool.registry.reader';
 const PRIMARY_TOOL_DETAIL = 'tool.registry.reader v1';
@@ -59,6 +59,7 @@ describe('M2.2.4 Core registries live desktop flow', function () {
     expect(initial.text).not.toContain('Delete');
     expect(initial.text).not.toContain('Approve');
     await captureCheckpoint('m224-registries-home');
+    await loadMore('Load more agents');
 
     await clickCollectionRow('Agents', PRIMARY_AGENT_KEY);
     await waitForDetailHeading(PRIMARY_AGENT_DETAIL);
@@ -77,26 +78,27 @@ describe('M2.2.4 Core registries live desktop flow', function () {
     expect(toolDefinition.text).toContain('No tenant enablement returned');
     expect(toolDefinition.text).toContain(PRIMARY_TOOL_KEY);
     await captureCheckpoint('m224-tool-definition-detail');
+    await loadMore('Load more definitions');
 
     await clickCollectionRow('Enablements', PRIMARY_TOOL_KEY);
     await waitForDetailHeading(PRIMARY_TOOL_DETAIL);
     const enablement = await detailSnapshot();
     expect(enablement.text).toContain('Enablement lifecycle');
     expect(enablement.text).toContain('Definition link');
-    expect(enablement.text).toContain('metadata_only');
+    expect(enablement.text).toContain('Metadata Only');
     await captureCheckpoint('m224-tool-enablement-detail');
 
     await openRegistryTab('Connectors');
     await waitForText('Load more types');
     await waitForText('Load more bindings');
-    await loadMore('Load more types');
-    await loadMore('Load more bindings');
     const connectors = await collectionSnapshot();
     expect(connectors.tabStates).toContain('Connectors:selected');
     expect(connectors.loadMoreButtons).toContain('Load more types');
     expect(connectors.loadMoreButtons).toContain('Load more bindings');
     expect(connectors.text).toContain('Bound provider accounts and capability selections.');
     await captureCheckpoint('m224-connectors-collections');
+    await loadMore('Load more types');
+    await loadMore('Load more bindings');
 
     await clickCollectionRow('Bindings', PRIMARY_BINDING_KEY);
     await waitForDetailHeading(PRIMARY_BINDING_DETAIL);

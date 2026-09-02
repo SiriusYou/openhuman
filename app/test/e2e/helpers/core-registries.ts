@@ -3,10 +3,6 @@ import { navigateViaHash, waitForHomePage } from './shared-flows';
 
 type TabName = 'Agents' | 'Tools' | 'Connectors';
 
-function headingSelector(level: 'h1' | 'h2' | 'h3', text: string): string {
-  return `${level}`;
-}
-
 export async function openCoreRegistriesFromHome(): Promise<void> {
   await navigateViaHash('/home');
   await waitForHomePage(15_000);
@@ -116,7 +112,7 @@ export async function waitForDetailHeading(title: string, timeout = 20_000): Pro
   await browser.waitUntil(
     async () =>
       browser.execute((target: string) => {
-        return Array.from(document.querySelectorAll('h2')).some(
+        return Array.from(document.querySelectorAll('h2, h3')).some(
           heading => heading.textContent?.trim() === target
         );
       }, title),
