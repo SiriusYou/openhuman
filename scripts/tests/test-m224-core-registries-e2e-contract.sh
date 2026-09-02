@@ -83,7 +83,12 @@ validate_runner_source() {
   assert_contains "$runner_path" "#!/bin/bash -p" || return 1
   assert_contains "$runner_path" "set -euo pipefail" || return 1
   assert_contains "$runner_path" "set -o pipefail" || return 1
+  assert_contains "$runner_path" "export GIT_NO_REPLACE_OBJECTS=1" || return 1
   assert_contains "$runner_path" "$EXPECTED_CORE_SHA" || return 1
+  assert_contains "$runner_path" 'OPENHUMAN_SHA="$(git -C "$OPENHUMAN_DIR" rev-parse HEAD)"' || return 1
+  assert_contains "$runner_path" 'git -C "$OPENHUMAN_DIR" status --short' || return 1
+  assert_contains "$runner_path" 'git -C "$OPENHUMAN_DIR" replace -l' || return 1
+  assert_contains "$runner_path" 'git -C "$OPENHUMAN_DIR" ls-files -v' || return 1
   assert_contains "$runner_path" "trap cleanup EXIT" || return 1
   assert_contains "$runner_path" "initdb" || return 1
   assert_contains "$runner_path" 'initdb -U postgres -D "$PG_DATA"' || return 1
@@ -104,7 +109,9 @@ validate_runner_source() {
   assert_not_contains "$runner_path" '"http://127.0.0.1:$CORE_PORT/health"' || return 1
   assert_contains "$runner_path" "write_meta 0" || return 1
   assert_contains "$runner_path" 'write_meta "$cleanup_ok"' || return 1
-  assert_contains "$runner_path" "\"cleanup_ok\": sys.argv[8] == \"1\"" || return 1
+  assert_contains "$runner_path" '"openhumanSha": sys.argv[3]' || return 1
+  assert_not_contains "$runner_path" '"openhumanSha": "' || return 1
+  assert_contains "$runner_path" "\"cleanup_ok\": sys.argv[9] == \"1\"" || return 1
   assert_not_contains "$runner_path" "\"cleanup_ok\": True" || return 1
   assert_contains "$runner_path" "artifact_dir_retained_after_cleanup" || return 1
   assert_contains "$runner_path" 'REAL_CARGO_HOME="${CARGO_HOME:-$REAL_HOME/.cargo}"' || return 1
@@ -199,6 +206,17 @@ fi
 mutate_copy \
   "$ROOT/$RUNNER_RELPATH" \
   1 \
+  'OPENHUMAN_SHA="$(git -C "$OPENHUMAN_DIR" rev-parse HEAD)"' \
+  'OPENHUMAN_SHA="0000000000000000000000000000000000000000"' \
+  "$TMP_DIR/runner-hardcoded-openhuman-sha.sh"
+if validate_runner_source "$TMP_DIR/runner-hardcoded-openhuman-sha.sh" 2>/dev/null; then
+  echo "ERROR: hardcoded OpenHuman SHA mutation did not fail closed" >&2
+  exit 1
+fi
+
+mutate_copy \
+  "$ROOT/$RUNNER_RELPATH" \
+  1 \
   'stop_process_tree "$CORE_PID"' \
   'kill "$CORE_PID"' \
   "$TMP_DIR/runner-core-child-leak.sh"
@@ -243,7 +261,7 @@ fi
 mutate_copy \
   "$ROOT/$RUNNER_RELPATH" \
   1 \
-  "\"cleanup_ok\": sys.argv[8] == \"1\"" \
+  "\"cleanup_ok\": sys.argv[9] == \"1\"" \
   "\"cleanup_ok\": True" \
   "$TMP_DIR/runner-hardcoded-cleanup.sh"
 if validate_runner_source "$TMP_DIR/runner-hardcoded-cleanup.sh" 2>/dev/null; then
