@@ -135,7 +135,8 @@ validate_proxy_source() {
   assert_contains "$proxy_path" "requestUrl.search.length === 0" || return 1
   assert_contains "$proxy_path" "limit" || return 1
   assert_contains "$proxy_path" "authorization" || return 1
-  assert_contains "$proxy_path" "safe.searchParams.set('cursor', '[redacted]')" || return 1
+  assert_contains "$proxy_path" "safe.searchParams.delete('cursor')" || return 1
+  assert_not_contains "$proxy_path" "safe.searchParams.set('cursor', '[redacted]')" || return 1
   assert_not_contains "$proxy_path" "searchParams.has('cursor=')" || return 1
   assert_contains "$proxy_path" "statusCode" || return 1
   assert_contains "$proxy_path" "method" || return 1
