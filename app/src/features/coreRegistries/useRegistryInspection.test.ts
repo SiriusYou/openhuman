@@ -372,6 +372,10 @@ describe('useRegistryInspection', () => {
         record: toolEnablement,
       })
     );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
 
     expect(client.getToolEnablementVersion).toHaveBeenCalledTimes(1);
   });
@@ -419,8 +423,8 @@ describe('useRegistryInspection', () => {
       generation: 1,
     });
 
-    act(() => {
-      void result.current.retryCollection('toolDefinitions');
+    await act(async () => {
+      await result.current.retryCollection('toolDefinitions');
     });
 
     pendingEnablements.resolve({ items: [toolEnablement] });
