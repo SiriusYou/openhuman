@@ -565,16 +565,16 @@ enum CursorKind {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentCursorEnvelope {
-    agent_id: Uuid,
+    agent_id: String,
     agent_key: String,
-    tenant_id: Uuid,
+    tenant_id: String,
     v: i64,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ToolDefinitionCursorEnvelope {
-    definition_id: Uuid,
+    definition_id: String,
     tool_key: String,
     v: i64,
 }
@@ -625,8 +625,8 @@ fn validate_cursor(cursor: Option<&str>, expected_kind: CursorKind) -> Result<()
             if payload.v != 1
                 || payload.agent_key.trim().is_empty()
                 || payload.agent_key.len() > MAX_REGISTRY_KEY_LEN
-                || payload.agent_id.is_nil()
-                || payload.tenant_id.is_nil()
+                || !is_non_nil_uuid(&payload.agent_id)
+                || !is_non_nil_uuid(&payload.tenant_id)
             {
                 return Err(invalid_request_error("cursor", "Agent cursor is invalid"));
             }
@@ -642,7 +642,7 @@ fn validate_cursor(cursor: Option<&str>, expected_kind: CursorKind) -> Result<()
             if payload.v != 1
                 || payload.tool_key.trim().is_empty()
                 || payload.tool_key.len() > MAX_REGISTRY_KEY_LEN
-                || payload.definition_id.is_nil()
+                || !is_non_nil_uuid(&payload.definition_id)
             {
                 return Err(invalid_request_error(
                     "cursor",
@@ -674,6 +674,12 @@ fn validate_cursor(cursor: Option<&str>, expected_kind: CursorKind) -> Result<()
         }
     }
     Ok(())
+}
+
+fn is_non_nil_uuid(value: &str) -> bool {
+    Uuid::parse_str(value)
+        .map(|parsed| !parsed.is_nil())
+        .unwrap_or(false)
 }
 
 fn validate_exact_params(field: &str, key: &str, version: i64) -> Result<(), String> {

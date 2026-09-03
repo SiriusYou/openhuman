@@ -181,6 +181,8 @@ fn registry_schemas_do_not_expose_authority_inputs() {
 
 #[test]
 fn registry_params_reject_invalid_versions_and_cross_family_cursors() {
+    use base64::Engine as _;
+
     for kind in [
         "agent",
         "tool_definition",
@@ -213,6 +215,25 @@ fn registry_params_reject_invalid_versions_and_cross_family_cursors() {
         };
         assert!(accepted.is_ok(), "published {kind} cursor must be accepted");
     }
+
+    let malformed_agent_cursor = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        json!({
+            "agent_id": "not-a-uuid",
+            "agent_key": "logical-key",
+            "tenant_id": "10000000-0000-4000-8000-000000000001",
+            "v": 1
+        })
+        .to_string(),
+    );
+    assert!(
+        RegistryListAgentsRpcParams {
+            limit: Some(50),
+            cursor: Some(malformed_agent_cursor),
+        }
+        .validate()
+        .is_err(),
+        "Agent cursors must reject UUID-shaped fields that cannot be parsed"
+    );
 
     let wrong_cursor = kind_cursor("connector_binding");
     let err = RegistryListAgentsRpcParams {
