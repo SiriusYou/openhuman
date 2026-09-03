@@ -903,7 +903,7 @@ export default function ActionRequestInbox() {
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      className="rounded bg-emerald-700 px-3 py-1.5 text-sm text-white hover:bg-emerald-600 disabled:opacity-50"
+                      className="rounded bg-emerald-700 px-3 py-1.5 text-sm text-content-inverted hover:bg-emerald-600 disabled:opacity-50"
                       disabled={Boolean(pending[selected.id])}
                       onClick={() => void submitDecision(selected, 'approve')}
                       data-testid="action-request-approve">
@@ -913,7 +913,7 @@ export default function ActionRequestInbox() {
                     </button>
                     <button
                       type="button"
-                      className="rounded bg-rose-800 px-3 py-1.5 text-sm text-white hover:bg-rose-700 disabled:opacity-50"
+                      className="rounded bg-rose-800 px-3 py-1.5 text-sm text-content-inverted hover:bg-rose-700 disabled:opacity-50"
                       disabled={Boolean(pending[selected.id])}
                       onClick={() => void submitDecision(selected, 'reject')}
                       data-testid="action-request-reject">
