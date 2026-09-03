@@ -386,9 +386,7 @@ describe('useRegistryInspection', () => {
     vi.mocked(client.listAgents).mockResolvedValue({ items: [], nextCursor: null });
     vi.mocked(client.listToolDefinitions)
       .mockRejectedValueOnce(
-        new CoreRpcError('transport down', 'unknown', undefined, {
-          kind: 'YouPetCoreTransport',
-        })
+        new CoreRpcError('transport down', 'unknown', undefined, { kind: 'YouPetCoreTransport' })
       )
       .mockResolvedValueOnce({
         items: [{ ...toolDefinitionSummary, version: 4 }],
@@ -412,10 +410,7 @@ describe('useRegistryInspection', () => {
 
     await waitFor(() =>
       expect(result.current.state.tabs.tools.collections.toolDefinitions.observation).toMatchObject(
-        {
-          kind: 'blocked',
-          error: { kind: 'YouPetCoreTransport' },
-        }
+        { kind: 'blocked', error: { kind: 'YouPetCoreTransport' } }
       )
     );
     expect(result.current.state.tabs.tools.collections.toolEnablements.observation).toEqual({
