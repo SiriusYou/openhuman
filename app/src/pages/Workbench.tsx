@@ -816,11 +816,14 @@ const Workbench = () => {
   const [traceLoading, setTraceLoading] = useState(false);
   const [traceRefreshing, setTraceRefreshing] = useState(false);
   const [traceError, setTraceError] = useState<string | null>(null);
+  const alertsRequestSeq = useRef(0);
   const traceRequestSeq = useRef(0);
   const activeTraceAlertRef = useRef<string | null>(null);
 
   const loadAlerts = useCallback(
     async (mode: 'initial' | 'refresh' = 'refresh') => {
+      const requestId = alertsRequestSeq.current + 1;
+      alertsRequestSeq.current = requestId;
       if (mode === 'initial') {
         setLoading(true);
       } else {
@@ -832,12 +835,20 @@ const Workbench = () => {
           status: status === 'all' ? null : status,
           severity: severity === 'all' ? undefined : severity,
         });
+        if (alertsRequestSeq.current !== requestId) {
+          return;
+        }
         setAlerts(next);
       } catch {
+        if (alertsRequestSeq.current !== requestId) {
+          return;
+        }
         setError(t('workbench.requestFailed'));
       } finally {
-        setLoading(false);
-        setRefreshing(false);
+        if (alertsRequestSeq.current === requestId) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     },
     [client, severity, status, t]
@@ -886,7 +897,7 @@ const Workbench = () => {
           item.id === updated.id
             ? {
                 ...updated,
-                context: updated.context === undefined ? item.context : updated.context,
+                context: updated.context ?? item.context,
               }
             : item
         )
