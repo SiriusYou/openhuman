@@ -165,6 +165,8 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+type AlertList = Array<Omit<typeof baseAlert, 'id' | 'summary'> & { id: string; summary: string }>;
+
 describe('Workbench', () => {
   beforeEach(() => {
     mockClient.listAlerts.mockReset();
@@ -232,8 +234,8 @@ describe('Workbench', () => {
   });
 
   it('keeps newer alert-list results when an older filter request resolves late', async () => {
-    const first = deferred<typeof baseAlert[]>();
-    const second = deferred<typeof baseAlert[]>();
+    const first = deferred<AlertList>();
+    const second = deferred<AlertList>();
     mockClient.listAlerts.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     const user = userEvent.setup();
 
@@ -242,10 +244,7 @@ describe('Workbench', () => {
     await user.selectOptions(screen.getByLabelText('Alert severity filter'), 'high');
 
     await waitFor(() =>
-      expect(mockClient.listAlerts).toHaveBeenNthCalledWith(2, {
-        status: 'open',
-        severity: 'high',
-      })
+      expect(mockClient.listAlerts).toHaveBeenNthCalledWith(2, { status: 'open', severity: 'high' })
     );
 
     second.resolve([{ ...baseAlert, id: 'alert-2', summary: 'Milo missed a check-in.' }]);
