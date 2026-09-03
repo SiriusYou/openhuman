@@ -231,6 +231,31 @@ describe('Workbench', () => {
     );
   });
 
+  it('keeps newer alert-list results when an older filter request resolves late', async () => {
+    const first = deferred<typeof baseAlert[]>();
+    const second = deferred<typeof baseAlert[]>();
+    mockClient.listAlerts.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+
+    await user.selectOptions(screen.getByLabelText('Alert severity filter'), 'high');
+
+    await waitFor(() =>
+      expect(mockClient.listAlerts).toHaveBeenNthCalledWith(2, {
+        status: 'open',
+        severity: 'high',
+      })
+    );
+
+    second.resolve([{ ...baseAlert, id: 'alert-2', summary: 'Milo missed a check-in.' }]);
+    expect(await screen.findByText('Milo missed a check-in.')).toBeInTheDocument();
+
+    first.resolve([baseAlert]);
+    await waitFor(() => expect(screen.getByText('Milo missed a check-in.')).toBeInTheDocument());
+    expect(screen.queryByText('Buddy missed a check-in.')).not.toBeInTheDocument();
+  });
+
   it('persists ack idempotency keys across retry and remount', async () => {
     mockClient.listAlerts.mockResolvedValue([baseAlert]);
     mockClient.ackAlert.mockRejectedValue(new Error('temporary failure'));
@@ -345,7 +370,7 @@ describe('Workbench', () => {
     expect(await screen.findByText('acknowledged')).toBeInTheDocument();
   });
 
-  it('preserves existing context when an action response is plain and refresh fails', async () => {
+  it('preserves existing context when an action response omits context and refresh fails', async () => {
     const plainAcknowledged = {
       id: baseAlert.id,
       alert_type: baseAlert.alert_type,
@@ -362,6 +387,40 @@ describe('Workbench', () => {
       .mockResolvedValueOnce([baseAlert])
       .mockRejectedValueOnce(new Error('refresh failed'));
     mockClient.ackAlert.mockResolvedValueOnce(plainAcknowledged);
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
+
+    await waitFor(() => expect(mockClient.ackAlert).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockClient.listAlerts).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('acknowledged')).toBeInTheDocument();
+    expect(screen.getByText('Mochi')).toBeInTheDocument();
+    expect(screen.getByText('Daily check-in')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Operational context unavailable for this alert.')
+    ).not.toBeInTheDocument();
+  });
+
+  it('preserves existing context when an action response returns context null and refresh fails', async () => {
+    const nullContextAcknowledged = {
+      id: baseAlert.id,
+      alert_type: baseAlert.alert_type,
+      severity: baseAlert.severity,
+      related_type: baseAlert.related_type,
+      related_id: baseAlert.related_id,
+      status: 'acknowledged',
+      summary: baseAlert.summary,
+      created_at: baseAlert.created_at,
+      acknowledged_at: '2026-06-01T01:00:00Z',
+      resolved_at: null,
+      context: null,
+    } as const;
+    mockClient.listAlerts
+      .mockResolvedValueOnce([baseAlert])
+      .mockRejectedValueOnce(new Error('refresh failed'));
+    mockClient.ackAlert.mockResolvedValueOnce(nullContextAcknowledged);
     const user = userEvent.setup();
 
     render(<Workbench />);
