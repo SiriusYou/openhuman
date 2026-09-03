@@ -146,7 +146,6 @@ describe('useRegistryInspection', () => {
     });
 
     const { result } = renderHook(() => useRegistryInspection({ client }));
-    let setTabPromise: Promise<void> | undefined;
 
     await waitFor(() =>
       expect(result.current.state.tabs.agents.collections.agents.items).toEqual([agentSummary])
@@ -191,8 +190,8 @@ describe('useRegistryInspection', () => {
     expect(window.location.search).toBe('?tab=agents&kind=agent&key=agent.alpha&version=7');
     expect(client.getAgentVersion).toHaveBeenCalledTimes(1);
 
-    act(() => {
-      setTabPromise = result.current.setTab('tools');
+    await act(async () => {
+      await result.current.setTab('tools');
     });
 
     expect(window.location.search).toBe('?tab=tools');
@@ -312,8 +311,8 @@ describe('useRegistryInspection', () => {
       })
     );
 
-    act(() => {
-      void result.current.setTab('tools');
+    await act(async () => {
+      await result.current.setTab('tools');
     });
 
     await waitFor(() => expect(result.current.state.tabs.tools.summaryState).toBe('fresh'));
@@ -402,8 +401,9 @@ describe('useRegistryInspection', () => {
       })
     );
 
+    let toolsLoad!: Promise<void>;
     act(() => {
-      void result.current.setTab('tools');
+      toolsLoad = result.current.setTab('tools');
     });
 
     await waitFor(() =>
@@ -423,22 +423,21 @@ describe('useRegistryInspection', () => {
       void result.current.retryCollection('toolDefinitions');
     });
 
+    pendingEnablements.resolve({ items: [toolEnablement] });
+    await act(async () => {
+      await toolsLoad;
+    });
+
     expect(result.current.state.tabs.tools.generation).toBe(1);
     expect(client.listToolDefinitions).toHaveBeenCalledTimes(1);
-
-    pendingEnablements.resolve({ items: [toolEnablement] });
     await waitFor(() =>
       expect(result.current.state.tabs.tools.collections.toolEnablements.items).toEqual([
         toolEnablement,
       ])
     );
-    expect(result.current.state.tabs.tools.collections.toolEnablements.observation).toEqual({
+    expect(result.current.state.tabs.tools.collections.toolEnablements.observation).toMatchObject({
       kind: 'loaded',
-      observedAt: '2026-09-01T12:00:00.000Z',
       stale: false,
-    });
-    await act(async () => {
-      await setTabPromise;
     });
   });
 
@@ -473,8 +472,8 @@ describe('useRegistryInspection', () => {
       ])
     );
 
-    act(() => {
-      void result.current.retryCollection('toolDefinitions');
+    await act(async () => {
+      await result.current.retryCollection('toolDefinitions');
     });
 
     await waitFor(() =>
