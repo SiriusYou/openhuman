@@ -894,12 +894,7 @@ const Workbench = () => {
       clearIdempotencyKey(alert.id, action);
       setAlerts(current =>
         current.map(item =>
-          item.id === updated.id
-            ? {
-                ...updated,
-                context: updated.context ?? item.context,
-              }
-            : item
+          item.id === updated.id ? { ...updated, context: updated.context ?? item.context } : item
         )
       );
       await loadAlerts('refresh');
