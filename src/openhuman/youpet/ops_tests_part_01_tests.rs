@@ -33,6 +33,7 @@ async fn list_alerts_sends_auth_actor_and_empty_status_filter() {
                             "related_id": "task-1",
                             "status": "open",
                             "created_at": "2026-06-01T00:00:00Z",
+                            "context": null,
                             "unknown_future_field": true
                         }]
                     }))
