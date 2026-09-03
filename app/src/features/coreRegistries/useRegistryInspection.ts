@@ -200,6 +200,13 @@ function isRetryCooldownActive(retryDisabledUntil: number | null | undefined): b
   return typeof retryDisabledUntil === 'number' && retryDisabledUntil > Date.now();
 }
 
+function hasInFlightCollection(state: RegistryInspectionState, tab: RegistryTab): boolean {
+  return relevantCollectionKeysForTab(tab).some(collection => {
+    const collectionState = getCollectionState(state, tab, collection);
+    return collectionState?.observation.kind === 'loading';
+  });
+}
+
 export function useRegistryInspection(
   options: UseRegistryInspectionOptions = {}
 ): UseRegistryInspectionResult {
@@ -477,13 +484,8 @@ export function useRegistryInspection(
           runCollectionRequest('connectors', 'connectorBindings', generation, { append: false }),
         ]);
       }
-
-      const selected = stateRef.current.urlState;
-      if (selected.tab === tab && selected.detail) {
-        await runDetailRequest(tab, selected.detail, generation);
-      }
     },
-    [dispatch, runCollectionRequest, runDetailRequest]
+    [dispatch, runCollectionRequest]
   );
 
   const ensureTabLoaded = useCallback(
@@ -523,7 +525,11 @@ export function useRegistryInspection(
     visitedTabsRef.current.add(tab);
     const generation = nextGeneration(tab);
     await loadTabGeneration(tab, generation);
-  }, [loadTabGeneration, nextGeneration]);
+    const selected = stateRef.current.urlState;
+    if (selected.tab === tab && selected.detail) {
+      await runDetailRequest(tab, selected.detail, generation);
+    }
+  }, [loadTabGeneration, nextGeneration, runDetailRequest]);
 
   const loadMoreCollection = useCallback(
     async (collection: RegistryCollectionKey) => {
@@ -582,6 +588,9 @@ export function useRegistryInspection(
       const tab = collectionTab(collection);
       const collectionState = getCollectionState(stateRef.current, tab, collection);
       if (isRetryCooldownActive(collectionState?.retryDisabledUntil)) {
+        return;
+      }
+      if (hasInFlightCollection(stateRef.current, tab)) {
         return;
       }
 
