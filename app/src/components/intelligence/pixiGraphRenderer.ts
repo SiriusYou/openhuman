@@ -13,7 +13,8 @@
  * Drawing is dirty-flagged: while the simulation is warm (or the user is
  * interacting) we redraw each frame; once it cools the loop idles.
  */
-import { Application, Container, type FederatedPointerEvent, Graphics } from 'pixi.js';
+import { Application, Container, type FederatedPointerEvent, Graphics, Text } from 'pixi.js';
+import 'pixi.js/unsafe-eval';
 
 import {
   createSimulation,
@@ -23,21 +24,33 @@ import {
   pickNode,
   type SimLink,
   type SimNode,
+  type SimTuning,
   ZOOM_MAX,
   ZOOM_MIN,
 } from './memoryGraphLayout';
 
-export interface PixiGraphOptions {
+interface PixiGraphOptions {
   simNodes: SimNode[];
   links: SimLink[];
   dark: boolean;
   onHover: (node: SimNode | null) => void;
   onOpen: (node: SimNode) => void;
+  /** Fired once the force simulation first cools (graph is laid out). */
+  onReady?: () => void;
+  /** Initial auto-fit zoom (world scale). Defaults to 0.17. */
+  fitScale?: number;
+  /** Fit the whole node cloud tightly to the viewport instead of a fixed zoom. */
+  fitToBounds?: boolean;
+  /** Draw an always-on text label under each node (off by default). */
+  showLabels?: boolean;
+  /** Optional force-simulation tuning (defaults preserve the standard layout). */
+  tuning?: SimTuning;
 }
 
 export interface PixiGraphHandle {
   resetView(): void;
   setTheme(dark: boolean): void;
+  updateGraph(simNodes: SimNode[], links: SimLink[]): void;
   destroy(): void;
 }
 
@@ -72,50 +85,95 @@ export async function mountPixiGraph(
   const world = new Container();
   const edgeG = new Graphics();
   const nodeG = new Graphics();
+  const labelG = new Container();
   world.addChild(edgeG);
   world.addChild(nodeG);
+  world.addChild(labelG); // labels paint above the discs
   app.stage.addChild(world);
 
   const recenter = () => world.position.set(app.screen.width / 2, app.screen.height / 2);
   recenter();
 
-  const sim = createSimulation(opts.simNodes, opts.links);
+  const sim = createSimulation(opts.simNodes, opts.links, opts.tuning);
   sim.alpha(1);
 
   let dark = opts.dark;
   let dirty = true;
   let hoveredId: string | null = null;
+  // Fires `onReady` exactly once when the sim first cools — the signal a
+  // loading overlay (e.g. the Brain page) waits on before revealing the graph.
+  let readyFired = false;
   // Auto-fit the whole graph into view until the user pans/zooms/drags,
   // so the initial frame is zoomed out to show as much as possible.
   let userInteracted = false;
 
-  /** Scale + centre the world so every node's disc fits the viewport. */
+  /**
+   * Frame the graph. With `fitToBounds`, scale so the whole node cloud fits the
+   * viewport as tightly as possible (a little margin for node radii/labels);
+   * otherwise centre on the root at a fixed comfortable zoom (`fitScale`).
+   */
   const fitToView = () => {
     if (opts.simNodes.length === 0) return;
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const n of opts.simNodes) {
-      const r = nodeRadius(n) + 6;
-      if (n.x - r < minX) minX = n.x - r;
-      if (n.y - r < minY) minY = n.y - r;
-      if (n.x + r > maxX) maxX = n.x + r;
-      if (n.y + r > maxY) maxY = n.y + r;
+
+    if (opts.fitToBounds) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const n of opts.simNodes) {
+        const r = nodeRadius(n) + 8; // pad for the node radius + a little label room
+        minX = Math.min(minX, n.x - r);
+        minY = Math.min(minY, n.y - r);
+        maxX = Math.max(maxX, n.x + r);
+        maxY = Math.max(maxY, n.y + r);
+      }
+      const w = Math.max(1, maxX - minX);
+      const h = Math.max(1, maxY - minY);
+      const margin = 0.92; // leave ~8% breathing room around the content
+      const scale = Math.min(
+        ZOOM_MAX,
+        Math.max(ZOOM_MIN, Math.min(app.screen.width / w, app.screen.height / h) * margin)
+      );
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      world.scale.set(scale);
+      world.position.set(app.screen.width / 2 - cx * scale, app.screen.height / 2 - cy * scale);
+      return;
     }
-    if (!Number.isFinite(minX)) return;
-    const pad = 48;
-    const w = Math.max(1, maxX - minX);
-    const h = Math.max(1, maxY - minY);
-    const scale = Math.min(
-      ZOOM_MAX,
-      Math.max(ZOOM_MIN, Math.min((app.screen.width - pad) / w, (app.screen.height - pad) / h))
-    );
+
+    const root = opts.simNodes.find(n => n.kind === 'root');
+    const cx = root?.x ?? 0;
+    const cy = root?.y ?? 0;
+    const scale = opts.fitScale ?? 0.17;
     world.scale.set(scale);
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
     world.position.set(app.screen.width / 2 - cx * scale, app.screen.height / 2 - cy * scale);
   };
+
+  // Always-on node labels (opt-in via `showLabels`). Parallel to `opts.simNodes`
+  // and repositioned each frame in `draw()` so they track the simulation.
+  const labelColor = () => (dark ? 0xe2e8f0 : 0x334155);
+  const labelText = (n: SimNode): string => {
+    const s = (n.label ?? '').trim();
+    return s.length > 22 ? `${s.slice(0, 21)}…` : s;
+  };
+  let labels: Text[] = [];
+  const rebuildLabels = () => {
+    for (const label of labels) label.destroy();
+    labels = [];
+    labelG.removeChildren();
+    if (!opts.showLabels) return;
+    for (const n of opts.simNodes) {
+      const text = new Text({
+        text: labelText(n),
+        style: { fontFamily: 'sans-serif', fontSize: 13, fill: labelColor(), align: 'center' },
+      });
+      text.anchor.set(0.5, 0);
+      text.resolution = 2; // crisp when the world is scaled up
+      labelG.addChild(text);
+      labels.push(text);
+    }
+  };
+  rebuildLabels();
 
   const draw = () => {
     edgeG.clear();
@@ -142,6 +200,18 @@ export async function mountPixiGraph(
       nodeG.circle(n.x, n.y, r).fill({ color: colorNum(nodeColor(n)), alpha: 1 });
       if (hover) nodeG.circle(n.x, n.y, r).stroke({ width: 1.4, color: 0x0f172a, alpha: 0.9 });
     }
+
+    // Node labels follow the discs; recolour to the live theme.
+    if (opts.showLabels) {
+      const fill = labelColor();
+      for (let i = 0; i < labels.length; i++) {
+        const n = opts.simNodes[i];
+        const label = labels[i];
+        if (!n || !label) continue;
+        label.position.set(n.x, n.y + nodeRadius(n) + 3);
+        label.style.fill = fill;
+      }
+    }
   };
 
   app.ticker.add(() => {
@@ -149,6 +219,10 @@ export async function mountPixiGraph(
     if (sim.alpha() > sim.alphaMin()) {
       sim.tick();
       changed = true;
+    } else if (!readyFired) {
+      // Simulation has cooled → the layout has settled. Signal readiness once.
+      readyFired = true;
+      opts.onReady?.();
     }
     if (changed) {
       // Keep the whole graph framed while it settles, until the user
@@ -257,7 +331,6 @@ export async function mountPixiGraph(
 
   return {
     resetView() {
-      // Re-enable auto-fit and reheat so the graph re-frames itself.
       userInteracted = false;
       sim.alpha(0.3);
       dirty = true;
@@ -266,10 +339,56 @@ export async function mountPixiGraph(
       dark = next;
       dirty = true;
     },
+    updateGraph(nextNodes: SimNode[], nextLinks: SimLink[]) {
+      const oldById = new Map(opts.simNodes.map(n => [n.id, n]));
+
+      for (const n of nextNodes) {
+        const old = oldById.get(n.id);
+        if (old) {
+          n.x = old.x;
+          n.y = old.y;
+          n.vx = old.vx ?? 0;
+          n.vy = old.vy ?? 0;
+          n.fx = old.fx ?? undefined;
+          n.fy = old.fy ?? undefined;
+        } else {
+          // New node — seed near its parent or at a small random offset
+          // from the centroid so it animates into place.
+          const parentLink = nextLinks.find(
+            l => (typeof l.source === 'string' ? l.source : (l.source as SimNode).id) === n.id
+          );
+          const parentId =
+            parentLink &&
+            (typeof parentLink.target === 'string'
+              ? parentLink.target
+              : (parentLink.target as SimNode).id);
+          const parent = parentId ? oldById.get(parentId) : undefined;
+          if (parent) {
+            n.x = parent.x + (Math.random() - 0.5) * 40;
+            n.y = parent.y + (Math.random() - 0.5) * 40;
+          } else {
+            n.x = (Math.random() - 0.5) * 100;
+            n.y = (Math.random() - 0.5) * 100;
+          }
+        }
+      }
+
+      // Hot-swap the simulation's node and link arrays.
+      opts.simNodes = nextNodes;
+      opts.links = nextLinks;
+      rebuildLabels();
+      sim.nodes(nextNodes);
+      const linkForce = sim.force('link') as ReturnType<typeof import('d3-force').forceLink>;
+      if (linkForce && typeof linkForce.links === 'function') {
+        linkForce.links(nextLinks);
+      }
+      // Gentle reheat so new nodes settle without disrupting existing ones.
+      sim.alpha(0.3);
+      dirty = true;
+    },
     destroy() {
       sim.stop();
       app.canvas.removeEventListener('wheel', onWheel);
-      // destroy(true) tears down the canvas + GPU resources.
       app.destroy(true, { children: true });
     },
   };

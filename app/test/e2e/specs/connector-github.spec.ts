@@ -113,7 +113,7 @@ describe('GitHub Composio connector flow', () => {
     console.log(`${LOG} PASS: connected state persists`);
   });
 
-  it('composio_sync RPC routes to mock backend', async function () {
+  it('composio_sync does not tear down the session', async function () {
     this.timeout(30_000);
     clearRequestLog();
 
@@ -169,12 +169,9 @@ describe('GitHub Composio connector flow', () => {
     seedComposioConnection(TOOLKIT_SLUG, 'EXPIRED', 'c-github-expired');
     await navigateToSkills();
     await waitForText(CONNECTOR_NAME, 10_000);
-    const modal = await openConnectorModal(CONNECTOR_NAME);
-    if (modal) {
-      await assertModalPhase('expired', CONNECTOR_NAME);
-    } else {
-      console.log(`${LOG} modal not opened for expired state — asserting session only`);
-    }
+    const modal = await openConnectorModal(CONNECTOR_NAME, 15_000, 'Auth expired');
+    expect(modal).toBeTruthy();
+    await assertModalPhase('expired', CONNECTOR_NAME);
     await assertSessionNotNuked();
     console.log(`${LOG} PASS: expired auth does not log user out`);
   });

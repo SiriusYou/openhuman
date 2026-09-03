@@ -1,7 +1,5 @@
 import type { User } from '../../types/api';
 import type { TeamInvite, TeamMember, TeamWithRole } from '../../types/team';
-import type { AccessibilityStatus } from '../../utils/tauriCommands/accessibility';
-import type { AutocompleteStatus } from '../../utils/tauriCommands/autocomplete';
 import type { LocalAiStatus } from '../../utils/tauriCommands/localAi';
 import type { ServiceStatus } from '../../utils/tauriCommands/service';
 
@@ -33,9 +31,7 @@ export interface CoreLocalState {
 }
 
 export interface CoreRuntimeSnapshot {
-  screenIntelligence: AccessibilityStatus | null;
   localAi: LocalAiStatus | null;
-  autocomplete: AutocompleteStatus | null;
   service: ServiceStatus | null;
 }
 
@@ -66,7 +62,6 @@ export interface CoreAppSnapshot {
    * privacy-conservative gate added in #1299. The webview meet flow
    * reads this before invoking `handoffToOrchestrator`.
    */
-  meetAutoOrchestratorHandoff: boolean;
   localState: CoreLocalState;
   keyringStatus: KeyringStatus;
   runtime: CoreRuntimeSnapshot;
@@ -88,7 +83,6 @@ const emptySnapshot: CoreAppSnapshot = {
   onboardingCompleted: false,
   chatOnboardingCompleted: false,
   analyticsEnabled: false,
-  meetAutoOrchestratorHandoff: false,
   localState: { encryptionKey: null, onboardingTasks: null, keyringConsent: null },
   keyringStatus: {
     available: true,
@@ -96,7 +90,7 @@ const emptySnapshot: CoreAppSnapshot = {
     activeMode: 'os_keyring',
     backendName: 'os',
   },
-  runtime: { screenIntelligence: null, localAi: null, autocomplete: null, service: null },
+  runtime: { localAi: null, service: null },
 };
 
 let currentState: CoreState = {

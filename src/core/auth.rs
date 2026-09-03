@@ -34,8 +34,13 @@
 //!                          one-time login tokens, never raw session JWTs
 //! - `GET /auth/telegram` — external browser callback (carries its own token)
 //! - `GET /schema`        — read-only schema discovery
-//! - `GET /events`        — SSE stream; browser `EventSource` cannot set headers
-//! - `GET /ws/dictation`  — WebSocket upgrade; browser WS API cannot set headers
+//! - `GET /events`        — SSE stream; browser `EventSource` cannot set
+//!                          headers, so the handler enforces a bind-token /
+//!                          bearer credential itself
+//! - `GET /ws/dictation`  — WebSocket upgrade; browser WS API cannot set
+//!                          headers, so the handler enforces the bearer
+//!                          (header or `?token=`) + origin itself before the
+//!                          upgrade (C4 / issue #1924)
 //! - `OPTIONS *`          — CORS preflight (handled by outer CORS middleware)
 //!
 //! Endpoints that accept the bearer either via header **or** `?token=…` query
@@ -57,33 +62,79 @@ use std::sync::OnceLock;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt as _;
 
+// The axum RPC-auth middleware + the `/v1` external-inference bearer helpers
+// are exclusive to the `http-server` feature (#5048). The always-compiled token
+// primitives (`verify_bearer_token`, `init_rpc_token`, `get_rpc_token`,
+// `init_rpc_token_with_value`, `bearer_matches`) stay ungated — non-HTTP
+// transports and `CoreBuilder` call them in every build. `Config`/`AuthService`/
+// the provider-id import are consumed only by the gated `/v1` helpers.
+#[cfg(feature = "http-server")]
 use axum::http::{header, Method, StatusCode};
+#[cfg(feature = "http-server")]
 use axum::middleware::Next;
+#[cfg(feature = "http-server")]
 use axum::response::{IntoResponse, Response};
+#[cfg(feature = "http-server")]
 use axum::Json;
+#[cfg(feature = "http-server")]
 use serde_json::json;
 
+#[cfg(feature = "http-server")]
 use crate::openhuman::config::Config;
-use crate::openhuman::credentials::AuthService;
+#[cfg(feature = "http-server")]
 use crate::openhuman::inference::http::EXTERNAL_OPENAI_COMPAT_PROVIDER;
+#[cfg(feature = "http-server")]
+use crate::openhuman::security::credentials::AuthService;
 
 static RPC_TOKEN: OnceLock<String> = OnceLock::new();
 
 /// Paths that bypass bearer-token authentication.
 ///
-/// `/rpc` and `/v1/*` carry executable surfaces and must be protected. All
-/// other routes are read-only, streaming, or WebSocket upgrades whose clients
-/// (browser `EventSource`, browser `WebSocket`) cannot set `Authorization`
-/// headers via standard APIs.
+/// `/rpc` and `/v1/*` carry executable surfaces and must be protected. The
+/// other routes are read-only, or are streaming / WebSocket upgrades whose
+/// clients (browser `EventSource`, browser `WebSocket`) cannot set
+/// `Authorization` headers via standard APIs. `/events` is not unauthenticated
+/// — it is exempt from the *middleware* header check but enforces its own
+/// bind-token credential inside the handler. `/ws/dictation` is NOT public: it
+/// is bearer-gated by this middleware via [`QUERY_TOKEN_PATHS`] (header or
+/// `?token=`) so an unauthenticated upgrade is rejected with 401 before the
+/// WebSocket handshake; the handler adds an origin check on top (finding C4).
+#[cfg(feature = "http-server")]
 const PUBLIC_PATHS: &[&str] = &[
     "/",
     "/health",
     "/auth",
     "/auth/telegram",
+    // External browser OAuth redirect for HTTP-remote MCP servers — the
+    // authorization server posts back here with `?code=…&state=…` and no
+    // bearer; the one-time `state` (minted in `oauth_begin`) is the guard.
+    "/oauth/mcp/callback",
     "/schema",
     "/events",
-    "/ws/dictation",
 ];
+
+/// Public path prefixes — match when the request path begins with any entry.
+///
+/// Use this only when the suffix is dynamic (path params). For exact paths,
+/// add to [`PUBLIC_PATHS`] instead.
+#[cfg(feature = "http-server")]
+///
+/// Intentionally empty: the only entry was AgentBox's `/jobs/{job_id}`, which
+/// left with that domain. The mechanism is kept for the next dynamic-suffix
+/// public route rather than re-derived when one appears.
+const PUBLIC_PATH_PREFIXES: &[&str] = &[];
+
+/// Returns `true` when `path` bypasses bearer-token authentication.
+///
+/// A path is public when it appears in [`PUBLIC_PATHS`] (exact match) or
+/// begins with any entry in [`PUBLIC_PATH_PREFIXES`] (prefix match).
+#[cfg(feature = "http-server")]
+fn is_public_path(path: &str) -> bool {
+    PUBLIC_PATHS.contains(&path)
+        || PUBLIC_PATH_PREFIXES
+            .iter()
+            .any(|prefix| path.starts_with(prefix))
+}
 
 /// Paths that may authenticate via `?token=…` in the URL when no
 /// `Authorization` header is present.
@@ -98,7 +149,8 @@ const PUBLIC_PATHS: &[&str] = &[
 /// Add new entries here only for SSE / WebSocket routes whose clients cannot
 /// send headers and that carry per-user data. The follow-up approvals stream
 /// (#1339) is the next planned addition.
-const QUERY_TOKEN_PATHS: &[&str] = &["/events/webhooks"];
+#[cfg(feature = "http-server")]
+const QUERY_TOKEN_PATHS: &[&str] = &["/events/webhooks", "/ws/dictation"];
 
 /// Operator-supplied environment variable that carries the RPC bearer in
 /// non-desktop deployments.
@@ -242,11 +294,12 @@ pub fn verify_bearer_token(supplied: &str) -> bool {
 /// bypass this check. `/rpc` requires the exact per-launch bearer token that
 /// was written to `core.token` at startup; `/v1/*` additionally accepts a
 /// stable user-managed external API key.
+#[cfg(feature = "http-server")]
 pub async fn rpc_auth_middleware(req: axum::extract::Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
 
     // CORS preflight and public utility paths bypass auth.
-    if req.method() == Method::OPTIONS || PUBLIC_PATHS.contains(&path.as_str()) {
+    if req.method() == Method::OPTIONS || is_public_path(&path) {
         return next.run(req).await;
     }
 
@@ -332,10 +385,12 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     (len_diff == 0) & (byte_diff == 0)
 }
 
+#[cfg(feature = "http-server")]
 fn is_external_inference_path(path: &str) -> bool {
     path == "/v1" || path.starts_with("/v1/")
 }
 
+#[cfg(feature = "http-server")]
 fn verify_external_inference_bearer_for_config(config: &Config, supplied: &str) -> bool {
     if supplied.trim().is_empty() {
         return false;
@@ -352,6 +407,7 @@ fn verify_external_inference_bearer_for_config(config: &Config, supplied: &str) 
     }
 }
 
+#[cfg(feature = "http-server")]
 async fn verify_external_inference_bearer(supplied: &str) -> bool {
     if supplied.trim().is_empty() {
         return false;
@@ -374,6 +430,7 @@ async fn verify_external_inference_bearer(supplied: &str) -> bool {
 /// value is empty after trimming. URL decoding is delegated to
 /// [`url::form_urlencoded`] so percent-encoded tokens decode the same way
 /// they were encoded by the FE via `encodeURIComponent`.
+#[cfg(feature = "http-server")]
 fn extract_query_token(query: Option<&str>) -> Option<String> {
     let query = query?;
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
@@ -521,22 +578,26 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "http-server")]
     #[test]
     fn extract_query_token_returns_none_on_missing_query() {
         assert_eq!(extract_query_token(None), None);
     }
 
+    #[cfg(feature = "http-server")]
     #[test]
     fn extract_query_token_returns_none_when_key_absent() {
         assert_eq!(extract_query_token(Some("other=1&foo=bar")), None);
     }
 
+    #[cfg(feature = "http-server")]
     #[test]
     fn extract_query_token_returns_none_on_empty_value() {
         assert_eq!(extract_query_token(Some("token=")), None);
         assert_eq!(extract_query_token(Some("token=%20%20")), None);
     }
 
+    #[cfg(feature = "http-server")]
     #[test]
     fn extract_query_token_returns_first_value_on_duplicate_keys() {
         // Last-wins vs first-wins is a question the FE never hits; pin
@@ -547,6 +608,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "http-server")]
     #[test]
     fn extract_query_token_url_decodes_value() {
         // `encodeURIComponent` on the FE may percent-encode a hex token
@@ -557,9 +619,27 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "http-server")]
     #[test]
     fn public_paths_include_desktop_auth_callback() {
         assert!(PUBLIC_PATHS.contains(&"/auth"));
+    }
+
+    #[cfg(feature = "http-server")]
+    #[test]
+    fn agentbox_run_and_jobs_paths_are_no_longer_public() {
+        // These bypassed bearer auth only to serve the AgentBox marketplace
+        // surface, which moved to tinybox. Nothing mounts them now, so they
+        // must authenticate like any other path — a re-added entry here would
+        // silently open an unauthenticated route.
+        assert!(!is_public_path("/run"));
+        assert!(!is_public_path("/jobs/abc-123"));
+        assert!(!is_public_path(
+            "/jobs/00000000-0000-0000-0000-000000000000"
+        ));
+        // Sanity: still protect the executable surface.
+        assert!(!is_public_path("/rpc"));
+        assert!(!is_public_path("/v1/chat/completions"));
     }
 
     #[cfg(unix)]
@@ -576,6 +656,7 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    #[cfg(feature = "http-server")]
     #[test]
     fn is_external_inference_path_matches_only_v1_routes() {
         assert!(is_external_inference_path("/v1"));
@@ -585,6 +666,7 @@ mod tests {
         assert!(!is_external_inference_path("/v10/models"));
     }
 
+    #[cfg(feature = "http-server")]
     #[test]
     fn verify_external_inference_bearer_for_config_accepts_stored_key() {
         let tmp = tempfile::tempdir().unwrap();

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { McpRegistryUserError } from '../../../services/api/mcpRegistryErrors';
 import InstallDialog from './InstallDialog';
 
 const mockRegistryGet = vi.fn();
@@ -19,9 +20,22 @@ const DETAIL = {
   qualified_name: 'acme/test-server',
   display_name: 'Test Server',
   description: 'A test server',
-  connections: [],
+  connections: [{ type: 'stdio', published: true }],
   required_env_keys: ['API_KEY', 'SECRET_TOKEN'],
 };
+
+const DETAIL_NO_ENV = {
+  qualified_name: 'acme/simple-server',
+  display_name: 'Simple Server',
+  description: 'No env needed',
+  connections: [{ type: 'stdio', published: true }],
+  required_env_keys: [],
+};
+
+async function goToConfigureStep() {
+  await waitFor(() => screen.getByRole('button', { name: 'Configure & install' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Configure & install' }));
+}
 
 describe('InstallDialog', () => {
   beforeEach(() => {
@@ -32,7 +46,6 @@ describe('InstallDialog', () => {
   });
 
   it('shows loading state while fetching detail', () => {
-    // Never resolves within the test
     mockRegistryGet.mockReturnValue(new Promise(() => {}));
     render(
       <InstallDialog qualifiedName="acme/test-server" onSuccess={() => {}} onCancel={() => {}} />
@@ -40,15 +53,76 @@ describe('InstallDialog', () => {
     expect(screen.getByText('Loading server details...')).toBeInTheDocument();
   });
 
-  it('renders env key inputs from registry_get', async () => {
+  it('renders detail overview with server info', async () => {
     mockRegistryGet.mockResolvedValue(DETAIL);
     render(
       <InstallDialog qualifiedName="acme/test-server" onSuccess={() => {}} onCancel={() => {}} />
     );
 
     await waitFor(() => {
-      expect(screen.getByLabelText('API_KEY')).toBeInTheDocument();
+      expect(screen.getByText('Test Server')).toBeInTheDocument();
     });
+    expect(screen.getByText('A test server')).toBeInTheDocument();
+    // Transport badge uses the same Stdio/Hosted vocabulary as the catalog list
+    // (the old separate "Cloud hosted"/"Requires configuration" pills were
+    // dropped — the env-vars section below already conveys configuration).
+    // Derived from the connection type (stdio here), NOT the detail DTO's
+    // absent `is_deployed`.
+    expect(screen.getByText('Stdio')).toBeInTheDocument();
+  });
+
+  it('labels a server with an http connection as Hosted', async () => {
+    mockRegistryGet.mockResolvedValue({
+      ...DETAIL,
+      qualified_name: 'acme/hosted-server',
+      display_name: 'Hosted Server',
+      connections: [{ type: 'http', deployment_url: 'https://x.example/mcp', published: true }],
+    });
+    render(
+      <InstallDialog qualifiedName="acme/hosted-server" onSuccess={() => {}} onCancel={() => {}} />
+    );
+
+    await waitFor(() => expect(screen.getByText('Hosted Server')).toBeInTheDocument());
+    // The detail DTO carries no `is_deployed`; the badge must derive from the
+    // http connection (this regressed to always-"Stdio" before the fix).
+    expect(screen.getByText('Hosted')).toBeInTheDocument();
+    expect(screen.queryByText('Stdio')).not.toBeInTheDocument();
+  });
+
+  it('shows env key preview badges on detail step', async () => {
+    mockRegistryGet.mockResolvedValue(DETAIL);
+    render(
+      <InstallDialog qualifiedName="acme/test-server" onSuccess={() => {}} onCancel={() => {}} />
+    );
+
+    await waitFor(() => screen.getByText('API_KEY'));
+    expect(screen.getByText('SECRET_TOKEN')).toBeInTheDocument();
+  });
+
+  it('shows friendly guidance instead of raw registry 404 JSON when detail load fails', async () => {
+    mockRegistryGet.mockRejectedValue(
+      new Error(
+        'MCP official registry GET unreal-mcp returned HTTP 404 Not Found: {"title":"Not Found","status":404,"detail":"Server not found"}'
+      )
+    );
+    render(<InstallDialog qualifiedName="unreal-mcp" onSuccess={() => {}} onCancel={() => {}} />);
+
+    await waitFor(() => screen.getByText(/Server not found in registry/));
+
+    expect(screen.getByText(/browse available MCP servers/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Browse catalog' })).toBeInTheDocument();
+    expect(screen.queryByText(/"title":"Not Found"/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/HTTP 404/)).not.toBeInTheDocument();
+  });
+
+  it('renders env key inputs after clicking configure', async () => {
+    mockRegistryGet.mockResolvedValue(DETAIL);
+    render(
+      <InstallDialog qualifiedName="acme/test-server" onSuccess={() => {}} onCancel={() => {}} />
+    );
+
+    await goToConfigureStep();
+    expect(screen.getByLabelText('API_KEY')).toBeInTheDocument();
     expect(screen.getByLabelText('SECRET_TOKEN')).toBeInTheDocument();
   });
 
@@ -58,8 +132,7 @@ describe('InstallDialog', () => {
       <InstallDialog qualifiedName="acme/test-server" onSuccess={() => {}} onCancel={() => {}} />
     );
 
-    await waitFor(() => screen.getByLabelText('API_KEY'));
-
+    await goToConfigureStep();
     const input = screen.getByLabelText('API_KEY') as HTMLInputElement;
     expect(input.type).toBe('password');
   });
@@ -70,11 +143,9 @@ describe('InstallDialog', () => {
       <InstallDialog qualifiedName="acme/test-server" onSuccess={() => {}} onCancel={() => {}} />
     );
 
-    await waitFor(() => screen.getByLabelText('API_KEY'));
-
+    await goToConfigureStep();
     const showButtons = screen.getAllByRole('button', { name: 'Show' });
     fireEvent.click(showButtons[0]);
-
     const input = screen.getByLabelText('API_KEY') as HTMLInputElement;
     expect(input.type).toBe('text');
   });
@@ -97,8 +168,7 @@ describe('InstallDialog', () => {
       <InstallDialog qualifiedName="acme/test-server" onSuccess={onSuccess} onCancel={() => {}} />
     );
 
-    await waitFor(() => screen.getByLabelText('API_KEY'));
-
+    await goToConfigureStep();
     fireEvent.change(screen.getByLabelText('API_KEY'), { target: { value: 'my-api-key' } });
     fireEvent.change(screen.getByLabelText('SECRET_TOKEN'), { target: { value: 'my-secret' } });
 
@@ -111,7 +181,6 @@ describe('InstallDialog', () => {
       env: { API_KEY: 'my-api-key', SECRET_TOKEN: 'my-secret' },
       config: undefined,
     });
-    // Auto-connect on success (issue #3039 gap B3).
     expect(mockConnect).toHaveBeenCalledWith('srv-1');
     expect(onSuccess).toHaveBeenCalledWith(installedServer);
   });
@@ -135,7 +204,7 @@ describe('InstallDialog', () => {
       <InstallDialog qualifiedName="acme/test-server" onSuccess={onSuccess} onCancel={() => {}} />
     );
 
-    await waitFor(() => screen.getByLabelText('API_KEY'));
+    await goToConfigureStep();
     fireEvent.change(screen.getByLabelText('API_KEY'), { target: { value: 'k' } });
     fireEvent.change(screen.getByLabelText('SECRET_TOKEN'), { target: { value: 's' } });
 
@@ -144,7 +213,6 @@ describe('InstallDialog', () => {
     });
 
     expect(mockConnect).toHaveBeenCalledWith('srv-1');
-    // A connect failure must NOT block the install success callback.
     expect(onSuccess).toHaveBeenCalledWith(installedServer);
   });
 
@@ -154,9 +222,7 @@ describe('InstallDialog', () => {
       <InstallDialog qualifiedName="acme/test-server" onSuccess={() => {}} onCancel={() => {}} />
     );
 
-    await waitFor(() => screen.getByLabelText('API_KEY'));
-
-    // Leave API_KEY empty, fill only SECRET_TOKEN
+    await goToConfigureStep();
     fireEvent.change(screen.getByLabelText('SECRET_TOKEN'), { target: { value: 'secret' } });
 
     await act(async () => {
@@ -175,8 +241,7 @@ describe('InstallDialog', () => {
       <InstallDialog qualifiedName="acme/test-server" onSuccess={() => {}} onCancel={() => {}} />
     );
 
-    await waitFor(() => screen.getByLabelText('API_KEY'));
-
+    await goToConfigureStep();
     fireEvent.change(screen.getByLabelText('API_KEY'), { target: { value: 'key' } });
     fireEvent.change(screen.getByLabelText('SECRET_TOKEN'), { target: { value: 'secret' } });
 
@@ -184,10 +249,37 @@ describe('InstallDialog', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Install' }));
     });
 
-    await waitFor(() => screen.getByText('Server error'));
+    await waitFor(() => screen.getByText('Install failed'));
   });
 
-  it('calls onCancel when Cancel is clicked', async () => {
+  it('shows friendly guidance instead of raw registry JSON when install re-fetch fails', async () => {
+    mockRegistryGet.mockResolvedValue(DETAIL);
+    mockInstall.mockRejectedValue(
+      new McpRegistryUserError(
+        'not_found',
+        'Failed to fetch registry detail: MCP official registry GET unreal-mcp returned HTTP 404 Not Found: {"title":"Not Found","status":404,"detail":"Server not found"}'
+      )
+    );
+
+    render(
+      <InstallDialog qualifiedName="acme/test-server" onSuccess={() => {}} onCancel={() => {}} />
+    );
+
+    await goToConfigureStep();
+    fireEvent.change(screen.getByLabelText('API_KEY'), { target: { value: 'key' } });
+    fireEvent.change(screen.getByLabelText('SECRET_TOKEN'), { target: { value: 'secret' } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Install' }));
+    });
+
+    await waitFor(() => screen.getByText(/Server not found in registry/));
+
+    expect(screen.queryByText(/"title":"Not Found"/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/HTTP 404/)).not.toBeInTheDocument();
+  });
+
+  it('calls onCancel when Cancel is clicked on detail step', async () => {
     mockRegistryGet.mockResolvedValue(DETAIL);
     const onCancel = vi.fn();
     render(
@@ -210,8 +302,71 @@ describe('InstallDialog', () => {
       />
     );
 
-    await waitFor(() => screen.getByLabelText('API_KEY'));
+    await goToConfigureStep();
     const input = screen.getByLabelText('API_KEY') as HTMLInputElement;
     expect(input.value).toBe('prefilled-key');
+  });
+
+  it('installs directly from detail step when no env keys required', async () => {
+    const installedServer = {
+      server_id: 'srv-2',
+      ...DETAIL_NO_ENV,
+      command_kind: 'node' as const,
+      command: 'node',
+      args: [],
+      env_keys: [],
+      installed_at: 2000,
+    };
+    mockRegistryGet.mockResolvedValue(DETAIL_NO_ENV);
+    mockInstall.mockResolvedValue(installedServer);
+
+    const onSuccess = vi.fn();
+    render(
+      <InstallDialog qualifiedName="acme/simple-server" onSuccess={onSuccess} onCancel={() => {}} />
+    );
+
+    await waitFor(() => screen.getByRole('button', { name: 'Install' }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Install' }));
+    });
+
+    expect(mockInstall).toHaveBeenCalledWith({
+      qualified_name: 'acme/simple-server',
+      env: {},
+      config: undefined,
+    });
+    expect(onSuccess).toHaveBeenCalledWith(installedServer);
+  });
+
+  it('shows connection info on detail step', async () => {
+    mockRegistryGet.mockResolvedValue({
+      ...DETAIL,
+      connections: [
+        { type: 'stdio', published: true },
+        { type: 'http', published: false, deployment_url: 'https://example.com/mcp' },
+      ],
+    });
+    render(
+      <InstallDialog qualifiedName="acme/test-server" onSuccess={() => {}} onCancel={() => {}} />
+    );
+
+    await waitFor(() => screen.getByText('Available connections'));
+    expect(screen.getByText('stdio')).toBeInTheDocument();
+    expect(screen.getByText('http')).toBeInTheDocument();
+  });
+
+  it('navigates back from configure to detail step', async () => {
+    mockRegistryGet.mockResolvedValue(DETAIL);
+    render(
+      <InstallDialog qualifiedName="acme/test-server" onSuccess={() => {}} onCancel={() => {}} />
+    );
+
+    await goToConfigureStep();
+    expect(screen.getByLabelText('API_KEY')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(`← Test Server`));
+    await waitFor(() => {
+      expect(screen.getByText('A test server')).toBeInTheDocument();
+    });
   });
 });

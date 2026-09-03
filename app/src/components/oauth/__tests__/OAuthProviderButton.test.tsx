@@ -26,7 +26,10 @@ vi.mock('../../../utils/tauriCommands', () => ({ isTauri: vi.fn() }));
 
 vi.mock('../../../utils/loopbackOauthListener', () => ({ startLoopbackOauthListener: vi.fn() }));
 
-vi.mock('../../../utils/desktopDeepLinkListener', () => ({ handleDeepLinkUrls: vi.fn() }));
+vi.mock('../../../utils/desktopDeepLinkListener', () => ({
+  handleDeepLinkUrls: vi.fn(),
+  registerAuthDeepLinkState: vi.fn((state?: string) => state ?? 'mock-state'),
+}));
 
 vi.mock('../../../store/deepLinkAuthState', () => ({
   beginDeepLinkAuthProcessing: vi.fn(),
@@ -64,6 +67,7 @@ describe('OAuthProviderButton', () => {
     vi.mocked(getDeepLinkAuthState).mockReturnValue({
       isProcessing: false,
       errorMessage: null,
+      errorMessageKey: null,
       requiresAppDataReset: false,
     });
   });
@@ -120,6 +124,7 @@ describe('OAuthProviderButton', () => {
     vi.mocked(getDeepLinkAuthState).mockReturnValue({
       isProcessing: true,
       errorMessage: null,
+      errorMessageKey: null,
       requiresAppDataReset: false,
     });
 
@@ -166,7 +171,7 @@ describe('OAuthProviderButton', () => {
     expect(screen.getByRole('button', { name: 'Google' })).toBeEnabled();
   });
 
-  it('resets isLoading after the 90s safety timeout', async () => {
+  it('resets isLoading after the 300s safety timeout', async () => {
     render(<OAuthProviderButton provider={stubProvider} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Google' }));
@@ -178,8 +183,15 @@ describe('OAuthProviderButton', () => {
 
     expect(screen.getByText('Connecting...')).toBeInTheDocument();
 
+    // Loading must persist past the old 90s mark — the loopback listener now
+    // legitimately waits up to 300s for a slow (2FA / consent) sign-in.
     await act(async () => {
       vi.advanceTimersByTime(90_000);
+    });
+    expect(screen.getByText('Connecting...')).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(210_000);
     });
 
     expect(screen.queryByText('Connecting...')).not.toBeInTheDocument();
@@ -367,7 +379,7 @@ describe('OAuthProviderButton', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('shows the unavailable banner if the 90s timeout fires while the backend is down', async () => {
+  it('shows the unavailable banner if the 300s timeout fires while the backend is down', async () => {
     vi.mocked(checkBackendHealthy)
       .mockResolvedValueOnce(healthyResult)
       .mockResolvedValueOnce({ healthy: false, reason: 'timeout', latencyMs: 6000 });
@@ -380,7 +392,7 @@ describe('OAuthProviderButton', () => {
     expect(openUrl).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      vi.advanceTimersByTime(90_000);
+      vi.advanceTimersByTime(300_000);
       // After the safety timer fires we kick off probeBackendOnReturn().
       // Drain enough microtasks for that async probe to resolve and its
       // .then() to flush the alert into the DOM.

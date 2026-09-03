@@ -107,7 +107,7 @@ async function performFullLogin(token = 'e2e-test-token') {
   await waitForAppReady(15_000);
   await waitForAuthBootstrap(15_000);
 
-  const consumeCall = await waitForRequest('POST', '/telegram/login-tokens/', 20_000);
+  const consumeCall = await waitForRequest('POST', '/auth/login-token/consume', 20_000);
   if (!consumeCall) {
     console.log(
       '[AuthAccess] Missing consume call. Request log:',
@@ -183,7 +183,7 @@ describe('Auth & Access Control', () => {
         const homeText = await waitForHomePage(500);
         if (homeText) return true;
         const consumed = getRequestLog().find(
-          r => r.method === 'POST' && r.url.includes('/telegram/login-tokens/')
+          r => r.method === 'POST' && r.url.includes('/auth/login-token/consume')
         );
         return !!consumed;
       },
@@ -211,7 +211,7 @@ describe('Auth & Access Control', () => {
     await browser.waitUntil(
       async () => {
         const consumed = getRequestLog().find(
-          r => r.method === 'POST' && r.url.includes('/telegram/login-tokens/')
+          r => r.method === 'POST' && r.url.includes('/auth/login-token/consume')
         );
         return !!consumed;
       },
@@ -230,7 +230,7 @@ describe('Auth & Access Control', () => {
     expect(finalHome).not.toBeNull();
 
     const consumeCall = getRequestLog().find(
-      r => r.method === 'POST' && r.url.includes('/telegram/login-tokens/')
+      r => r.method === 'POST' && r.url.includes('/auth/login-token/consume')
     );
     expect(consumeCall).toBeDefined();
     console.log('[AuthAccess] Multi-device token accepted');
@@ -317,29 +317,10 @@ describe('Auth & Access Control', () => {
   // -------------------------------------------------------------------------
 
   it('user can log out via Settings and returns to Welcome', async () => {
-    // Re-auth to get a clean session for logout
-    clearRequestLog();
-    await triggerAuthDeepLink('e2e-pre-logout-token');
-
-    // Wait for the consume call rather than using a fixed delay.
-    await browser.waitUntil(
-      async () => {
-        const consumed = getRequestLog().find(
-          r => r.method === 'POST' && r.url.includes('/telegram/login-tokens/')
-        );
-        return !!consumed;
-      },
-      {
-        timeout: 10_000,
-        interval: 500,
-        timeoutMsg: 'Timed out waiting for pre-logout token consume call',
-      }
-    );
-
-    const homeCheck = await waitForHomePage(10_000);
-    if (!homeCheck) {
-      await navigateToHome();
-    }
+    // resetApp established a clean authenticated session for this suite.
+    // A second asynchronous deep-link login here races its post-login redirect
+    // against the Settings navigation, while adding no logout coverage.
+    await navigateToHome();
 
     // Log out + Clear App Data moved out of the main /settings page and
     // into the Account section in PR #2550 (LogoutAndClearActions footer
@@ -465,7 +446,7 @@ describe('Auth & Access Control', () => {
         const homeText = await waitForHomePage(500);
         if (!homeText) return true; // navigated away — auto-logout happened
         const consumed = getRequestLog().find(
-          r => r.method === 'POST' && r.url.includes('/telegram/login-tokens/')
+          r => r.method === 'POST' && r.url.includes('/auth/login-token/consume')
         );
         return !!consumed;
       },

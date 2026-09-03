@@ -3,12 +3,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithProviders } from '../../../../test/test-utils';
 import {
+  type AgentSettings,
   type AutonomySettings,
   isTauri,
+  openhumanGetAgentSettings,
   openhumanGetAutonomySettings,
+  openhumanUpdateAgentSettings,
   openhumanUpdateAutonomySettings,
 } from '../../../../utils/tauriCommands';
 import AgentAccessPanel from '../AgentAccessPanel';
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Note: Tier-selection and action-dir editing tests live in
+// PermissionsPanel.test.tsx (those controls moved to the layman panel).
+// This file covers the ADVANCED surface: workspace confinement, task-plan
+// approval, action timeout, granted folders, always-allowed tools, and the
+// approval-history link.
+// ──────────────────────────────────────────────────────────────────────────────
 
 const autonomy = (overrides: Partial<AutonomySettings> = {}): AutonomySettings => ({
   level: 'supervised',
@@ -19,6 +30,16 @@ const autonomy = (overrides: Partial<AutonomySettings> = {}): AutonomySettings =
   allow_tool_install: true,
   max_actions_per_hour: 0,
   auto_approve: [],
+  auto_approve_all: false,
+  ...overrides,
+});
+
+const agentSettings = (overrides: Partial<AgentSettings> = {}): AgentSettings => ({
+  agent_timeout_secs: 120,
+  effective_timeout_secs: 120,
+  env_override: false,
+  min_timeout_secs: 1,
+  max_timeout_secs: 3600,
   ...overrides,
 });
 
@@ -39,42 +60,45 @@ vi.mock('../../../../utils/tauriCommands', async () => {
     isTauri: vi.fn(() => true),
     openhumanGetAutonomySettings: vi.fn(),
     openhumanUpdateAutonomySettings: vi.fn(),
+    openhumanGetAgentSettings: vi.fn(),
+    openhumanUpdateAgentSettings: vi.fn(),
+    // The advanced panel no longer calls the agent-paths RPCs (action-dir
+    // moved to PermissionsPanel) — no mock needed, but keep the import clean.
   };
 });
 
 const mockGet = vi.mocked(openhumanGetAutonomySettings);
 const mockUpdate = vi.mocked(openhumanUpdateAutonomySettings);
-
-describe('AgentAccessPanel', () => {
+const mockGetAgent = vi.mocked(openhumanGetAgentSettings);
+const mockUpdateAgent = vi.mocked(openhumanUpdateAgentSettings);
+describe('AgentAccessPanel (advanced)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(isTauri).mockReturnValue(true);
     mockGet.mockResolvedValue({ result: autonomy(), logs: [] });
     mockUpdate.mockResolvedValue({ result: {} as never, logs: [] });
+    mockGetAgent.mockResolvedValue({ result: agentSettings(), logs: [] });
+    mockUpdateAgent.mockResolvedValue({ result: {} as never, logs: [] });
   });
 
-  it('loads settings on mount and renders the three access tiers', async () => {
+  it('loads settings on mount and renders the advanced controls', async () => {
     renderWithProviders(<AgentAccessPanel />);
     await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText('Read-only')).toBeInTheDocument();
-    expect(screen.getByText('Ask before edit')).toBeInTheDocument();
-    expect(screen.getByText('Full access')).toBeInTheDocument();
-  });
-
-  it('selecting the Full tier persists the new level (and renders the warning)', async () => {
-    renderWithProviders(<AgentAccessPanel />);
-    fireEvent.click(await screen.findByText('Full access'));
-    await waitFor(() =>
-      expect(mockUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({ level: 'full', allow_tool_install: true })
-      )
-    );
+    // The tier radio buttons no longer live in this panel.
+    expect(screen.queryByText('Read-only')).not.toBeInTheDocument();
+    expect(screen.queryByText('Ask before edit')).not.toBeInTheDocument();
+    expect(screen.queryByText('Full access')).not.toBeInTheDocument();
+    // The advanced controls are present.
+    expect(await screen.findByText('Confine to workspace')).toBeInTheDocument();
+    expect(screen.getByText('Granted folders')).toBeInTheDocument();
+    expect(screen.getByText('Always-allowed tools')).toBeInTheDocument();
   });
 
   it('toggling "confine to workspace" persists workspace_only', async () => {
     renderWithProviders(<AgentAccessPanel />);
-    await screen.findByText('Read-only');
-    fireEvent.click(screen.getByRole('checkbox', { name: /confine to workspace/i }));
+    await screen.findByText('Confine to workspace');
+    // Controls are now role="switch" (SettingsSwitch) instead of native checkboxes.
+    fireEvent.click(screen.getByRole('switch', { name: /confine to workspace/i }));
     await waitFor(() =>
       expect(mockUpdate).toHaveBeenCalledWith(expect.objectContaining({ workspace_only: true }))
     );
@@ -82,8 +106,8 @@ describe('AgentAccessPanel', () => {
 
   it('toggling task plan approval persists require_task_plan_approval', async () => {
     renderWithProviders(<AgentAccessPanel />);
-    await screen.findByText('Read-only');
-    fireEvent.click(screen.getByRole('checkbox', { name: /require task plan approval/i }));
+    await screen.findByText('Confine to workspace');
+    fireEvent.click(screen.getByRole('switch', { name: /require task plan approval/i }));
     await waitFor(() =>
       expect(mockUpdate).toHaveBeenCalledWith(
         expect.objectContaining({ require_task_plan_approval: false })
@@ -111,7 +135,7 @@ describe('AgentAccessPanel', () => {
     );
   });
 
-  it('renders the loaded tier from settings and pre-existing granted folders', async () => {
+  it('renders the loaded tier and pre-existing granted folders (loaded but not shown)', async () => {
     mockGet.mockResolvedValue({
       result: autonomy({
         level: 'readonly',
@@ -121,10 +145,15 @@ describe('AgentAccessPanel', () => {
       logs: [],
     });
     renderWithProviders(<AgentAccessPanel />);
+    // Folder path is visible.
     expect(await screen.findByText('/home/u/notes')).toBeInTheDocument();
-    expect(
-      (screen.getByRole('checkbox', { name: /confine to workspace/i }) as HTMLInputElement).checked
-    ).toBe(true);
+    // workspace_only switch has aria-checked="true".
+    expect(screen.getByRole('switch', { name: /confine to workspace/i })).toHaveAttribute(
+      'aria-checked',
+      'true'
+    );
+    // But the tier radio UI is NOT here (lives in PermissionsPanel).
+    expect(screen.queryByText('Read-only')).not.toBeInTheDocument();
   });
 
   it('shows the empty "always-allow" state when no tools are allow-listed', async () => {
@@ -142,8 +171,7 @@ describe('AgentAccessPanel', () => {
     expect(screen.getByText('curl')).toBeInTheDocument();
 
     // trusted_roots is empty, so the only Remove buttons belong to the
-    // allowlist. Removing the first entry persists the trimmed list via
-    // update_autonomy_settings (auto_approve only — other fields untouched).
+    // allowlist. Removing the first entry persists the trimmed list.
     fireEvent.click(screen.getAllByText('Remove')[0]);
     await waitFor(() =>
       expect(mockUpdate).toHaveBeenLastCalledWith(
@@ -161,7 +189,121 @@ describe('AgentAccessPanel', () => {
   it('shows the desktop-only notice and skips loading off-Tauri', async () => {
     vi.mocked(isTauri).mockReturnValue(false);
     renderWithProviders(<AgentAccessPanel />);
-    expect(await screen.findByText('Access mode')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Access settings are only available in the desktop app.')
+    ).toBeInTheDocument();
     expect(mockGet).not.toHaveBeenCalled();
+    expect(mockGetAgent).not.toHaveBeenCalled();
+  });
+
+  it('loads the configured action timeout into the input', async () => {
+    mockGetAgent.mockResolvedValue({
+      result: agentSettings({ agent_timeout_secs: 300 }),
+      logs: [],
+    });
+    renderWithProviders(<AgentAccessPanel />);
+    const input = (await screen.findByLabelText('Action timeout')) as HTMLInputElement;
+    expect(input.value).toBe('300');
+  });
+
+  it('persists a changed action timeout on blur-sm', async () => {
+    renderWithProviders(<AgentAccessPanel />);
+    const input = await screen.findByLabelText('Action timeout');
+    fireEvent.change(input, { target: { value: '300' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledWith({ agent_timeout_secs: 300 }));
+  });
+
+  it('rejects an out-of-range timeout without calling the RPC', async () => {
+    renderWithProviders(<AgentAccessPanel />);
+    const input = await screen.findByLabelText('Action timeout');
+    fireEvent.change(input, { target: { value: '99999' } });
+    fireEvent.blur(input);
+    expect(await screen.findByText(/within the allowed range/i)).toBeInTheDocument();
+    expect(mockUpdateAgent).not.toHaveBeenCalled();
+  });
+
+  it('does not re-persist when the timeout is unchanged', async () => {
+    renderWithProviders(<AgentAccessPanel />);
+    const input = await screen.findByLabelText('Action timeout');
+    fireEvent.blur(input); // value still the loaded 120
+    await waitFor(() => expect(mockGetAgent).toHaveBeenCalled());
+    expect(mockUpdateAgent).not.toHaveBeenCalled();
+  });
+
+  it('disables the timeout input and warns when an env override is active', async () => {
+    mockGetAgent.mockResolvedValue({ result: agentSettings({ env_override: true }), logs: [] });
+    renderWithProviders(<AgentAccessPanel />);
+    const input = (await screen.findByLabelText('Action timeout')) as HTMLInputElement;
+    expect(input.disabled).toBe(true);
+    expect(screen.getByText(/OPENHUMAN_TOOL_TIMEOUT_SECS/)).toBeInTheDocument();
+  });
+
+  it('approval history link button is present and has the correct data-testid', async () => {
+    renderWithProviders(<AgentAccessPanel />);
+    await screen.findByText('Approval history');
+    expect(screen.getByTestId('agent-access-approval-history-link')).toBeInTheDocument();
+  });
+
+  // ── auto-approve-all bypass (security-sensitive) ────────────────────────
+
+  it('renders the auto-approve-all toggle OFF by default', async () => {
+    renderWithProviders(<AgentAccessPanel />);
+    const sw = await screen.findByRole('switch', { name: /auto-approve all actions/i });
+    expect(sw).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('toggling auto-approve-all ON persists auto_approve_all: true', async () => {
+    renderWithProviders(<AgentAccessPanel />);
+    const sw = await screen.findByRole('switch', { name: /auto-approve all actions/i });
+    fireEvent.click(sw);
+    await waitFor(() =>
+      expect(mockUpdate).toHaveBeenCalledWith(expect.objectContaining({ auto_approve_all: true }))
+    );
+  });
+
+  it('shows the warning description regardless of toggle state', async () => {
+    renderWithProviders(<AgentAccessPanel />);
+    const sw = await screen.findByRole('switch', { name: /auto-approve all actions/i });
+
+    // Off state: warning is already visible.
+    expect(sw).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByTestId('auto-approve-all-warning')).toBeInTheDocument();
+    expect(screen.getByTestId('auto-approve-all-warning')).toHaveTextContent(
+      /credential and system directories/i
+    );
+
+    // On state: toggling it on keeps the same warning mounted, still visible.
+    fireEvent.click(sw);
+    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'));
+    expect(screen.getByTestId('auto-approve-all-warning')).toBeInTheDocument();
+  });
+
+  it('reverts the auto-approve-all toggle when the save fails', async () => {
+    mockUpdate.mockRejectedValueOnce(new Error('boom'));
+    renderWithProviders(<AgentAccessPanel />);
+    const sw = await screen.findByRole('switch', { name: /auto-approve all actions/i });
+    fireEvent.click(sw);
+    // The RPC must actually be attempted (and fail)…
+    await waitFor(() =>
+      expect(mockUpdate).toHaveBeenCalledWith(expect.objectContaining({ auto_approve_all: true }))
+    );
+    // …then the optimistic flip reverts to off, so the switch never shows a
+    // falsely-safe "off" or falsely-enabled "on" state the server disagrees with.
+    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'));
+  });
+
+  it('does not resend auto_approve_all when an unrelated field is saved', async () => {
+    // auto_approve_all starts true; toggling an unrelated switch (workspace
+    // confinement) must omit auto_approve_all from the patch entirely so a
+    // stale/loaded panel value can never clobber it back down.
+    mockGet.mockResolvedValue({ result: autonomy({ auto_approve_all: true }), logs: [] });
+    renderWithProviders(<AgentAccessPanel />);
+    fireEvent.click(await screen.findByRole('switch', { name: /confine to workspace/i }));
+    await waitFor(() =>
+      expect(mockUpdate).toHaveBeenCalledWith(expect.objectContaining({ workspace_only: true }))
+    );
+    const [[payload]] = mockUpdate.mock.calls;
+    expect(payload).not.toHaveProperty('auto_approve_all');
   });
 });

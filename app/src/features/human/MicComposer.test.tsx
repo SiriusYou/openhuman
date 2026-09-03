@@ -1,18 +1,24 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
+import MicComposer, {
   isLowConfidenceTranscript,
   MAX_RECORDING_MS,
-  MicComposer,
   STT_MAX_RETRIES,
 } from './MicComposer';
+import { VoiceNotCompiledError } from './voice/sttClient';
 
 // transcribeWithFactory + encodeBlobToWav are the network/heavy boundaries —
 // mock them here so we can drive the state machine without touching real APIs.
 const transcribeWithFactoryMock = vi.fn();
 const encodeBlobToWavMock = vi.fn();
-vi.mock('./voice/sttClient', () => ({
+// Spread the real module so `VoiceNotCompiledError` / `isVoiceNotCompiledError`
+// keep their real behaviour; only the network-touching call is stubbed. A
+// factory listing exports by hand silently yields `undefined` for anything it
+// forgets, which fails as a TypeError at the call site rather than a clear mock
+// error.
+vi.mock('./voice/sttClient', async importOriginal => ({
+  ...(await importOriginal<typeof import('./voice/sttClient')>()),
   transcribeWithFactory: (...args: unknown[]) => transcribeWithFactoryMock(...args),
 }));
 vi.mock('./voice/wavEncoder', () => ({
@@ -48,6 +54,27 @@ function makeFakeRecorder(mime: string): FakeRecorder {
 }
 
 const fakeStream = { getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream;
+
+// jsdom never lays elements out, so getBoundingClientRect returns all-zero
+// rects. The device-menu placement logic measures the trigger and the menu, so
+// tests stub those rects per-element to simulate viewport positions.
+function makeRect(p: Partial<DOMRect>): DOMRect {
+  const top = p.top ?? 0;
+  const left = p.left ?? 0;
+  const width = p.width ?? 0;
+  const height = p.height ?? 0;
+  return {
+    top,
+    left,
+    width,
+    height,
+    bottom: p.bottom ?? top + height,
+    right: p.right ?? left + width,
+    x: left,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
 
 describe('MicComposer', () => {
   let recorder: FakeRecorder;
@@ -138,6 +165,70 @@ describe('MicComposer', () => {
     fireEvent.click(screen.getByRole('button', { name: /stop recording and send/i }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('hello world'));
     expect(transcribeWithFactoryMock).toHaveBeenCalledTimes(1);
+  });
+
+  describe('onRecordingChange', () => {
+    it('reports true on capture start and false on stop', async () => {
+      transcribeWithFactoryMock.mockResolvedValueOnce('hello');
+      const onRecordingChange = vi.fn();
+      render(
+        <MicComposer disabled={false} onSubmit={vi.fn()} onRecordingChange={onRecordingChange} />
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /start recording/i }));
+      await waitFor(() => expect(onRecordingChange).toHaveBeenCalledWith(true));
+
+      fireEvent.click(screen.getByRole('button', { name: /stop recording and send/i }));
+      await waitFor(() => expect(onRecordingChange).toHaveBeenLastCalledWith(false));
+    });
+
+    it('reports false when unmounted mid-recording', async () => {
+      // Without this the caller stays pinned in a hot-mic state — the chat
+      // mascot would hold its `listening` pose forever after navigating away.
+      const onRecordingChange = vi.fn();
+      const { unmount } = render(
+        <MicComposer disabled={false} onSubmit={vi.fn()} onRecordingChange={onRecordingChange} />
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /start recording/i }));
+      await waitFor(() => expect(onRecordingChange).toHaveBeenCalledWith(true));
+      onRecordingChange.mockClear();
+
+      unmount();
+
+      expect(onRecordingChange).toHaveBeenCalledWith(false);
+    });
+
+    it('does not fire when capture never starts', async () => {
+      const err = Object.assign(new DOMException('', 'NotAllowedError'));
+      getUserMediaMock.mockRejectedValueOnce(err);
+      const onRecordingChange = vi.fn();
+      render(
+        <MicComposer
+          disabled={false}
+          onSubmit={vi.fn()}
+          onError={vi.fn()}
+          onRecordingChange={onRecordingChange}
+        />
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /start recording/i }));
+      await waitFor(() => expect(getUserMediaMock).toHaveBeenCalled());
+
+      expect(onRecordingChange).not.toHaveBeenCalled();
+    });
+
+    it('is optional — capture works without it', async () => {
+      transcribeWithFactoryMock.mockResolvedValueOnce('hi');
+      const onSubmit = vi.fn();
+      render(<MicComposer disabled={false} onSubmit={onSubmit} />);
+      fireEvent.click(screen.getByRole('button', { name: /start recording/i }));
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /stop recording and send/i })).toBeInTheDocument()
+      );
+      fireEvent.click(screen.getByRole('button', { name: /stop recording and send/i }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('hi'));
+    });
   });
 
   it('forwards the language prop to transcribeCloud', async () => {
@@ -568,6 +659,97 @@ describe('MicComposer', () => {
     expect(screen.getByText('Tap and speak')).toBeInTheDocument();
   });
 
+  // ── Device menu placement (#4264: overlay clipped at viewport bottom) ───────
+
+  async function openDeviceMenuWithRects(triggerRect: Partial<DOMRect>) {
+    const enumerateDevicesMock = vi.fn().mockResolvedValue([
+      { kind: 'audioinput', deviceId: 'dev1', label: 'Built-in Mic' },
+      { kind: 'audioinput', deviceId: 'dev2', label: 'USB Headset' },
+    ]);
+    Object.defineProperty(globalThis.navigator, 'mediaDevices', {
+      value: { getUserMedia: getUserMediaMock, enumerateDevices: enumerateDevicesMock },
+      configurable: true,
+      writable: true,
+    });
+    render(<MicComposer disabled={false} onSubmit={vi.fn()} showDeviceSelector />);
+
+    const gearBtn = await screen.findByLabelText(/Microphone device/i);
+    // Per-instance override shadows the prototype, so only the trigger reports
+    // this rect; the menu falls back to the prototype stub below.
+    gearBtn.getBoundingClientRect = () => makeRect(triggerRect);
+    // Menu measures 256×300 (its CSS width is w-64 = 256px); stub a tall list.
+    const menuRectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.getAttribute('role') === 'menu') {
+          return makeRect({ top: 0, left: 0, width: 256, height: 300 });
+        }
+        return makeRect({});
+      });
+    fireEvent.click(gearBtn);
+    const menu = await screen.findByRole('menu');
+    return { menu, menuRectSpy };
+  }
+
+  it('flips the device menu above the gear when there is no room below', async () => {
+    vi.stubGlobal('innerHeight', 600);
+    vi.stubGlobal('innerWidth', 1000);
+    // Trigger sits near the bottom edge: only 8px below, but 560px above.
+    const { menu, menuRectSpy } = await openDeviceMenuWithRects({
+      top: 560,
+      bottom: 592,
+      left: 100,
+      width: 32,
+      height: 32,
+    });
+    try {
+      // top = trigger.top(560) − margin(8) − menuHeight(300) = 252, fully on-screen.
+      expect(parseFloat(menu.style.top)).toBe(252);
+      expect(parseFloat(menu.style.top)).toBeLessThan(560);
+      expect(menu.style.visibility).toBe('visible');
+    } finally {
+      menuRectSpy.mockRestore();
+    }
+  });
+
+  it('opens the device menu below the gear when there is room', async () => {
+    vi.stubGlobal('innerHeight', 600);
+    vi.stubGlobal('innerWidth', 1000);
+    // Trigger near the top: 518px of room below comfortably fits the 300px menu.
+    const { menu, menuRectSpy } = await openDeviceMenuWithRects({
+      top: 50,
+      bottom: 82,
+      left: 100,
+      width: 32,
+      height: 32,
+    });
+    try {
+      // top = trigger.bottom(82) + margin(8) = 90.
+      expect(parseFloat(menu.style.top)).toBe(90);
+    } finally {
+      menuRectSpy.mockRestore();
+    }
+  });
+
+  it('clamps the device menu horizontally inside the viewport', async () => {
+    vi.stubGlobal('innerHeight', 600);
+    vi.stubGlobal('innerWidth', 1000);
+    // Trigger hugs the right edge — centring the 256px menu would overflow.
+    const { menu, menuRectSpy } = await openDeviceMenuWithRects({
+      top: 50,
+      bottom: 82,
+      left: 980,
+      width: 32,
+      height: 32,
+    });
+    try {
+      // left clamps to viewportW(1000) − menuWidth(256) − margin(8) = 736.
+      expect(parseFloat(menu.style.left)).toBe(736);
+    } finally {
+      menuRectSpy.mockRestore();
+    }
+  });
+
   // ── STT retry (#1206) ──────────────────────────────────────────────────────
 
   it('retries transient STT failures before falling back to WAV', async () => {
@@ -626,6 +808,34 @@ describe('MicComposer', () => {
     expect(encodeBlobToWavMock).toHaveBeenCalledTimes(1);
   });
 
+  it('skips native retries on a "binary not found" failure and falls straight to WAV', async () => {
+    // A "binary not found" error means the engine could not run at all, so
+    // retrying the same webm payload just burns backoff. The native codec must
+    // bail immediately and the WAV re-encode must run — plain 16 kHz WAV is the
+    // format every engine accepts, so it is the one retry worth taking (#3425).
+    transcribeWithFactoryMock
+      .mockRejectedValueOnce(new Error('[voice-stt] tts binary not found on this host'))
+      .mockResolvedValueOnce('wav fallback ok');
+    encodeBlobToWavMock.mockResolvedValueOnce(
+      new Blob([new Uint8Array([0])], { type: 'audio/wav' })
+    );
+    const onSubmit = vi.fn();
+    render(<MicComposer disabled={false} onSubmit={onSubmit} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /start recording/i }));
+    await waitFor(() => expect(getUserMediaMock).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /stop recording and send/i })).toBeInTheDocument()
+    );
+    fireEvent.click(screen.getByRole('button', { name: /stop recording and send/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('wav fallback ok'));
+    // Exactly 1 native attempt (no retries) + 1 WAV attempt — the missing
+    // binary short-circuits the native backoff loop.
+    expect(transcribeWithFactoryMock).toHaveBeenCalledTimes(2);
+    expect(encodeBlobToWavMock).toHaveBeenCalledTimes(1);
+  });
+
   it('does not continue retrying after unmount during STT backoff', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     transcribeWithFactoryMock
@@ -651,10 +861,11 @@ describe('MicComposer', () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it('does not retry permanent errors (stale sidecar)', async () => {
+  it('does not retry permanent errors (voice not compiled into the core)', async () => {
     transcribeWithFactoryMock.mockRejectedValueOnce(
       new Error(
-        'Voice transcription is unavailable in this build. Restart the OpenHuman desktop app to pick up the latest core sidecar.'
+        'Voice transcription is unavailable in this build — the voice module was not compiled into the app. ' +
+          'Update OpenHuman to the latest version; restarting will not help.'
       )
     );
     const onError = vi.fn();
@@ -670,6 +881,31 @@ describe('MicComposer', () => {
     await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringMatching(/failed/i)));
     // Only 1 attempt — no retries for permanent errors
     expect(transcribeWithFactoryMock).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  // #4901: the raw error text is untranslated developer copy, so a
+  // VoiceNotCompiledError must surface the localized `mic.voiceNotCompiled`
+  // string instead of being spliced into the `{message}` slot.
+  it('renders translated copy for a voice-not-compiled error, not the raw message', async () => {
+    transcribeWithFactoryMock.mockRejectedValueOnce(new VoiceNotCompiledError());
+    const onError = vi.fn();
+    const onSubmit = vi.fn();
+    render(<MicComposer disabled={false} onSubmit={onSubmit} onError={onError} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /start recording/i }));
+    await waitFor(() => expect(getUserMediaMock).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /stop recording and send/i })).toBeInTheDocument()
+    );
+    fireEvent.click(screen.getByRole('button', { name: /stop recording and send/i }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalled());
+    const shown = onError.mock.calls[0][0] as string;
+    // The English `mic.voiceNotCompiled` value, resolved through useT().
+    expect(shown).toMatch(/not included in this version/i);
+    // The untranslated developer copy must not leak into the UI.
+    expect(shown).not.toMatch(/not compiled into the app/i);
     expect(onSubmit).not.toHaveBeenCalled();
   });
 

@@ -1,6 +1,6 @@
 // SmartIssuePicker — dev-workflow's repo / fork / upstream / branch
 // auto-detection lifted out of DevWorkflowPanel into a reusable
-// subcomponent. SkillsRunnerBody conditionally mounts it when the
+// subcomponent. WorkflowRunnerBody conditionally mounts it when the
 // selected skill is `dev-workflow` to give that one skill the same
 // frictionless setup it had in its bespoke Settings panel:
 //
@@ -20,14 +20,13 @@
 // TODO(picker-schema): today this subcomponent is wired in based on
 // the skill id being literally `dev-workflow`. The cleaner long-term
 // path is to extend `skill.toml`'s `[[inputs]]` with an optional
-// `picker = "github-issue"` discriminator and route here from that;
-// see docs/skills-runner-unification.md open question 1.
-
+// `picker = "github-issue"` discriminator and route here from that.
 import createDebug from 'debug';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { execute as composioExecute, listConnections } from '../../lib/composio/composioApi';
 import { useT } from '../../lib/i18n/I18nContext';
+import { Alert, NativeSelect } from '../ui';
 
 const log = createDebug('app:skills:SmartIssuePicker');
 
@@ -50,17 +49,12 @@ interface GhBranch {
   name: string;
 }
 
-export interface SmartIssuePickerProps {
+interface SmartIssuePickerProps {
   /** Current resolved input values (the four dev-workflow fields). */
   values: { repo?: string; upstream?: string; target_branch?: string; fork_owner?: string };
   /** Patch the parent's form-values map with the picker's resolutions. */
   onPatchInputs: (
-    patch: Partial<{
-      repo: string;
-      upstream: string;
-      target_branch: string;
-      fork_owner: string;
-    }>
+    patch: Partial<{ repo: string; upstream: string; target_branch: string; fork_owner: string }>
   ) => void;
 }
 
@@ -90,7 +84,7 @@ const SmartIssuePicker = ({ values, onPatchInputs }: SmartIssuePickerProps) => {
     try {
       const connections = await listConnections();
       const ghConn = connections.connections?.find(
-        (c) =>
+        c =>
           c.toolkit.toLowerCase().includes('github') &&
           (c.status === 'ACTIVE' || c.status === 'CONNECTED')
       );
@@ -105,7 +99,7 @@ const SmartIssuePicker = ({ values, onPatchInputs }: SmartIssuePickerProps) => {
         ? raw
         : ((raw as Record<string, unknown>)?.repositories ?? []);
       if (Array.isArray(items)) {
-        repoList = (items as Record<string, unknown>[]).map((r) => ({
+        repoList = (items as Record<string, unknown>[]).map(r => ({
           owner: String((r.owner as Record<string, unknown>)?.login ?? r.owner ?? ''),
           repo: String(r.name ?? ''),
           fullName: String(
@@ -185,7 +179,7 @@ const SmartIssuePicker = ({ values, onPatchInputs }: SmartIssuePickerProps) => {
           }
           defaultBranch = data.default_branch ?? 'main';
         } else {
-          const fromList = repos.find((r) => r.fullName === repoFullName);
+          const fromList = repos.find(r => r.fullName === repoFullName);
           defaultBranch = fromList?.defaultBranch ?? 'main';
         }
 
@@ -216,16 +210,16 @@ const SmartIssuePicker = ({ values, onPatchInputs }: SmartIssuePickerProps) => {
           }
           if (list.length > 0) {
             setBranches(list);
-            const hasDefault = list.some((b) => b.name === defaultBranch);
+            const hasDefault = list.some(b => b.name === defaultBranch);
             onPatchInputs({ target_branch: hasDefault ? defaultBranch : list[0].name });
           } else {
             const fallback = [...new Set([defaultBranch, 'main', 'master'])];
-            setBranches(fallback.map((name) => ({ name })));
+            setBranches(fallback.map(name => ({ name })));
             onPatchInputs({ target_branch: defaultBranch });
           }
         } else {
           const fallback = [...new Set([defaultBranch, 'main', 'master'])];
-          setBranches(fallback.map((name) => ({ name })));
+          setBranches(fallback.map(name => ({ name })));
           onPatchInputs({ target_branch: defaultBranch });
         }
       } catch (err) {
@@ -249,76 +243,67 @@ const SmartIssuePicker = ({ values, onPatchInputs }: SmartIssuePickerProps) => {
       <div>
         <label
           htmlFor="smart-issue-picker-repo"
-          className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-1"
-        >
+          className="block text-sm font-medium text-content-secondary mb-1">
           {t('settings.devWorkflow.githubRepository')}
         </label>
         {reposError && (
-          <div className="mb-2 px-3 py-2 rounded-md bg-coral-50 dark:bg-coral-500/10 border border-coral-200 dark:border-coral-500/30 text-xs text-coral-700 dark:text-coral-300">
+          <Alert variant="destructive" className="mb-2 text-xs">
             {reposError}
-          </div>
+          </Alert>
         )}
-        <select
+        <NativeSelect
           id="smart-issue-picker-repo"
           value={values.repo ?? ''}
-          onChange={(e) => void onRepoSelect(e.target.value)}
+          onChange={e => void onRepoSelect(e.target.value)}
           disabled={reposLoading}
-          className="w-full rounded border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-800 px-3 py-2 text-sm text-stone-900 dark:text-stone-100"
-        >
+          className="w-full">
           <option value="">
             {reposLoading
               ? t('settings.devWorkflow.loadingRepositories')
               : t('settings.devWorkflow.selectRepository')}
           </option>
-          {repos.map((r) => (
+          {repos.map(r => (
             <option key={r.fullName} value={r.fullName}>
               {r.fullName} {r.private ? t('settings.devWorkflow.privateTag') : ''}
             </option>
           ))}
-        </select>
+        </NativeSelect>
       </div>
 
       {forkLoading && (
-        <div className="text-xs text-stone-500 dark:text-stone-400">
+        <div className="text-xs text-content-muted">
           {t('settings.devWorkflow.detectingForkInfo')}
         </div>
       )}
       {forkInfo && (
-        <div
-          data-testid="smart-issue-picker-fork-banner"
-          className="px-3 py-2 rounded-md bg-primary-50 dark:bg-primary-500/10 border border-primary-200 dark:border-primary-500/30"
-        >
-          <div className="text-xs font-medium text-primary-800 dark:text-primary-300">
-            {t('settings.devWorkflow.forkDetected')}
-          </div>
-          <div className="text-xs text-primary-700 dark:text-primary-200 mt-0.5">
+        <Alert variant="info" data-testid="smart-issue-picker-fork-banner" className="flex-col items-start">
+          <div className="text-xs font-medium">{t('settings.devWorkflow.forkDetected')}</div>
+          <div className="text-xs mt-0.5">
             {t('settings.devWorkflow.upstream')}{' '}
             <span className="font-mono">{forkInfo.upstreamFullName}</span>
           </div>
-        </div>
+        </Alert>
       )}
 
       {branches.length > 0 && (
         <div>
           <label
             htmlFor="smart-issue-picker-branch"
-            className="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-1"
-          >
+            className="block text-sm font-medium text-content-secondary mb-1">
             {t('settings.devWorkflow.targetBranch')}
           </label>
-          <select
+          <NativeSelect
             id="smart-issue-picker-branch"
             value={values.target_branch ?? ''}
-            onChange={(e) => onPatchInputs({ target_branch: e.target.value })}
+            onChange={e => onPatchInputs({ target_branch: e.target.value })}
             disabled={branchesLoading}
-            className="w-full rounded border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-800 px-3 py-2 text-sm text-stone-900 dark:text-stone-100"
-          >
-            {branches.map((b) => (
+            className="w-full">
+            {branches.map(b => (
               <option key={b.name} value={b.name}>
                 {b.name}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </div>
       )}
     </div>

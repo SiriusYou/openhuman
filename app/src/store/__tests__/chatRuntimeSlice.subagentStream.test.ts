@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import reducer, {
   appendSubagentStreamDelta,
+  markSubagentCancelled,
   recordSubagentTranscriptTool,
   resolveSubagentTranscriptTool,
   setToolTimelineForThread,
@@ -17,6 +18,7 @@ function withSubagentRow(): ReturnType<typeof reducer> {
     id: ROW_ID,
     name: 'subagent:researcher',
     round: 1,
+    seq: 0,
     status: 'running',
     subagent: { taskId: 'sub-1', agentId: 'researcher', toolCalls: [], transcript: [] },
   };
@@ -188,5 +190,27 @@ describe('subagent transcript reducers', () => {
       appendSubagentStreamDelta({ threadId: THREAD, rowId: 'missing', kind: 'text', delta: 'x' })
     );
     expect(transcriptOf(unknownRow)).toHaveLength(0);
+  });
+});
+
+describe('markSubagentCancelled', () => {
+  it('flips the matching row (and its subagent) to cancelled, located by taskId', () => {
+    const state = reducer(
+      withSubagentRow(),
+      markSubagentCancelled({ threadId: THREAD, taskId: 'sub-1' })
+    );
+    const entry = state.toolTimelineByThread[THREAD][0];
+    expect(entry.status).toBe('cancelled');
+    expect(entry.subagent?.status).toBe('cancelled');
+  });
+
+  it('is a no-op for an unknown taskId or thread', () => {
+    const base = withSubagentRow();
+    expect(reducer(base, markSubagentCancelled({ threadId: THREAD, taskId: 'nope' }))).toEqual(
+      base
+    );
+    expect(
+      reducer(base, markSubagentCancelled({ threadId: 'other-thread', taskId: 'sub-1' }))
+    ).toEqual(base);
   });
 });

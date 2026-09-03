@@ -153,142 +153,76 @@ pub(crate) struct LmStudioModel {
     pub owned_by: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub(crate) struct LmStudioChatCompletionRequest {
-    pub model: String,
-    pub messages: Vec<LmStudioChatMessage>,
-    pub stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct LmStudioChatMessage {
-    pub role: String,
-    pub content: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct LmStudioChatCompletionResponse {
+/// LM Studio **native** REST (`GET /api/v0/models`) model entry.
+///
+/// Unlike the OpenAI-compatible `/v1/models` (which returns only
+/// `id`/`object`/`owned_by`), the native API reports the model's context
+/// window — the value the agent harness must budget against to avoid an
+/// `n_ctx` overflow when the user loaded the model with a small context
+/// (issue #3550 / Sentry TAURI-RUST-6V0).
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct LmStudioNativeModel {
+    pub id: String,
+    /// Context window the model is *currently loaded* with — the runtime's
+    /// hard limit. Authoritative for budgeting. (LM Studio also returns a
+    /// `state` field, which we ignore — we prefer the loaded window whenever
+    /// present regardless of load state.)
     #[serde(default)]
-    pub choices: Vec<LmStudioChatChoice>,
+    pub loaded_context_length: Option<u64>,
+    /// Model's declared maximum context. Fallback when not currently loaded.
     #[serde(default)]
-    pub usage: Option<LmStudioUsage>,
+    pub max_context_length: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct LmStudioChatChoice {
-    pub message: LmStudioChatResponseMessage,
+pub(crate) struct LmStudioNativeModelsResponse {
+    #[serde(default)]
+    pub data: Vec<LmStudioNativeModel>,
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct LmStudioChatResponseMessage {
-    #[serde(default)]
-    pub content: Option<String>,
-    #[serde(default)]
-    pub reasoning_content: Option<String>,
+/// Map a normalized `…/v1` base URL to the LM Studio native models endpoint
+/// `…/api/v0/models` (a sibling of `/v1`, served at the host root).
+pub(crate) fn lm_studio_native_models_url(v1_base_url: &str) -> String {
+    format!("{}/api/v0/models", host_root_of(v1_base_url))
 }
 
-impl LmStudioChatResponseMessage {
-    pub(crate) fn effective_content(&self) -> String {
-        let content = self
-            .content
-            .as_deref()
-            .map(crate::openhuman::inference::provider::compatible_parse::strip_think_tags)
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_default();
-        if !content.is_empty() {
-            tracing::trace!(
-                source = "content",
-                output_chars = content.chars().count(),
-                "[lm-studio] effective content selected"
-            );
-            return content;
-        }
-
-        let reasoning = self
-            .reasoning_content
-            .as_deref()
-            .map(crate::openhuman::inference::provider::compatible_parse::strip_think_tags)
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_default();
-        if !reasoning.is_empty() {
-            tracing::trace!(
-                source = "reasoning_content",
-                output_chars = reasoning.chars().count(),
-                "[lm-studio] effective content selected"
-            );
-            return reasoning;
-        }
-
-        tracing::trace!(
-            source = "none",
-            output_chars = 0,
-            "[lm-studio] effective content empty"
-        );
-        String::new()
-    }
+/// Strip a trailing `/v1` so sibling endpoints served at the host root can be
+/// derived from an OpenAI-compatible base URL.
+pub(crate) fn host_root_of(v1_base_url: &str) -> &str {
+    v1_base_url
+        .trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .trim_end_matches('/')
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct LmStudioUsage {
-    #[serde(default)]
-    pub prompt_tokens: Option<u32>,
-    #[serde(default)]
-    pub completion_tokens: Option<u32>,
+/// Ollama-native `GET /api/tags` URL derived from an OpenAI-compatible base.
+///
+/// Only used as the one-shot 404 fallback in
+/// [`LocalAiService::list_lm_studio_models`](crate::openhuman::inference::local::service::LocalAiService):
+/// some runtimes are reachable on an OpenAI-shaped base URL but expose only the
+/// Ollama listing (e.g. plain Ollama configured with a `/v1` base). Discovery is
+/// still chosen by provider type first — this is a recovery path, not a probe
+/// order (GH #5055).
+pub(crate) fn ollama_tags_fallback_url(v1_base_url: &str) -> String {
+    format!("{}/api/tags", host_root_of(v1_base_url))
+}
+
+/// Resolve the context window LM Studio reports for `model_id` from a native
+/// `/api/v0/models` payload: prefer the *loaded* context (the limit the
+/// runtime actually enforces), else the model's declared maximum. Zero/absent
+/// values are treated as unknown. Returns `None` when the model isn't present
+/// or reports no usable window.
+pub(crate) fn lm_studio_context_window_for(
+    resp: &LmStudioNativeModelsResponse,
+    model_id: &str,
+) -> Option<u64> {
+    resp.data.iter().find(|m| m.id == model_id).and_then(|m| {
+        m.loaded_context_length
+            .filter(|&v| v > 0)
+            .or(m.max_context_length.filter(|&v| v > 0))
+    })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_lm_studio_base_url_defaults_scheme_and_v1() {
-        assert_eq!(
-            normalize_lm_studio_base_url("localhost:1234").as_deref(),
-            Some("http://localhost:1234/v1")
-        );
-    }
-
-    #[test]
-    fn normalize_lm_studio_base_url_preserves_existing_v1() {
-        assert_eq!(
-            normalize_lm_studio_base_url("http://127.0.0.1:1234/v1/").as_deref(),
-            Some("http://127.0.0.1:1234/v1")
-        );
-    }
-
-    #[test]
-    fn normalize_lm_studio_base_url_strips_known_endpoint_suffix() {
-        assert_eq!(
-            normalize_lm_studio_base_url("http://127.0.0.1:1234/v1/chat/completions").as_deref(),
-            Some("http://127.0.0.1:1234/v1")
-        );
-        assert_eq!(
-            normalize_lm_studio_base_url("http://127.0.0.1:1234/v1/models").as_deref(),
-            Some("http://127.0.0.1:1234/v1")
-        );
-    }
-
-    #[test]
-    fn effective_content_falls_back_to_reasoning_content() {
-        let msg = LmStudioChatResponseMessage {
-            content: Some("".into()),
-            reasoning_content: Some("thinking text".into()),
-        };
-        assert_eq!(msg.effective_content(), "thinking text");
-    }
-
-    #[test]
-    fn effective_content_strips_think_tags() {
-        let msg = LmStudioChatResponseMessage {
-            content: Some("<think>hidden</think>Visible reply".into()),
-            reasoning_content: None,
-        };
-        assert_eq!(msg.effective_content(), "Visible reply");
-    }
-}
+#[path = "lm_studio_tests.rs"]
+mod tests;

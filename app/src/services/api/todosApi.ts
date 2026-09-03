@@ -29,6 +29,14 @@ const log = debug('todosApi');
  */
 export const USER_TASKS_THREAD_ID = 'user-tasks';
 
+/**
+ * The orchestrator's single **global** Kanban board. Unlike per-thread agent
+ * boards (thread-scoped to-dos live under Tiny Agents instead), this is one
+ * app-wide board the orchestrator owns. A human-readable sentinel like the
+ * others — persisted as its own `agent_task_boards/<hex(id)>.json`.
+ */
+export const ORCHESTRATOR_TASKS_THREAD_ID = 'orchestrator-tasks';
+
 /** Wire shape returned by every `todos_*` handler (`TodosSnapshot`). */
 interface TodosSnapshotWire {
   threadId?: string | null;
@@ -37,16 +45,21 @@ interface TodosSnapshotWire {
 }
 
 /** Fields accepted when creating a card. */
-export interface AddTodoInput {
+interface AddTodoInput {
   threadId: string;
   content: string;
   status?: TaskBoardCardStatus;
   objective?: string | null;
   notes?: string | null;
+  assignedAgent?: string | null;
+  approvalMode?: TaskApprovalMode | null;
+  /** Originating task-source identifiers, stamped onto the promoted card so the
+   *  inbox can detect it was already picked up. */
+  sourceMetadata?: Record<string, unknown> | null;
 }
 
 /** Fields accepted when editing a card. Omitted fields are left unchanged. */
-export interface EditTodoInput {
+interface EditTodoInput {
   threadId: string;
   id: string;
   content?: string;
@@ -114,6 +127,9 @@ export const todosApi = {
         status: input.status,
         objective: input.objective,
         notes: input.notes,
+        assignedAgent: input.assignedAgent,
+        approvalMode: input.approvalMode,
+        sourceMetadata: input.sourceMetadata,
       }),
     });
     return snapshotToBoard(snap, input.threadId);
@@ -153,6 +169,21 @@ export const todosApi = {
     const snap = await callCoreRpc<TodosSnapshotWire>({
       method: 'openhuman.todos_update_status',
       params: { thread_id: threadId, id, status },
+    });
+    return snapshotToBoard(snap, threadId);
+  },
+
+  /** Link a card to its agent session's conversation thread (drives the board
+   *  "View session" jump). Pass `null` to clear the link. */
+  setSessionThread: async (
+    threadId: string,
+    id: string,
+    sessionThreadId: string | null
+  ): Promise<TaskBoard> => {
+    log('setSessionThread threadId=%s id=%s sessionThreadId=%s', threadId, id, sessionThreadId);
+    const snap = await callCoreRpc<TodosSnapshotWire>({
+      method: 'openhuman.todos_set_session_thread',
+      params: { thread_id: threadId, id, sessionThreadId },
     });
     return snapshotToBoard(snap, threadId);
   },

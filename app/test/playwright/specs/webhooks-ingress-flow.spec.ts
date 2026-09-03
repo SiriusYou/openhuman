@@ -10,12 +10,7 @@ test.describe('Webhooks ingress surface (stub-level)', () => {
 
   test('reaches the app shell after onboarding', async ({ page }) => {
     await waitForAppReady(page);
-    const text = await page.locator('#root').innerText();
-    expect(
-      ['Ask your assistant anything', 'Your device is connected'].some(marker =>
-        text.includes(marker)
-      )
-    ).toBe(true);
+    await expect(page.getByTestId('chat-message-input')).toBeVisible();
   });
 
   test('exposes the stub webhook RPC surface with stable result and log shapes', async () => {
@@ -59,21 +54,5 @@ test.describe('Webhooks ingress surface (stub-level)', () => {
       // Router initialization is socket-backed and can be absent in this lane.
       // The load-bearing part is that the read-only surface above remains stable.
     }
-  });
-
-  test('renders the webhooks debug panel empty states', async ({ page }) => {
-    await page.goto('/#/settings/webhooks-debug');
-    await waitForAppReady(page);
-
-    await expect
-      .poll(async () => page.evaluate(() => window.location.hash), { timeout: 10_000 })
-      .toContain('/settings/webhooks-debug');
-
-    const text = await page.locator('#root').innerText();
-    expect(text.includes('Webhooks Debug')).toBe(true);
-    expect(text.includes('Registered Webhooks')).toBe(true);
-    expect(text.includes('Captured Requests')).toBe(true);
-    expect(text.includes('No active registrations.')).toBe(true);
-    expect(text.includes('No webhook requests captured yet.')).toBe(true);
   });
 });

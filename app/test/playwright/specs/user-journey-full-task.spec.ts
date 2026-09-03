@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test';
 
+import { agentMessageText } from '../helpers/chat-locators';
 import {
   bootAuthenticatedPage,
   callCoreRpc,
@@ -33,7 +34,7 @@ async function openChat(page: Page): Promise<void> {
   await page.goto('/#/chat');
   await waitForAppReady(page);
   await dismissWalkthroughIfPresent(page);
-  await expect(page.getByTestId('send-message-button')).toBeVisible();
+  await expect(page.getByTestId('chat-message-input')).toBeVisible();
 }
 
 async function selectedThreadId(page: Page): Promise<string | null> {
@@ -101,7 +102,7 @@ async function waitForSocketConnected(page: Page): Promise<void> {
 async function sendMessage(page: Page, prompt: string): Promise<void> {
   await waitForSocketConnected(page);
   await dismissWalkthroughIfPresent(page);
-  await page.getByPlaceholder('Type a message...').fill(prompt);
+  await page.getByTestId('chat-message-input').fill(prompt);
   await dismissWalkthroughIfPresent(page);
   await expect(page.getByTestId('send-message-button')).toBeEnabled();
   await page.getByTestId('send-message-button').click();
@@ -135,16 +136,23 @@ test.describe('User journey - full research task', () => {
     expect(typeof threadId).toBe('string');
 
     await sendMessage(page, PROMPT);
-    await expect(page.getByText(CANARY_FINAL)).toBeVisible({ timeout: 45_000 });
+    await expect(agentMessageText(page, CANARY_FINAL)).toBeVisible({ timeout: 45_000 });
 
+    // Navigate away and back to confirm the thread (and its messages) persist.
+    // Home folded into the unified chat surface, so /home now redirects to
+    // /chat — the landing hash settles on /chat.
     await page.goto('/#/home');
     await waitForAppReady(page);
     await expect
       .poll(async () => page.evaluate(() => window.location.hash), { timeout: 10_000 })
-      .toContain('/home');
+      .toContain('/chat');
 
+    // The chat-as-home surface lands on its "new window" hero rather than
+    // re-opening the last thread, so re-select the thread from the sidebar to
+    // confirm its messages persisted across navigation.
     await page.goto('/#/chat');
     await waitForAppReady(page);
-    await expect(page.getByText(CANARY_FINAL)).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId(`thread-row-${threadId}`).click({ force: true });
+    await expect(agentMessageText(page, CANARY_FINAL)).toBeVisible({ timeout: 15_000 });
   });
 });

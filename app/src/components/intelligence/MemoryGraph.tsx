@@ -30,6 +30,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
   useCallback,
+  useEffect,
   useMemo,
   useReducer,
   useRef,
@@ -37,15 +38,19 @@ import {
 } from 'react';
 
 import { useT } from '../../lib/i18n/I18nContext';
+import { useAppSelector } from '../../store/hooks';
+import { resolveTheme, type ThemeMode } from '../../store/themeSlice';
 import { type GraphEdge, type GraphMode, type GraphNode } from '../../utils/tauriCommands';
 import { openWorkspacePath, previewWorkspaceText } from '../../utils/tauriCommands/workspacePaths';
+import Button from '../ui/Button';
 import {
   CONTACT_COLOR,
   LEAF_COLOR,
   levelColor,
   nodeColor,
   nodeRadius,
-  supportsWebGL,
+  type SimTuning,
+  SOURCE_COLOR,
   VIEWPORT_H,
   VIEWPORT_W,
   ZOOM_MAX,
@@ -53,9 +58,21 @@ import {
 } from './memoryGraphLayout';
 import { summaryWorkspacePath } from './memoryWorkspacePaths';
 import { PixiGraph } from './PixiGraph';
+import { seedSvgLayout } from './seedSvgLayout';
+import { useSvgForceLayout, WORKER_SUPPORTED } from './useSvgForceLayout';
 
-/** Detected once — WebGL availability decides Pixi vs the SVG fallback. */
-const HAS_WEBGL = supportsWebGL();
+/** Use WebGL (Pixi) in production; fall back to SVG in test (jsdom). */
+const HAS_WEBGL =
+  typeof document !== 'undefined' &&
+  typeof document.createElement === 'function' &&
+  (() => {
+    try {
+      const c = document.createElement('canvas');
+      return !!(c.getContext('webgl2') || c.getContext('webgl'));
+    } catch {
+      return false;
+    }
+  })();
 
 interface SimNode extends GraphNode {
   x: number;
@@ -63,6 +80,21 @@ interface SimNode extends GraphNode {
   vx: number;
   vy: number;
 }
+
+interface SimState {
+  sim: SimNode[];
+  edges: Array<[number, number]>;
+  radii: number[];
+  alpha: number;
+}
+
+// Stable empties so the worker-layout effect's deps don't change every render
+// when there's no graph yet.
+const NO_NODES: SimNode[] = [];
+const NO_RADII: number[] = [];
+const NO_EDGES: Array<[number, number]> = [];
+// Stable centre the SVG worker layout settles around (matches the viewBox).
+const SVG_CENTER: readonly [number, number] = [VIEWPORT_W / 2, VIEWPORT_H / 2];
 
 interface MemoryGraphProps {
   /** Pre-fetched summary / chunk / contact nodes. */
@@ -73,6 +105,29 @@ interface MemoryGraphProps {
   mode: GraphMode;
   /** Optional override for the empty-state message. */
   emptyHint?: string;
+  /** Optional label for the central hub node (WebGL path). Defaults to "Memory". */
+  rootLabel?: string;
+  /** Fill the parent's height (full-screen) instead of the fixed 640px card. */
+  fill?: boolean;
+  /** Initial auto-fit zoom. Lower = more zoomed out. Defaults to 0.17. */
+  fitScale?: number;
+  /** Fit the whole graph tightly to the viewport instead of a fixed zoom. */
+  fitToBounds?: boolean;
+  /** Draw an always-on text label under each node. */
+  showLabels?: boolean;
+  /**
+   * Optional force-simulation tuning applied on the WebGL (Pixi) path. Every
+   * field defaults to identity, so omitting it preserves the standard layout;
+   * the orchestration scale showcase passes higher repulsion / link length for
+   * a wide fan-out.
+   */
+  tuning?: SimTuning;
+  /**
+   * Fired exactly once when the graph's force layout first settles (SVG
+   * worker `end`, the synchronous relax fallback, or the Pixi sim cooling).
+   * A loading overlay (e.g. the Brain page) waits on this to reveal the graph.
+   */
+  onReady?: () => void;
 }
 
 interface SummaryPreviewState {
@@ -158,9 +213,36 @@ function relaxLayout(nodes: SimNode[], edges: Array<[number, number]>, iteration
   }
 }
 
-export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps) {
+export function MemoryGraph({
+  nodes,
+  edges,
+  mode,
+  emptyHint,
+  rootLabel,
+  fill,
+  fitScale,
+  fitToBounds,
+  showLabels,
+  tuning,
+  onReady,
+}: MemoryGraphProps) {
   const { t } = useT();
+  const themeMode = useAppSelector(state => state.theme?.mode ?? 'system') as ThemeMode;
+  const isDark = resolveTheme(themeMode) === 'dark';
   const [hovered, setHovered] = useState<GraphNode | null>(null);
+
+  // Fire `onReady` at most once across this component's lifetime. The latest
+  // callback is held in a ref so `fireReady` stays stable (the SVG layout hook
+  // depends on a stable `onSettled`, and the guard prevents refires on reheat).
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  const readyFiredRef = useRef(false);
+  const fireReady = useCallback(() => {
+    if (readyFiredRef.current) return;
+    readyFiredRef.current = true;
+    console.debug('[memory-graph] layout settled → onReady');
+    onReadyRef.current?.();
+  }, []);
   const [preview, setPreview] = useState<SummaryPreviewState | null>(null);
   const [previewingPath, setPreviewingPath] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -186,6 +268,18 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
   // True once the pointer moved during the current gesture — guards the
   // node click so a drag doesn't also open the summary file.
   const movedRef = useRef(false);
+  // Halts the SVG layout worker once the user grabs a node/background, so its
+  // streamed positions stop fighting the manual drag. Set after the hook below.
+  const stopLayoutRef = useRef<() => void>(() => {});
+  // Set once the user grabs the camera, so the settle-time auto-fit doesn't
+  // yank the view out from under them.
+  const userInteractedRef = useRef(false);
+  // Re-frame the SVG graph from "Reset view" (set after fitToView below).
+  const fitRef = useRef<() => void>(() => {});
+  // Holds the current sim across renders; during the next build it still points
+  // at the OUTGOING sim, whose nodes carry the latest live coordinates (the
+  // worker / a drag mutate them in place) — read for position carry-over.
+  const liveSimRef = useRef<SimState | null>(null);
 
   const clientToGraph = useCallback(
     (clientX: number, clientY: number) => {
@@ -226,6 +320,12 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
     (e: ReactPointerEvent) => {
       const d = dragRef.current;
       if (!d) return;
+      // On the first real movement (not a plain click), hand the camera to the
+      // user: freeze the worker layout and suppress the settle-time auto-fit.
+      if (!movedRef.current) {
+        stopLayoutRef.current();
+        userInteractedRef.current = true;
+      }
       if (d.kind === 'node') {
         const g = clientToGraph(e.clientX, e.clientY);
         if (!g) return;
@@ -251,6 +351,7 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
   const onWheelZoom = useCallback((e: ReactWheelEvent) => {
     const vb = clientToViewBox(svgRef.current, e.clientX, e.clientY);
     if (!vb) return;
+    userInteractedRef.current = true;
     setView(v => {
       const factor = Math.exp(-e.deltaY * 0.0015);
       const scale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v.scale * factor));
@@ -262,9 +363,10 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
   }, []);
 
   const resetView = useCallback(() => {
-    // SVG fallback resets its transform; the Pixi canvas listens on the
-    // reset signal. Both are bumped so the button works in either path.
-    setView({ tx: 0, ty: 0, scale: 1 });
+    // SVG re-frames the whole graph; the Pixi canvas listens on the reset
+    // signal. Both are triggered so the button works in either path.
+    userInteractedRef.current = false;
+    fitRef.current();
     bumpReset();
   }, []);
 
@@ -299,50 +401,198 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
     }
   }, []);
 
-  // Build edges and (for the SVG fallback) seed positions + relax. The
-  // O(n²) relax only runs when WebGL is unavailable; the Pixi path runs
-  // its own d3-force simulation instead.
-  const sim = useMemo(() => {
+  // Build edges + seed positions, carrying over the last positions of any
+  // surviving node so a live data update doesn't reshuffle the whole graph
+  // (seedSvgLayout). The O(n²) relax only runs as the no-worker fallback (test
+  // env); the worker settles otherwise; the Pixi path runs its own sim.
+  const sim = useMemo<SimState | null>(() => {
     if (!nodes || nodes.length === 0) return null;
-    const idIndex = new Map<string, number>();
-    nodes.forEach((n, i) => idIndex.set(n.id, i));
-    const sim: SimNode[] = nodes.map((n, i) => {
-      const angle = (i / nodes.length) * Math.PI * 2;
-      const r = 200 + (i % 7) * 12;
-      return {
-        ...n,
-        x: VIEWPORT_W / 2 + Math.cos(angle) * r,
-        y: VIEWPORT_H / 2 + Math.sin(angle) * r,
-        vx: 0,
-        vy: 0,
-      };
-    });
-    const edgeIndices: Array<[number, number]> = [];
-    if (mode === 'tree') {
-      // Tree mode: each summary's parent_id is the edge.
-      for (const n of nodes) {
-        if (!n.parent_id) continue;
-        const childIdx = idIndex.get(n.id);
-        const parentIdx = idIndex.get(n.parent_id);
-        if (childIdx == null || parentIdx == null) continue;
-        edgeIndices.push([childIdx, parentIdx]);
+    // Snapshot the OUTGOING graph's live coordinates so survivors carry over
+    // from where they actually are now — not a stale init/settle snapshot —
+    // even mid-settle or after a drag.
+    const prev = liveSimRef.current;
+    const prevPos = new Map<string, { x: number; y: number }>();
+    if (prev) for (const n of prev.sim) prevPos.set(n.id, { x: n.x, y: n.y });
+    const seed = seedSvgLayout(nodes, edges, mode, prevPos);
+    const sim: SimNode[] = nodes.map((n, i) => ({
+      ...n,
+      x: seed.positions[i].x,
+      y: seed.positions[i].y,
+      vx: 0,
+      vy: 0,
+    }));
+    const radii = sim.map(n => nodeRadius(n));
+    if (!useWebGL && !WORKER_SUPPORTED) relaxLayout(sim, seed.edges);
+    return { sim, edges: seed.edges, radii, alpha: seed.reheatAlpha };
+  }, [nodes, edges, mode, useWebGL]);
+  // Becomes the "previous" sim on the next build (above).
+  liveSimRef.current = sim;
+
+  // Element refs for imperative position updates: while the worker streams
+  // positions we write cx/cy (and line endpoints) straight to the DOM instead
+  // of re-rendering up to 10k elements through React every frame.
+  const circleEls = useRef<(SVGCircleElement | null)[]>([]);
+  const lineEls = useRef<(SVGLineElement | null)[]>([]);
+  const textEls = useRef<(SVGTextElement | null)[]>([]);
+
+  // Progressive DOM mount for the SVG path: reveal nodes in per-frame batches
+  // so a large graph never blocks building thousands of elements in one commit.
+  // WebGL draws to one canvas, so it shows everything at once.
+  const FIRST_BATCH = 800;
+  const [svgVisible, setSvgVisible] = useState(() =>
+    sim ? Math.min(sim.sim.length, FIRST_BATCH) : 0
+  );
+  // Reset the reveal window + element refs during render when the graph data
+  // changes (the recommended alternative to setState-in-effect).
+  const simIdRef = useRef(sim);
+  if (simIdRef.current !== sim) {
+    simIdRef.current = sim;
+    circleEls.current = [];
+    lineEls.current = [];
+    textEls.current = [];
+    setSvgVisible(sim ? Math.min(sim.sim.length, FIRST_BATCH) : 0);
+  }
+
+  // Latest visible count read by the stable imperative applier without
+  // re-subscribing the worker every render.
+  const latestVisibleRef = useRef(svgVisible);
+  latestVisibleRef.current = svgVisible;
+
+  // Write current positions straight to the mounted SVG elements.
+  const applyPositions = useCallback(() => {
+    const s = liveSimRef.current;
+    if (!s) return;
+    const vis = latestVisibleRef.current;
+    const ns = s.sim;
+    for (let i = 0; i < vis && i < ns.length; i++) {
+      const el = circleEls.current[i];
+      if (el) {
+        el.setAttribute('cx', String(ns[i].x));
+        el.setAttribute('cy', String(ns[i].y));
       }
-    } else {
-      for (const e of edges) {
-        const a = idIndex.get(e.from);
-        const b = idIndex.get(e.to);
-        if (a == null || b == null) continue;
-        edgeIndices.push([a, b]);
+      const tel = textEls.current[i];
+      if (tel) {
+        tel.setAttribute('x', String(ns[i].x));
+        tel.setAttribute('y', String(ns[i].y + nodeRadius(ns[i]) + 12));
       }
     }
-    if (!useWebGL) relaxLayout(sim, edgeIndices);
-    return { sim, edges: edgeIndices };
-  }, [nodes, edges, mode, useWebGL]);
+    for (let e = 0; e < s.edges.length; e++) {
+      const [ai, bi] = s.edges[e];
+      if (ai >= vis || bi >= vis) continue;
+      const el = lineEls.current[e];
+      if (el) {
+        el.setAttribute('x1', String(ns[ai].x));
+        el.setAttribute('y1', String(ns[ai].y));
+        el.setAttribute('x2', String(ns[bi].x));
+        el.setAttribute('y2', String(ns[bi].y));
+      }
+    }
+  }, []);
+
+  // Frame the whole cloud in the viewport. d3-force spreads a large graph far
+  // past the viewBox, so without this most nodes sit off-screen. Committed to
+  // `view` state (single source) so pan/zoom keep working; called once the
+  // worker settles, unless the user already grabbed the camera.
+  const fitToView = useCallback(() => {
+    const s = liveSimRef.current;
+    if (!s || userInteractedRef.current) return;
+    const ns = s.sim;
+    if (ns.length === 0) return;
+    // Center on the root node at a fixed comfortable zoom.
+    if (fitToBounds) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const n of ns) {
+        const r = nodeRadius(n) + 8;
+        minX = Math.min(minX, n.x - r);
+        minY = Math.min(minY, n.y - r);
+        maxX = Math.max(maxX, n.x + r);
+        maxY = Math.max(maxY, n.y + r);
+      }
+      const w = Math.max(1, maxX - minX);
+      const h = Math.max(1, maxY - minY);
+      const scale = Math.min(
+        ZOOM_MAX,
+        Math.max(ZOOM_MIN, Math.min(VIEWPORT_W / w, VIEWPORT_H / h) * 0.92)
+      );
+      const bx = (minX + maxX) / 2;
+      const by = (minY + maxY) / 2;
+      setView({ scale, tx: VIEWPORT_W / 2 - bx * scale, ty: VIEWPORT_H / 2 - by * scale });
+      return;
+    }
+    const root = ns.find(n => n.kind === 'root');
+    const cx = root?.x ?? 0;
+    const cy = root?.y ?? 0;
+    const scale = fitScale ?? 0.17;
+    setView({ scale, tx: VIEWPORT_W / 2 - cx * scale, ty: VIEWPORT_H / 2 - cy * scale });
+  }, [fitScale, fitToBounds]);
+  fitRef.current = fitToView;
+
+  // Coalesce worker ticks to one DOM write per frame.
+  const applyPendingRef = useRef(false);
+  const scheduleApply = useCallback(() => {
+    if (applyPendingRef.current) return;
+    applyPendingRef.current = true;
+    const run = () => {
+      applyPendingRef.current = false;
+      applyPositions();
+    };
+    if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(run);
+    else run();
+  }, [applyPositions]);
+
+  // Frame the graph then signal readiness once the worker layout cools.
+  const onSvgSettled = useCallback(() => {
+    fitToView();
+    fireReady();
+  }, [fitToView, fireReady]);
+
+  // SVG fallback layout runs in a worker (off the main thread); positions
+  // stream back and are applied imperatively. No-op on WebGL and where workers
+  // are unavailable (the synchronous relaxLayout above covers that case).
+  const svgLayout = useSvgForceLayout(
+    !useWebGL && !!sim,
+    sim?.sim ?? NO_NODES,
+    sim?.radii ?? NO_RADII,
+    sim?.edges ?? NO_EDGES,
+    SVG_CENTER,
+    sim?.alpha ?? 1,
+    scheduleApply,
+    onSvgSettled
+  );
+  stopLayoutRef.current = svgLayout.stop;
+
+  // Synchronous-layout path (no WebGL, no Worker — e.g. jsdom under test):
+  // `relaxLayout` already ran inside the `sim` memo, so the graph is laid out
+  // as soon as `sim` exists. Signal readiness on the next tick.
+  useEffect(() => {
+    if (useWebGL || WORKER_SUPPORTED || !sim) return;
+    fireReady();
+  }, [useWebGL, sim, fireReady]);
+
+  // Ramp the rest in per-frame batches (setState only inside the rAF callback).
+  useEffect(() => {
+    if (useWebGL || !sim) return;
+    const total = sim.sim.length;
+    if (total <= FIRST_BATCH || typeof window.requestAnimationFrame !== 'function') return;
+    let raf = 0;
+    const step = () => {
+      setSvgVisible(c => {
+        const next = Math.min(total, c + 1200);
+        if (next < total) raf = window.requestAnimationFrame(step);
+        return next;
+      });
+    };
+    raf = window.requestAnimationFrame(step);
+    return () => window.cancelAnimationFrame(raf);
+  }, [useWebGL, sim]);
 
   if (nodes.length === 0) {
     return (
       <div
-        className="flex h-[640px] items-center justify-center rounded-lg border border-stone-100 dark:border-neutral-800 bg-stone-50/40 text-sm text-stone-500 dark:text-neutral-400"
+        className="flex h-[640px] items-center justify-center rounded-lg border border-line-subtle bg-surface-muted/40 text-sm text-content-muted"
         data-testid="memory-graph-empty">
         {emptyHint ?? (mode === 'contacts' ? t('graph.noContactMentions') : t('graph.noMemory'))}
       </div>
@@ -357,6 +607,9 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
   const legend =
     mode === 'tree'
       ? [
+          ...(nodes.some(n => n.kind === 'source')
+            ? [{ label: t('graph.source', 'Source'), color: SOURCE_COLOR }]
+            : []),
           ...Array.from(new Set(nodes.filter(n => n.kind === 'summary').map(n => n.level ?? 0)))
             .sort((a, b) => a - b)
             .map(lvl => ({ label: `L${lvl}`, color: levelColor(lvl) })),
@@ -372,14 +625,16 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
 
   return (
     <div
-      className="memory-graph rounded-lg border border-stone-100 dark:border-neutral-800 bg-white dark:bg-neutral-900"
+      className={`memory-graph rounded-lg border border-line-subtle bg-surface ${
+        fill ? 'flex h-full flex-col overflow-hidden' : ''
+      }`}
       onMouseLeave={() => setHovered(null)}>
-      <div className="flex items-center justify-between gap-4 border-b border-stone-100 dark:border-neutral-800 px-4 py-2">
-        <div className="flex items-center gap-3 text-xs text-stone-500 dark:text-neutral-400">
+      <div className="flex flex-none items-center justify-between gap-4 border-b border-line-subtle px-4 py-2">
+        <div className="flex items-center gap-3 text-xs text-content-muted">
           <span>
             {nodes.length} {t('graph.nodes')}
           </span>
-          <span className="text-stone-300 dark:text-neutral-600">·</span>
+          <span className="text-content-faint">·</span>
           <span>
             {sim.edges.length}{' '}
             {mode === 'tree' ? t('graph.parentChild') : t('graph.documentContact')}{' '}
@@ -390,7 +645,7 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
           {legend.map(item => (
             <span
               key={item.label}
-              className="flex items-center gap-1.5 text-xs text-stone-600 dark:text-neutral-300">
+              className="flex items-center gap-1.5 text-xs text-content-secondary">
               <span
                 className="inline-block h-2.5 w-2.5 rounded-full"
                 style={{ backgroundColor: item.color }}
@@ -398,13 +653,14 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
               {item.label}
             </span>
           ))}
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="xs"
             onClick={resetView}
             data-testid="memory-graph-reset-view"
-            className="rounded-md border border-stone-200 bg-white px-2 py-1 text-[11px] font-medium text-stone-600 shadow-sm hover:bg-stone-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800">
+            className="text-[11px] shadow-xs">
             {t('graph.resetView')}
-          </button>
+          </Button>
         </div>
       </div>
       {useWebGL ? (
@@ -412,6 +668,12 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
           nodes={nodes}
           edges={edges}
           mode={mode}
+          rootLabel={rootLabel}
+          fill={fill}
+          fitScale={fitScale}
+          fitToBounds={fitToBounds}
+          showLabels={showLabels}
+          tuning={tuning}
           dark={
             typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
           }
@@ -421,14 +683,15 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
             if (n.kind === 'summary') void openSummary(n);
           }}
           onError={() => setPixiFailed(true)}
+          onReady={fireReady}
         />
       ) : (
         <svg
           ref={svgRef}
           viewBox={`0 0 ${VIEWPORT_W} ${VIEWPORT_H}`}
-          className="block w-full touch-none select-none"
+          className={`block w-full touch-none select-none ${fill ? 'min-h-0 flex-1' : ''}`}
           style={{
-            height: 'min(640px, calc(100vh - 22rem))',
+            height: fill ? '100%' : 'min(640px, calc(100vh - 22rem))',
             cursor: grabbing ? 'grabbing' : 'grab',
           }}
           onPointerDown={onBackgroundPointerDown}
@@ -439,15 +702,31 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
           data-testid="memory-graph-svg">
           {/* Pan / zoom group — drag the background to pan, scroll to zoom. */}
           <g transform={`translate(${view.tx} ${view.ty}) scale(${view.scale})`}>
-            <g stroke="#cbd5e1" strokeWidth={0.6} opacity={0.7}>
+            <g
+              stroke={isDark ? '#cbd5e1' : '#475569'}
+              strokeWidth={isDark ? 0.6 : 1.2}
+              opacity={isDark ? 0.7 : 0.7}>
               {sim.edges.map(([ai, bi], idx) => {
+                // Only draw edges whose endpoints are both mounted yet.
+                if (ai >= svgVisible || bi >= svgVisible) return null;
                 const a = sim.sim[ai];
                 const b = sim.sim[bi];
-                return <line key={idx} x1={a.x} y1={a.y} x2={b.x} y2={b.y} />;
+                return (
+                  <line
+                    key={idx}
+                    ref={el => {
+                      lineEls.current[idx] = el;
+                    }}
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                  />
+                );
               })}
             </g>
             <g>
-              {sim.sim.map(n => {
+              {sim.sim.slice(0, svgVisible).map((n, i) => {
                 const r = nodeRadius(n);
                 const fill = nodeColor(n);
                 const isHover = hovered?.id === n.id;
@@ -458,11 +737,16 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
                 return (
                   <circle
                     key={n.id}
+                    ref={el => {
+                      circleEls.current[i] = el;
+                    }}
                     cx={n.x}
                     cy={n.y}
                     r={isHover ? r + 2 : r}
                     fill={fill}
-                    stroke={isHover ? '#0f172a' : '#ffffff'}
+                    stroke={
+                      isHover ? (isDark ? '#0f172a' : '#1e293b') : isDark ? '#ffffff' : '#e2e8f0'
+                    }
                     strokeWidth={isHover ? 1.4 : 0.8}
                     style={{ cursor: grabbing ? 'grabbing' : 'pointer', filter: glow }}
                     onPointerDown={e => onNodePointerDown(e, n)}
@@ -479,39 +763,71 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
                 );
               })}
             </g>
+            {showLabels && (
+              <g>
+                {sim.sim.slice(0, svgVisible).map((n, i) => {
+                  const label = (n.label ?? '').trim();
+                  const text = label.length > 22 ? `${label.slice(0, 21)}…` : label;
+                  return (
+                    <text
+                      key={n.id}
+                      ref={el => {
+                        textEls.current[i] = el;
+                      }}
+                      x={n.x}
+                      y={n.y + nodeRadius(n) + 12}
+                      textAnchor="middle"
+                      fontSize={13}
+                      fill={isDark ? '#e2e8f0' : '#334155'}
+                      style={{ pointerEvents: 'none', userSelect: 'none' }}>
+                      {text}
+                    </text>
+                  );
+                })}
+              </g>
+            )}
           </g>
         </svg>
       )}
       {hovered && (
         <div
-          className="border-t border-stone-100 dark:border-neutral-800 bg-stone-50/70 dark:bg-neutral-900/70 px-4 py-2 text-xs text-stone-700 dark:text-neutral-200"
+          className="border-t border-line-subtle bg-surface-muted/70 dark:bg-surface/70 px-4 py-2 text-xs text-content-secondary"
           data-testid="memory-graph-tooltip">
-          {hovered.kind === 'summary' ? (
+          {hovered.kind === 'root' ? (
+            <span className="font-medium text-violet-600 dark:text-violet-400">
+              {hovered.label}
+            </span>
+          ) : hovered.kind === 'source' ? (
+            <span className="font-medium text-orange-600 dark:text-orange-400">
+              {hovered.label}
+            </span>
+          ) : hovered.kind === 'summary' ? (
             <>
               <span className="font-mono">L{hovered.level ?? '?'}</span>
-              <span className="text-stone-400 dark:text-neutral-500"> · </span>
+              <span className="text-content-faint"> · </span>
               <span className="capitalize">{hovered.tree_kind}</span>
-              <span className="text-stone-400 dark:text-neutral-500"> · </span>
+              <span className="text-content-faint"> · </span>
               <span>{hovered.tree_scope}</span>
-              <span className="text-stone-400 dark:text-neutral-500"> · </span>
+              <span className="text-content-faint"> · </span>
               <span>
                 {hovered.child_count ?? 0} {t('graph.children')}
               </span>
               {hoveredSummaryPath && (
                 <>
-                  <span className="ml-3 break-all font-mono text-stone-400 dark:text-neutral-500">
+                  <span className="ml-3 break-all font-mono text-content-faint">
                     workspace:{hoveredSummaryPath}
                   </span>
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="xs"
                     data-testid={`memory-graph-preview-${hovered.id}`}
                     disabled={previewingPath === hoveredSummaryPath}
                     onClick={() => void previewSummary(hovered)}
-                    className="ml-3 rounded-md border border-stone-200 bg-white px-2 py-1 text-[11px] font-medium text-stone-700 shadow-sm hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800">
+                    className="ml-3 text-[11px] shadow-xs">
                     {previewingPath === hoveredSummaryPath
                       ? t('migration.previewRunning')
                       : t('migration.previewAction')}
-                  </button>
+                  </Button>
                 </>
               )}
             </>
@@ -520,28 +836,26 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
               <span className="font-medium text-violet-700 dark:text-violet-300">
                 {hovered.label}
               </span>
-              <span className="ml-3 text-stone-400 dark:text-neutral-500">
+              <span className="ml-3 text-content-faint">
                 {t('graph.person')} · canonical id {hovered.id.slice(0, 12)}…
               </span>
             </>
           ) : (
             <>
               <span className="font-medium">{hovered.label || 'chunk'}</span>
-              <span className="ml-3 text-stone-400 dark:text-neutral-500">
-                {t('graph.document')}
-              </span>
+              <span className="ml-3 text-content-faint">{t('graph.document')}</span>
             </>
           )}
         </div>
       )}
       {preview && (
         <div
-          className="border-t border-stone-100 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-950"
+          className="border-t border-line-subtle bg-surface px-4 py-3 dark:bg-surface-canvas"
           data-testid="memory-graph-preview">
-          <div className="mb-2 break-all font-mono text-[11px] text-stone-400 dark:text-neutral-500">
+          <div className="mb-2 break-all font-mono text-[11px] text-content-faint">
             workspace:{preview.path}
           </div>
-          <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-stone-50 p-3 text-xs text-stone-700 dark:bg-neutral-900 dark:text-neutral-200">
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-surface-muted p-3 text-xs text-content-secondary">
             {preview.error || preview.contents}
             {preview.truncated ? '\n…' : ''}
           </pre>
@@ -552,8 +866,7 @@ export function MemoryGraph({ nodes, edges, mode, emptyHint }: MemoryGraphProps)
 }
 
 function tooltipFor(n: GraphNode, t: (key: string, fallback?: string) => string): string {
-  // NOTE: the underlying t() does not interpolate params; placeholders in the
-  // translated string are rendered as-is. Preserved to match prior behavior.
+  if (n.kind === 'root') return n.label;
   if (n.kind === 'summary') return t('graph.tooltip.summary');
   if (n.kind === 'contact') return t('graph.tooltip.contact');
   return n.label || t('graph.document');

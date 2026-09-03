@@ -1,6 +1,6 @@
 import React from 'react';
 
-import { GhostyDefs } from './Defs';
+import { GhostyDefs, type GhostyVariant } from './Defs';
 import { ARM_PATH, BODY_PATH, LEFT_LEG_PATH, RIGHT_LEG_PATH, VIEWBOX } from './paths';
 import { useMascotClock } from './useMascotClock';
 import { visemePath, VISEMES, type VisemeShape } from './visemes';
@@ -22,6 +22,15 @@ import { visemePath, VISEMES, type VisemeShape } from './visemes';
  * - `proud` — task fully completed after meaningful tool/subagent work.
  * - `cautious` — gentle warning; less severe than `concerned`.
  *
+ * Activity poses — driven by what the agent is actively doing:
+ * - `celebrating` — success animation after meaningful work.
+ * - `writing` — agent is editing/creating files.
+ * - `reading` — agent is browsing or reading content.
+ * - `waving` — greeting or hello gesture.
+ * - `dancing` — celebratory/playful animation.
+ * - `drinking_coffee` — agent is processing / long-running task.
+ * - `drinking_boba` — relaxed variant of processing.
+ *
  * `normal` is the legacy alias for `idle` and stays accepted for backwards
  * compatibility with older callers.
  */
@@ -37,9 +46,16 @@ export type MascotFace =
   | 'curious'
   | 'proud'
   | 'cautious'
+  | 'celebrating'
+  | 'writing'
+  | 'reading'
+  | 'waving'
+  | 'dancing'
+  | 'drinking_coffee'
+  | 'drinking_boba'
   | 'normal';
 
-export interface GhostyProps {
+interface GhostyProps {
   bodyColor?: string;
   blushColor?: string;
   arm?: 'wave' | 'none';
@@ -49,6 +65,18 @@ export interface GhostyProps {
   /** Override SVG element size; defaults to filling the parent. */
   size?: number | string;
   idPrefix?: string;
+  /**
+   * Drive the idle bob/blink/wave animation. Defaults to `true`. Pass `false`
+   * for a frozen, zero-RAF pose — cheap enough to render many times or in
+   * compact always-on UI (e.g. the "Talk to Tiny" chip avatar).
+   */
+  animated?: boolean;
+  /**
+   * Body shading style. `'shaded'` (default) is the moody full-size look;
+   * `'flat'` is a bright, body-colour-dominant fill that matches the Rive
+   * mascot for compact avatars.
+   */
+  variant?: GhostyVariant;
 }
 
 interface FacePreset {
@@ -162,6 +190,62 @@ const FACE_PRESETS: Record<Exclude<MascotFace, 'normal'>, FacePreset> = {
     showBrows: true,
     blushOpacity: 0.65,
   },
+  celebrating: {
+    eyeScaleY: 0.4,
+    eyeScaleX: 1.15,
+    browTilt: -8,
+    browDy: -8,
+    showBrows: false,
+    blushOpacity: 1,
+  },
+  writing: {
+    eyeScaleY: 0.75,
+    eyeScaleX: 1,
+    browTilt: -2,
+    browDy: -1,
+    showBrows: false,
+    blushOpacity: 0.7,
+  },
+  reading: {
+    eyeScaleY: 0.85,
+    eyeScaleX: 1.05,
+    browTilt: -6,
+    browDy: -4,
+    showBrows: true,
+    blushOpacity: 0.75,
+  },
+  waving: {
+    eyeScaleY: 0.5,
+    eyeScaleX: 1.1,
+    browTilt: -6,
+    browDy: -6,
+    showBrows: false,
+    blushOpacity: 1,
+  },
+  dancing: {
+    eyeScaleY: 0.4,
+    eyeScaleX: 1.15,
+    browTilt: -8,
+    browDy: -8,
+    showBrows: false,
+    blushOpacity: 1,
+  },
+  drinking_coffee: {
+    eyeScaleY: 0.6,
+    eyeScaleX: 1,
+    browTilt: 0,
+    browDy: 0,
+    showBrows: false,
+    blushOpacity: 0.8,
+  },
+  drinking_boba: {
+    eyeScaleY: 0.55,
+    eyeScaleX: 1.05,
+    browTilt: 0,
+    browDy: 0,
+    showBrows: false,
+    blushOpacity: 0.85,
+  },
 };
 
 function presetFor(face: MascotFace): FacePreset {
@@ -176,8 +260,10 @@ export const Ghosty: React.FC<GhostyProps> = ({
   viseme,
   size = '100%',
   idPrefix = 'mascot',
+  animated = true,
+  variant = 'shaded',
 }) => {
-  const t = useMascotClock();
+  const t = useMascotClock(animated);
   const preset = presetFor(face);
 
   // Gentle bob for the whole character.
@@ -215,7 +301,7 @@ export const Ghosty: React.FC<GhostyProps> = ({
       viewBox={`0 0 ${VIEWBOX} ${VIEWBOX}`}
       style={{ overflow: 'visible', display: 'block' }}
       data-face={face}>
-      <GhostyDefs idPrefix={idPrefix} bodyColor={bodyColor} />
+      <GhostyDefs idPrefix={idPrefix} bodyColor={bodyColor} variant={variant} />
 
       <g
         transform={`translate(500, 970) scale(${1 - bob / 600}, 1)`}
@@ -249,7 +335,17 @@ export const Ghosty: React.FC<GhostyProps> = ({
         <g clipPath={`url(#${id('body-clip')})`}>
           <g filter={`url(#${id('soft')})`}>
             <ellipse cx={340} cy={380} rx={220} ry={160} fill="#ffffff" opacity={0.09} />
-            <ellipse cx={720} cy={800} rx={280} ry={170} fill="#000000" opacity={0.45} />
+            {/* Inner edge shadow. Kept subtle in the flat (bright) variant so the
+                compact mascot stays vivid like the Rive stage; full strength in
+                the moody full-size variant. */}
+            <ellipse
+              cx={720}
+              cy={800}
+              rx={280}
+              ry={170}
+              fill="#000000"
+              opacity={variant === 'flat' ? 0.14 : 0.45}
+            />
           </g>
           <rect x={0} y={0} width={1000} height={1000} filter={`url(#${id('grain')})`} />
         </g>
@@ -375,6 +471,17 @@ function restMouthPath(face: MascotFace): string {
     case 'cautious':
       // Slight downward turn — concern lite.
       return 'M482,600 Q520,568 558,600 Q520,585 482,600 Z';
+    case 'celebrating':
+    case 'dancing':
+      return 'M460,565 Q520,635 580,565 Q520,605 460,565 Z';
+    case 'waving':
+      return 'M460,565 Q520,635 580,565 Q520,605 460,565 Z';
+    case 'writing':
+    case 'reading':
+      return 'M488,585 Q520,595 552,585 Q520,592 488,585 Z';
+    case 'drinking_coffee':
+    case 'drinking_boba':
+      return 'M500,578 Q520,598 540,578 Q520,610 500,578 Z';
     default:
       return visemePath(VISEMES.REST);
   }

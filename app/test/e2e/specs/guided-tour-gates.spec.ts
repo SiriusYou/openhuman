@@ -6,7 +6,7 @@
  *
  *   1. Skills gate: start tour, reach the skills step, confirm skills UI is
  *      present. The tooltip advances via Next — the current implementation
- *      navigates to /skills and highlights the grid via a `before` async hook
+ *      navigates to /connections (was /skills) and highlights the grid via a `before` async hook
  *      in walkthroughSteps.ts. The test polls for the hash change rather than
  *      reading it immediately, because the Joyride `before` hook is awaited
  *      asynchronously and the hash may lag by a render cycle.
@@ -33,7 +33,7 @@
  *      assertion is skipped and documented as GP-2.
  *
  * Product gaps surfaced (skipped):
- *   - GP-1: No skill-connection gate on the /skills tour step.
+ *   - GP-1: No skill-connection gate on the /connections tour step (Phase 2: was /skills).
  *   - GP-2: No step-index persistence — tour always restarts from step 0
  *           on reload rather than resuming at the last incomplete step.
  *   - GP-3: No API to jump to an arbitrary Joyride step — the only way to
@@ -243,8 +243,8 @@ describe('Guided tour — gates and resume behaviour (#1215)', function () {
     //      appears after dispatchWalkthroughRestart() when Joyride has already
     //      completed a prior run on the same mounted instance. Without the
     //      tooltip, advanceTourSteps() finds no primary button and the hash
-    //      stays at #/home instead of advancing to #/skills.
-    it.skip('tour navigates to /skills and highlights skills-grid after 3 Next clicks', async () => {
+    //      stays at #/home instead of advancing to #/connections (Phase 2: was #/skills).
+    it.skip('tour navigates to /connections and highlights skills-grid after 3 Next clicks', async () => {
       // SKIPPED — depends on tooltip appearing at step 1, which is blocked by
       // the same Joyride run-state issue documented above. Re-enable once
       // AppWalkthrough forces a step-index reset on walkthrough:restart.
@@ -253,10 +253,10 @@ describe('Guided tour — gates and resume behaviour (#1215)', function () {
     // GP-1: Skills gate is not implemented in the current walkthrough.
     // The tour advances to the next step regardless of whether the user has
     // actually connected a skill. A real gating implementation would need to
-    // hold the "Next" button disabled until a `openhuman.skills_list` RPC
+    // hold the "Next" button disabled until a `openhuman.workflows_list` RPC
     // call confirms at least one skill is connected, then re-enable it.
     it.skip('GP-1 (NOT IMPLEMENTED): tour Next button is disabled until user connects a skill', async () => {
-      // Expected product behaviour: the Next button on the /skills step
+      // Expected product behaviour: the Next button on the /connections step (Phase 2: was /skills)
       // should remain disabled (`aria-disabled="true"` or `disabled`) while
       // no skill is connected, and become enabled only after the
       // `skills.skill_connected` event fires or a polling RPC returns >= 1
@@ -332,9 +332,20 @@ describe('Guided tour — gates and resume behaviour (#1215)', function () {
       // This is independent of the full tour advance sequence.
       await navigateViaHash('/chat');
 
-      const chatPanel = await browser.execute(() => {
-        return document.querySelector('[data-walkthrough="chat-agent-panel"]') !== null;
-      });
+      // Hash navigation settles before the chat runtime has finished mounting
+      // its composer footer. Poll for the target so this proves the rendered
+      // route contract instead of racing that asynchronous mount in CI.
+      const chatPanel = await browser.waitUntil(
+        async () =>
+          (await browser.execute(
+            () => document.querySelector('[data-walkthrough="chat-agent-panel"]') !== null
+          )) as boolean,
+        {
+          timeout: 15_000,
+          interval: 250,
+          timeoutMsg: 'chat walkthrough target did not mount after navigating to /chat',
+        }
+      );
       // The data-walkthrough attribute must exist for Joyride to focus the step.
       expect(chatPanel).toBe(true);
     });
@@ -391,7 +402,7 @@ describe('Guided tour — gates and resume behaviour (#1215)', function () {
     // when AppWalkthrough mounts with `run=true`.
     it.skip('GP-2 (NOT IMPLEMENTED): tour resumes at last incomplete step after reload', async () => {
       // Expected product behaviour:
-      //   1. User advances to step 4 (/skills).
+      //   1. User advances to step 4 (/connections — was /skills before Phase 2).
       //   2. App is closed (renderer reloaded) before the tour finishes.
       //   3. On reopen the tour shows step 4, not step 0.
       //

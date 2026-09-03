@@ -4,6 +4,9 @@ import { useId, useState } from 'react';
 import { useT } from '../../lib/i18n/I18nContext';
 import { useCoreState } from '../../providers/CoreStateProvider';
 import { clearAllAppData } from '../../utils/clearAllAppData';
+import Button from '../ui/Button';
+import { Spinner } from '../ui/icons';
+import { ModalShell } from '../ui/ModalShell';
 import SettingsMenuItem from './components/SettingsMenuItem';
 
 const warnLog = debug('settings:account:warn');
@@ -65,7 +68,7 @@ const LogoutAndClearActions = () => {
   const showInlineError = error !== null && !showLogoutAndClearModal;
 
   return (
-    <div className="mt-6">
+    <div>
       <SettingsMenuItem
         icon={arrowOutIcon}
         title={t('settings.clearAppData')}
@@ -95,91 +98,55 @@ const LogoutAndClearActions = () => {
       )}
 
       {showLogoutAndClearModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={modalTitleId}
-            className="bg-white dark:bg-neutral-900 rounded-2xl max-w-md w-full p-6 border border-stone-200 dark:border-neutral-800">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-lg bg-amber-100 dark:bg-amber-500/20 flex items-center justify-center">
-                <svg
-                  className="w-5 h-5 text-amber-400"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
-                  />
-                </svg>
-              </div>
-              <div>
-                <h3
-                  id={modalTitleId}
-                  className="text-lg font-semibold text-stone-900 dark:text-neutral-100">
-                  {t('clearData.title')}
-                </h3>
-              </div>
-            </div>
-
-            <div className="mb-6">
-              <div className="text-stone-700 dark:text-neutral-200 text-sm leading-relaxed">
-                <p>{t('clearData.warning')}</p>
-                <ul className="list-disc pl-5 mt-2 space-y-1">
-                  <li>{t('clearData.bulletSettings')}</li>
-                  <li>{t('clearData.bulletCache')}</li>
-                  <li>{t('clearData.bulletWorkspace')}</li>
-                  <li>{t('clearData.bulletOther')}</li>
-                </ul>
-                <p className="mt-3">{t('clearData.irreversible')}</p>
-              </div>
-
-              {error && (
-                <div className="mt-3 p-3 rounded-lg bg-coral-100 dark:bg-coral-500/20 border border-coral-500/20">
-                  <p className="text-coral-600 dark:text-coral-300 text-sm">{error}</p>
-                </div>
-              )}
-            </div>
-
+        <ModalShell
+          title={t('clearData.title')}
+          titleId={modalTitleId}
+          icon={arrowOutIcon}
+          onClose={() => {
+            setShowLogoutAndClearModal(false);
+            setError(null);
+          }}
+          contentClassName="px-6 py-5"
+          closePolicy={isLoading ? { escape: false, backdrop: false, button: false } : undefined}
+          footer={
             <div className="flex gap-3">
-              <button
+              <Button
+                variant="secondary"
                 onClick={() => {
                   setShowLogoutAndClearModal(false);
                   setError(null);
                 }}
                 disabled={isLoading}
-                className="flex-1 px-4 py-2 rounded-lg border border-stone-200 dark:border-neutral-800 text-stone-700 dark:text-neutral-200 hover:bg-stone-100 dark:hover:bg-neutral-800 dark:bg-neutral-800 dark:hover:bg-neutral-800 transition-colors disabled:opacity-50">
+                className="flex-1">
                 {t('common.cancel')}
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="tertiary"
                 onClick={handleLogoutAndClearData}
                 disabled={isLoading}
-                className="flex-1 px-4 py-2 rounded-sm bg-amber-600 hover:bg-amber-500 text-white transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
-                {isLoading && (
-                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                    />
-                  </svg>
-                )}
+                leadingIcon={isLoading ? <Spinner /> : undefined}
+                className="flex-1 bg-amber-600 hover:bg-amber-500 text-content-inverted dark:bg-amber-600 dark:hover:bg-amber-500">
                 {isLoading ? t('clearData.clearing') : t('clearData.title')}
-              </button>
+              </Button>
             </div>
+          }>
+          <div className="text-content-secondary text-sm leading-relaxed">
+            <p>{t('clearData.warning')}</p>
+            <ul className="list-disc pl-5 mt-2 space-y-1">
+              <li>{t('clearData.bulletSettings')}</li>
+              <li>{t('clearData.bulletCache')}</li>
+              <li>{t('clearData.bulletWorkspace')}</li>
+              <li>{t('clearData.bulletOther')}</li>
+            </ul>
+            <p className="mt-3">{t('clearData.irreversible')}</p>
           </div>
-        </div>
+
+          {error && (
+            <div className="mt-3 p-3 rounded-lg bg-coral-100 dark:bg-coral-500/20 border border-coral-500/20">
+              <p className="text-coral-600 dark:text-coral-300 text-sm">{error}</p>
+            </div>
+          )}
+        </ModalShell>
       )}
     </div>
   );

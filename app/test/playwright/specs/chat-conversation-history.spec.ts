@@ -13,6 +13,7 @@ const SECRET_WORD = 'XYZZY';
 const FIRST_PROMPT = `Remember: the secret word is ${SECRET_WORD}`;
 const SECOND_PROMPT = 'What was the secret word?';
 const TURN_TWO_CANARY = `canary-memory-m1n2o3-${SECRET_WORD}`;
+const FIRST_RESPONSE = `Got it! I will remember that the secret word is ${SECRET_WORD}.`;
 
 interface MockRequest {
   method: string;
@@ -47,7 +48,7 @@ async function openChat(page: Page): Promise<void> {
   await page.goto('/#/chat');
   await waitForAppReady(page);
   await dismissWalkthroughIfPresent(page);
-  await expect(page.getByTestId('send-message-button')).toBeVisible();
+  await expect(page.getByTestId('chat-message-input')).toBeVisible();
 }
 
 async function selectedThreadId(page: Page): Promise<string | null> {
@@ -115,7 +116,7 @@ async function waitForSocketConnected(page: Page): Promise<void> {
 async function sendMessage(page: Page, prompt: string): Promise<void> {
   await waitForSocketConnected(page);
   await dismissWalkthroughIfPresent(page);
-  await page.getByPlaceholder('Type a message...').fill(prompt);
+  await page.getByTestId('chat-message-input').fill(prompt);
   await dismissWalkthroughIfPresent(page);
   await expect(page.getByTestId('send-message-button')).toBeEnabled();
   await page.getByTestId('send-message-button').click();
@@ -126,19 +127,17 @@ test.describe('Chat Conversation History', () => {
     page,
   }) => {
     await resetMock();
-    await setMockBehavior(
-      'llmForcedResponses',
-      JSON.stringify([
-        { content: `Got it! I will remember that the secret word is ${SECRET_WORD}.` },
-      ])
-    );
+    await setMockBehavior('llmForcedResponses', JSON.stringify([{ content: FIRST_RESPONSE }]));
     await setMockBehavior('llmStreamChunkDelayMs', '10');
 
     await openChat(page);
     await createNewThread(page);
 
     await sendMessage(page, FIRST_PROMPT);
-    await expect(page.getByText('Got it!')).toBeVisible({ timeout: 20_000 });
+    // The assistant bubble's Tailwind class carries an opacity modifier
+    // (`bg-stone-200/80`), which is a single class token — a plain `.bg-stone-200`
+    // selector can't match it. Assert on the rendered response text instead.
+    await expect(page.getByText(FIRST_RESPONSE).first()).toBeVisible({ timeout: 20_000 });
 
     await resetMock();
     await setMockBehavior(
@@ -153,6 +152,9 @@ test.describe('Chat Conversation History', () => {
     await sendMessage(page, SECOND_PROMPT);
     await expect(page.getByText(TURN_TWO_CANARY)).toBeVisible({ timeout: 30_000 });
 
+    // One chat-completion POST for the second turn: the orchestrator no longer
+    // eagerly spawns the memory agent before the turn (memory is on-demand now),
+    // so there is a single LLM call rather than the prior memory+main pair.
     const llmLog = await expect
       .poll(async () => {
         const log = await requests();

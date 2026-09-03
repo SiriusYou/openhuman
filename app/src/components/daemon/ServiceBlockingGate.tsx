@@ -50,13 +50,13 @@ const ServiceBlockingGate = ({ children }: ServiceBlockingGateProps) => {
   return (
     <>
       {children}
-      <div className="fixed inset-0 z-[10000] bg-stone-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="fixed inset-0 z-10000 bg-stone-950/80 backdrop-blur-sm flex items-center justify-center p-4">
         <div className="w-full max-w-xl rounded-2xl border border-coral-500/30 bg-stone-900 p-6 shadow-2xl">
           <h2 className="text-xl font-semibold text-white">
             {t('daemon.serviceBlockingGate.title')}
           </h2>
-          <p className="mt-2 text-sm text-stone-300">{t('daemon.serviceBlockingGate.body')}</p>
-          <p className="mt-2 text-sm text-stone-400">
+          <p className="mt-2 text-sm text-content-faint">{t('daemon.serviceBlockingGate.body')}</p>
+          <p className="mt-2 text-sm text-content-faint">
             {t('daemon.serviceBlockingGate.downloadHint')}
           </p>
           {restartError && <p className="mt-3 text-sm text-coral-300">{restartError}</p>}
@@ -73,7 +73,7 @@ const ServiceBlockingGate = ({ children }: ServiceBlockingGateProps) => {
             <button
               type="button"
               onClick={handleDownloadLatest}
-              className="rounded-lg bg-coral-500 px-4 py-2 text-sm font-medium text-white hover:bg-coral-600">
+              className="rounded-lg bg-coral-500 px-4 py-2 text-sm font-medium text-content-inverted hover:bg-coral-600">
               {t('daemon.serviceBlockingGate.downloadLatest')}
             </button>
           </div>

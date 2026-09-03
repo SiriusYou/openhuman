@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 
+import { cn } from '../../lib/cn';
 import { useT } from '../../lib/i18n/I18nContext';
+import Button from '../ui/Button';
 
-export interface UnifiedSkillCardProps {
+interface UnifiedSkillCardProps {
   icon: ReactNode;
   title: string;
   description: string;
@@ -22,12 +24,7 @@ export interface UnifiedSkillCardProps {
     disabled?: boolean;
     testId?: string;
   }>;
-  syncProgress?: {
-    active: boolean;
-    percent?: number;
-    message?: string;
-    metricsText?: string;
-  };
+  syncProgress?: { active: boolean; percent?: number; message?: string; metricsText?: string };
   syncSummaryText?: string;
   ctaDisabled?: boolean;
 }
@@ -38,7 +35,7 @@ const CTA_STYLES: Record<string, string> = {
   amber: 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100',
 };
 
-export function UnifiedSkillCard({
+function UnifiedSkillCard({
   icon,
   title,
   description,
@@ -75,30 +72,37 @@ export function UnifiedSkillCard({
   return (
     <div
       data-testid={testId}
-      className="flex items-center gap-3 rounded-xl border border-stone-100 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-3 transition-colors hover:bg-stone-50 dark:hover:bg-neutral-800/60">
-      <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center text-stone-600 dark:text-neutral-300">
+      className="flex items-center gap-3 rounded-xl border border-line-subtle bg-surface p-3 transition-colors hover:bg-surface-hover">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center text-content-secondary">
         {icon}
       </div>
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-semibold text-stone-900 dark:text-neutral-100">{title}</span>
-          {statusDot && <div className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${statusDot}`} />}
+          <span className="truncate text-sm font-semibold text-content">
+            {title}
+          </span>
+          {statusDot && <div className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDot}`} />}
           {statusLabel && (
-            <span className={`flex-shrink-0 text-xs ${statusColor ?? 'text-stone-400 dark:text-neutral-500'}`}>
+            <span
+              className={`shrink-0 text-xs ${statusColor ?? 'text-content-faint'}`}>
               {statusLabel}
             </span>
           )}
         </div>
         {description && (
-          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-stone-600 dark:text-neutral-300">{description}</p>
+          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-content-secondary">
+            {description}
+          </p>
         )}
         {syncSummaryText && !syncProgress?.active && (
-          <p className="mt-1 truncate text-[11px] text-stone-500 dark:text-neutral-400">{syncSummaryText}</p>
+          <p className="mt-1 truncate text-[11px] text-content-muted">
+            {syncSummaryText}
+          </p>
         )}
         {syncProgress?.active && (
           <div className="mt-1.5">
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-stone-100 dark:bg-neutral-800">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-subtle">
               {syncProgress.percent != null ? (
                 <div
                   className="h-full rounded-full bg-primary-400 transition-all duration-300"
@@ -112,7 +116,7 @@ export function UnifiedSkillCard({
               <p className="mt-1 truncate text-[11px] text-primary-600">{syncProgress.message}</p>
             )}
             {syncProgress.metricsText && (
-              <p className="mt-0.5 truncate text-[11px] text-stone-500 dark:text-neutral-400">
+              <p className="mt-0.5 truncate text-[11px] text-content-muted">
                 {syncProgress.metricsText}
               </p>
             )}
@@ -120,29 +124,33 @@ export function UnifiedSkillCard({
         )}
       </div>
 
-      <div className="flex flex-shrink-0 items-center gap-1">
+      <div className="flex shrink-0 items-center gap-1">
         {secondaryActions && secondaryActions.length > 0 && (
           <div className="relative" ref={menuRef}>
-            <button
-              type="button"
+            <Button
+              iconOnly
+              variant="tertiary"
+              size="sm"
               onClick={e => {
                 e.stopPropagation();
                 setMenuOpen(prev => !prev);
               }}
-              className="flex h-7 w-7 items-center justify-center rounded-lg text-stone-400 dark:text-neutral-500 transition-colors hover:bg-stone-100 dark:hover:bg-neutral-800 dark:bg-neutral-800 hover:text-stone-700 dark:hover:text-neutral-200 dark:text-neutral-200"
-              title={t('skills.card.moreActions')}>
+              title={t('skills.card.moreActions')}
+              aria-label={t('skills.card.moreActions')}
+              className="h-7 w-7 text-content-faint">
               <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24">
                 <circle cx="5" cy="12" r="2" />
                 <circle cx="12" cy="12" r="2" />
                 <circle cx="19" cy="12" r="2" />
               </svg>
-            </button>
+            </Button>
             {menuOpen && (
-              <div className="absolute right-0 top-8 z-10 w-36 rounded-xl border border-stone-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 py-1 shadow-md">
+              <div className="absolute right-0 top-8 z-10 w-36 rounded-xl border border-line bg-surface py-1 shadow-md">
                 {secondaryActions.map(action => (
-                  <button
+                  <Button
                     key={action.label}
-                    type="button"
+                    variant="tertiary"
+                    size="sm"
                     data-testid={action.testId}
                     disabled={action.disabled}
                     onClick={e => {
@@ -150,26 +158,31 @@ export function UnifiedSkillCard({
                       setMenuOpen(false);
                       action.onClick();
                     }}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-xs text-stone-700 dark:text-neutral-200 hover:bg-stone-50 dark:hover:bg-neutral-800/60 disabled:opacity-40">
-                    {action.icon}
+                    leadingIcon={action.icon}
+                    className="flex h-auto w-full justify-start rounded-none px-3 py-2 text-xs text-content-secondary hover:bg-surface-hover">
                     {action.label}
-                  </button>
+                  </Button>
                 ))}
               </div>
             )}
           </div>
         )}
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="xs"
           data-testid={ctaTestId}
           disabled={ctaDisabled}
           onClick={e => {
             e.stopPropagation();
             onCtaClick();
           }}
-          className={`flex-shrink-0 rounded-lg border px-3 py-1.5 text-[11px] font-medium transition-colors ${ctaStyle} ${ctaDisabled ? 'cursor-not-allowed opacity-50' : ''}`}>
+          className={cn(
+            'h-auto shrink-0 rounded-lg px-3 py-1.5 text-[11px] font-medium',
+            ctaStyle,
+            ctaDisabled && 'cursor-not-allowed opacity-50'
+          )}>
           {ctaLabel}
-        </button>
+        </Button>
       </div>
     </div>
   );

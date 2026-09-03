@@ -21,6 +21,10 @@
 /// Order doesn't matter for correctness, but is kept alphabetical by legacy
 /// key for easier diffing against the frontend table.
 const LEGACY_ALIASES: &[(&str, &str)] = &[
+    // #3565: old desktop clients called the channels controller with a dotted
+    // namespace/function spelling before the canonical
+    // `openhuman.<namespace>_<function>` form was established.
+    ("channels.list", "openhuman.channels_list"),
     // MCP clients — old method names that appeared in Sentry (CORE-RUST-DR/DS/DT/DV/DW).
     // Callers used dotted namespace, bare `mcp_list`, `mcp_servers_list`, and
     // `mcp_clients_list` before the canonical `mcp_clients_installed_list` was
@@ -28,6 +32,7 @@ const LEGACY_ALIASES: &[(&str, &str)] = &[
     // `mcp_clients_tool_call` that shipped in at least one older bundle.
     // `mcp_clients.list` sorts before all `openhuman.*` entries (m < o).
     ("mcp_clients.list", "openhuman.mcp_clients_installed_list"),
+    ("openhuman.channels.list", "openhuman.channels_list"),
     (
         "openhuman.get_analytics_settings",
         "openhuman.config_get_analytics_settings",
@@ -63,6 +68,16 @@ const LEGACY_ALIASES: &[(&str, &str)] = &[
         "openhuman.tool_registry_call",
         "openhuman.mcp_clients_tool_call",
     ),
+    // #3294: old desktop bundles called the tool-registry diagnostics
+    // controller with the dotted `tool_registry.diagnostics` spelling, before
+    // the canonical `openhuman.<namespace>_<function>` form
+    // (`openhuman.tool_registry_diagnostics`) was established. Without this
+    // alias the Tool Policy diagnostics panel's RPC failed with "unknown
+    // method" on those clients.
+    (
+        "tool_registry.diagnostics",
+        "openhuman.tool_registry_diagnostics",
+    ),
     (
         "openhuman.update_analytics_settings",
         "openhuman.config_update_analytics_settings",
@@ -96,10 +111,6 @@ const LEGACY_ALIASES: &[(&str, &str)] = &[
         "openhuman.config_update_runtime_settings",
     ),
     (
-        "openhuman.update_screen_intelligence_settings",
-        "openhuman.config_update_screen_intelligence_settings",
-    ),
-    (
         "openhuman.workspace_onboarding_flag_exists",
         "openhuman.config_workspace_onboarding_flag_exists",
     ),
@@ -112,6 +123,18 @@ const LEGACY_ALIASES: &[(&str, &str)] = &[
         "openhuman.inference_apply_preset",
     ),
     (
+        "openhuman.local_ai_agent_chat",
+        "openhuman.inference_agent_chat",
+    ),
+    (
+        "openhuman.local_ai_agent_chat_simple",
+        "openhuman.inference_agent_chat_simple",
+    ),
+    (
+        "openhuman.local_ai_assets_status",
+        "openhuman.inference_assets_status",
+    ),
+    (
         "openhuman.local_ai_device_profile",
         "openhuman.inference_device_profile",
     ),
@@ -119,15 +142,55 @@ const LEGACY_ALIASES: &[(&str, &str)] = &[
         "openhuman.local_ai_diagnostics",
         "openhuman.inference_diagnostics",
     ),
+    (
+        "openhuman.local_ai_download_asset",
+        "openhuman.inference_download_asset",
+    ),
+    (
+        "openhuman.local_ai_downloads_progress",
+        "openhuman.inference_downloads_progress",
+    ),
+    (
+        "openhuman.local_ai_install_piper",
+        "openhuman.inference_install_piper",
+    ),
+    (
+        "openhuman.local_ai_piper_install_status",
+        "openhuman.inference_piper_install_status",
+    ),
     // bare `health_snapshot` (no namespace prefix) was used by older clients
     // before the canonical `openhuman.health_snapshot` form was established.
     ("health_snapshot", "openhuman.health_snapshot"),
+    // Dotted / bare health probes from older clients and SDK callers (#3566,
+    // Sentry CORE-2C). The canonical method is `openhuman.health_snapshot`
+    // (namespace `health`, function `snapshot`); these legacy spellings fell
+    // through to the unknown-method path and produced Sentry noise. There is no
+    // distinct `status`/`get` health handler — the snapshot already carries the
+    // health verdict (`healthy`/`degraded`/`critical_unhealthy`), so all four
+    // variants alias to the snapshot.
+    ("health", "openhuman.health_snapshot"),
+    ("health.get", "openhuman.health_snapshot"),
+    ("health.snapshot", "openhuman.health_snapshot"),
+    ("health.status", "openhuman.health_snapshot"),
     // `openhuman.system_info` was used by older clients / SDK callers before
     // the method was namespaced under `health` as `openhuman.health_system_info`.
     // Sentry CORE-RUST-G0 — https://sentry.tinyhumans.ai/organizations/tinyhumans/issues/6340/
     ("openhuman.system_info", "openhuman.health_system_info"),
     ("openhuman.inference_embed", "openhuman.embeddings_embed"),
     ("openhuman.local_ai_presets", "openhuman.inference_presets"),
+    (
+        "openhuman.local_ai_test_connection",
+        "openhuman.inference_test_connection",
+    ),
+    (
+        "openhuman.local_ai_transcribe",
+        "openhuman.inference_transcribe",
+    ),
+    (
+        "openhuman.local_ai_transcribe_bytes",
+        "openhuman.inference_transcribe_bytes",
+    ),
+    ("openhuman.local_ai_tts", "openhuman.inference_tts"),
     (
         "openhuman.providers_list_models",
         "openhuman.inference_list_models",
@@ -274,9 +337,52 @@ mod tests {
             .collect()
     }
 
-    fn routable_rpc_methods_exist(method: &str) -> bool {
-        crate::core::all::schema_for_rpc_method(method).is_some()
-            || registered_http_methods().contains(method)
+    /// Whether `method`'s controller is compiled out of THIS build by a
+    /// default-ON Cargo feature gate.
+    ///
+    /// The frontend RPC catalog and the alias table below are both **data**:
+    /// they are authored against the full (shipped desktop) surface and cannot
+    /// be `#[cfg]`'d per Rust feature — the frontend is built independently of
+    /// the core's feature set, and the shipped app always enables `mcp`. So in
+    /// a slim build they legitimately still name methods whose controllers no
+    /// longer exist. The drift checks below must therefore ignore exactly those
+    /// namespaces, and keep asserting on everything else — otherwise the whole
+    /// drift signal is lost in slim builds (or, worse, someone "fixes" the
+    /// failure by deleting live frontend methods from the catalog).
+    ///
+    /// Mirrors how the agent loader tolerates the orchestrator TOML's dangling
+    /// `mcp_agent` subagent id (#4799). Composed from one predicate per gate so
+    /// each new gate adds a self-contained pair (keeps the attribute-`#[cfg]`
+    /// form the feature-gate smoke lane's coverage guard tracks).
+    fn is_compiled_out_method(method: &str) -> bool {
+        mcp_method_compiled_out(method) || channels_method_compiled_out(method)
+    }
+
+    #[cfg(feature = "mcp")]
+    fn mcp_method_compiled_out(_method: &str) -> bool {
+        false
+    }
+
+    #[cfg(not(feature = "mcp"))]
+    fn mcp_method_compiled_out(method: &str) -> bool {
+        // `mcp` feature OFF ⇒ the `mcp_clients` (dynamic registry) and
+        // `mcp_audit` (write log) controllers are unregistered.
+        method.starts_with("openhuman.mcp_clients_") || method.starts_with("openhuman.mcp_audit_")
+    }
+
+    #[cfg(feature = "channels")]
+    fn channels_method_compiled_out(_method: &str) -> bool {
+        false
+    }
+
+    #[cfg(not(feature = "channels"))]
+    fn channels_method_compiled_out(method: &str) -> bool {
+        // `channels` feature OFF ⇒ the channels + webview_notifications
+        // controllers are unregistered (#4801). NOTE: the in-app web chat
+        // (`openhuman.channel_*`) is NOT gated (core product surface, #5002) —
+        // do not add that prefix here.
+        method.starts_with("openhuman.channels_")
+            || method.starts_with("openhuman.webview_notifications_")
     }
 
     #[test]
@@ -436,6 +542,35 @@ mod tests {
     }
 
     #[test]
+    fn resolve_legacy_rewrites_health_probe_variants() {
+        // #3566 / Sentry CORE-2C: older clients and SDK callers issued the
+        // health snapshot under several legacy spellings (bare `health`, and
+        // the dotted `health.snapshot` / `health.status` / `health.get`).
+        // There is no distinct status/get handler, so every variant must
+        // resolve to the canonical `openhuman.health_snapshot`.
+        for legacy in ["health", "health.get", "health.snapshot", "health.status"] {
+            assert_eq!(
+                resolve_legacy(legacy),
+                "openhuman.health_snapshot",
+                "expected health probe variant {legacy} to resolve to the snapshot method",
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_legacy_bare_health_snapshot_regression() {
+        // Sentry CORE-2C regression guard: bare `health_snapshot` (no
+        // namespace prefix) must keep resolving to the canonical method. The
+        // CORE-2C events were stale (release 0.53.43 predated the alias added
+        // in #2853), but this lock-in proves the alias still fires on the
+        // exact-match resolver so the bare form can never regress.
+        assert_eq!(
+            resolve_legacy("health_snapshot"),
+            "openhuman.health_snapshot",
+        );
+    }
+
+    #[test]
     fn resolve_legacy_rewrites_system_info() {
         // Sentry CORE-RUST-G0: older clients called `openhuman.system_info`
         // before the method was namespaced under `health` as
@@ -480,12 +615,35 @@ mod tests {
     }
 
     #[test]
+    fn resolve_legacy_rewrites_dotted_channel_list_aliases() {
+        assert_eq!(resolve_legacy("channels.list"), "openhuman.channels_list");
+        assert_eq!(
+            resolve_legacy("openhuman.channels.list"),
+            "openhuman.channels_list"
+        );
+    }
+
+    #[test]
+    fn resolve_legacy_rewrites_tool_registry_diagnostics() {
+        // #3294: the dotted `tool_registry.diagnostics` spelling sent by older
+        // desktop bundles must resolve to the canonical controller name so the
+        // Tool Policy diagnostics panel works instead of failing with
+        // "unknown method".
+        assert_eq!(
+            resolve_legacy("tool_registry.diagnostics"),
+            "openhuman.tool_registry_diagnostics"
+        );
+    }
+
+    #[test]
     fn frontend_core_rpc_methods_exist_in_core_schema_registry() {
         let source = read_frontend_rpc_catalog();
         let core_methods = parse_core_rpc_methods(&source);
+        let registered = registered_http_methods();
         let missing: Vec<_> = core_methods
             .values()
-            .filter(|method| !routable_rpc_methods_exist(method))
+            .filter(|method| !registered.contains(*method))
+            .filter(|method| !is_compiled_out_method(method))
             .cloned()
             .collect();
 
@@ -513,9 +671,11 @@ mod tests {
 
     #[test]
     fn legacy_alias_targets_exist_in_core_schema_registry() {
+        let registered = registered_http_methods();
         let missing: Vec<_> = legacy_aliases()
             .iter()
-            .filter(|(_, canonical)| !routable_rpc_methods_exist(canonical))
+            .filter(|(_, canonical)| !registered.contains(*canonical))
+            .filter(|(_, canonical)| !is_compiled_out_method(canonical))
             .map(|(legacy, canonical)| format!("{legacy} -> {canonical}"))
             .collect();
 

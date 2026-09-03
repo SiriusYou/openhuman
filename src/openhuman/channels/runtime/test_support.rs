@@ -1,33 +1,38 @@
 //! Debug-build harnesses for raw integration coverage of the channel runtime.
 
-use super::dispatch::process_channel_message;
 pub use super::dispatch::test_support::{
     build_channel_context_block_for_test, select_acknowledgment_reaction_for_test,
 };
+use super::dispatch::{
+    process_channel_message, process_channel_runtime_message, RuntimeChannelMessage,
+};
 pub use super::startup::test_support::resolve_yuanbao_app_secret_for_test;
-use crate::core::event_bus::{init_global, register_native_global, DEFAULT_CAPACITY};
+use crate::core::bus::BUS;
+use crate::core::events::DomainEvent;
 use crate::openhuman::agent::bus::{AgentTurnRequest, AgentTurnResponse, AGENT_RUN_TURN_METHOD};
+use crate::openhuman::agent::messages::ChatMessage;
 use crate::openhuman::agent::progress::AgentProgress;
 use crate::openhuman::channels::context::{ChannelRuntimeContext, CHANNEL_MESSAGE_TIMEOUT_SECS};
 use crate::openhuman::channels::traits::{ChannelMessage, SendMessage};
 use crate::openhuman::channels::Channel;
-use crate::openhuman::config::{MultimodalConfig, ReliabilityConfig};
-use crate::openhuman::inference::provider::{ChatMessage, Provider, ProviderRuntimeOptions};
-use crate::openhuman::memory::{Memory, MemoryCategory, MemoryEntry, NamespaceSummary, RecallOpts};
+use crate::openhuman::config::{MultimodalConfig, MultimodalFileConfig, ReliabilityConfig};
+use crate::openhuman::inference::provider::ProviderRuntimeOptions;
 use crate::openhuman::tools::{Tool, ToolResult};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tinyinference::model::{ChatModel, ModelRequest, ModelResponse};
+use tinymemory_api::types::{MemoryCategory, MemoryEntry};
 
 #[derive(Debug, Clone)]
 pub struct DispatchHarnessOptions {
     pub channel_name: String,
     pub content: String,
     pub thread_ts: Option<String>,
+    pub inbound_envelope: Option<tinychannels::ChannelInboundEnvelope>,
     pub streaming: bool,
     pub supports_reactions: bool,
     pub response_text: Option<String>,
@@ -44,6 +49,7 @@ impl Default for DispatchHarnessOptions {
             channel_name: "test-channel".to_string(),
             content: "hello".to_string(),
             thread_ts: None,
+            inbound_envelope: None,
             streaming: false,
             supports_reactions: false,
             response_text: Some("dispatch ok".to_string()),
@@ -76,6 +82,7 @@ pub struct DispatchHarnessObservation {
     pub sends: Vec<ObservedSend>,
     pub start_typing_calls: usize,
     pub stop_typing_calls: usize,
+    pub received_event_envelope: Option<tinychannels::ChannelInboundEnvelope>,
     pub handler_history_roles: Vec<String>,
     pub handler_history_text: String,
     pub handler_provider_name: String,
@@ -173,31 +180,37 @@ impl Channel for HarnessChannel {
     }
 }
 
-struct HarnessProvider;
+struct HarnessModel;
 
 #[async_trait]
-impl Provider for HarnessProvider {
-    async fn chat_with_system(
+impl ChatModel<()> for HarnessModel {
+    async fn invoke(
         &self,
-        _system_prompt: Option<&str>,
-        message: &str,
-        _model: &str,
-        _temperature: f64,
-    ) -> Result<String> {
-        Ok(format!("provider echo: {message}"))
+        _state: &(),
+        request: ModelRequest,
+    ) -> tinyinference::Result<ModelResponse> {
+        let message = request
+            .messages
+            .last()
+            .map(|message| message.text())
+            .unwrap_or_default();
+        Ok(ModelResponse::assistant(format!("model echo: {message}")))
     }
 }
 
+/// A provider whose `recall` answers with a fixed entry list regardless of
+/// query.
+///
+/// Deliberately not [`InMemoryProvider`](crate::openhuman::memory::guard::in_memory::InMemoryProvider):
+/// that one substring-matches, and these harness entries are scripted to come
+/// back for whatever the test sends. The point here is the channel pipeline
+/// downstream of recall, not recall itself.
 struct HarnessMemory {
     entries: Vec<MemoryEntry>,
 }
 
 #[async_trait]
-impl Memory for HarnessMemory {
-    fn name(&self) -> &str {
-        "harness-memory"
-    }
-
+impl tinymemory_api::provider::MemoryCore for HarnessMemory {
     async fn store(
         &self,
         _namespace: &str,
@@ -205,21 +218,25 @@ impl Memory for HarnessMemory {
         _content: &str,
         _category: MemoryCategory,
         _session_id: Option<&str>,
-    ) -> Result<()> {
+        _taint: tinymemory_api::types::MemoryTaint,
+    ) -> std::result::Result<(), tinymemory_api::error::MemoryError> {
         Ok(())
     }
 
-    async fn recall(
+    async fn get(
         &self,
-        _query: &str,
-        _limit: usize,
-        _opts: RecallOpts<'_>,
-    ) -> Result<Vec<MemoryEntry>> {
-        Ok(self.entries.clone())
+        _namespace: &str,
+        _key: &str,
+    ) -> std::result::Result<Option<MemoryEntry>, tinymemory_api::error::MemoryError> {
+        Ok(None)
     }
 
-    async fn get(&self, _namespace: &str, _key: &str) -> Result<Option<MemoryEntry>> {
-        Ok(None)
+    async fn forget(
+        &self,
+        _namespace: &str,
+        _key: &str,
+    ) -> std::result::Result<bool, tinymemory_api::error::MemoryError> {
+        Ok(false)
     }
 
     async fn list(
@@ -227,24 +244,73 @@ impl Memory for HarnessMemory {
         _namespace: Option<&str>,
         _category: Option<&MemoryCategory>,
         _session_id: Option<&str>,
-    ) -> Result<Vec<MemoryEntry>> {
+    ) -> std::result::Result<Vec<MemoryEntry>, tinymemory_api::error::MemoryError> {
         Ok(Vec::new())
     }
 
-    async fn forget(&self, _namespace: &str, _key: &str) -> Result<bool> {
-        Ok(false)
-    }
-
-    async fn namespace_summaries(&self) -> Result<Vec<NamespaceSummary>> {
+    async fn namespaces(
+        &self,
+    ) -> std::result::Result<
+        Vec<tinymemory_api::types::NamespaceSummary>,
+        tinymemory_api::error::MemoryError,
+    > {
         Ok(Vec::new())
     }
+}
 
-    async fn count(&self) -> Result<usize> {
-        Ok(self.entries.len())
+#[async_trait]
+impl tinymemory_api::provider::MemoryRecall for HarnessMemory {
+    async fn recall(
+        &self,
+        _query: &str,
+        _limit: usize,
+        _opts: &tinymemory_api::recall::OwnedRecallOpts,
+        _scope: Option<&tinymemory_api::provider::types::SourceScope>,
+    ) -> std::result::Result<Vec<MemoryEntry>, tinymemory_api::error::MemoryError> {
+        Ok(self.entries.clone())
+    }
+}
+
+#[async_trait]
+impl tinymemory_api::provider::MemoryPortability for HarnessMemory {
+    async fn export_page(
+        &self,
+        _cursor: Option<&str>,
+        _limit: usize,
+    ) -> std::result::Result<
+        tinymemory_api::provider::types::ExportPage,
+        tinymemory_api::error::MemoryError,
+    > {
+        Err(tinymemory_api::error::MemoryError::Other(anyhow::anyhow!(
+            "harness memory does not export"
+        )))
     }
 
-    async fn health_check(&self) -> bool {
-        true
+    async fn import_records(
+        &self,
+        _records: Vec<tinymemory_api::provider::types::ExportRecord>,
+    ) -> std::result::Result<
+        tinymemory_api::provider::types::ImportOutcome,
+        tinymemory_api::error::MemoryError,
+    > {
+        Err(tinymemory_api::error::MemoryError::Other(anyhow::anyhow!(
+            "harness memory does not import"
+        )))
+    }
+}
+
+#[async_trait]
+impl tinymemory_api::provider::MemoryProvider for HarnessMemory {
+    fn driver_id(&self) -> &str {
+        "harness-memory"
+    }
+
+    fn capabilities(&self) -> tinymemory_api::capabilities::Capabilities {
+        tinymemory_api::capabilities::Capabilities::mandatory()
+    }
+
+    async fn health(&self) -> tinymemory_api::health::MemoryHealth {
+        tinymemory_api::health::MemoryHealth::Ready
     }
 }
 
@@ -279,21 +345,31 @@ fn memory_entry(input: TestMemoryEntry) -> MemoryEntry {
         timestamp: "now".to_string(),
         session_id: None,
         score: input.score,
+        taint: tinymemory_api::types::MemoryTaint::Internal,
     }
+}
+
+/// Acquire the shared agent-handler guard. Hold the returned guard across any
+/// call that re-registers `AGENT_RUN_TURN_METHOD` (the harness, or
+/// `start_channels`) so concurrent registrations cannot race in the same
+/// process.
+pub async fn lock_agent_handler() -> tokio::sync::MutexGuard<'static, ()> {
+    crate::core::bus_testing::BUS_HANDLER_LOCK.lock().await
 }
 
 pub async fn run_dispatch_harness(options: DispatchHarnessOptions) -> DispatchHarnessObservation {
     // `init_global` + `register_native_global` mutate process-global state, so
-    // concurrent harness runs in the same process can overwrite each other's
-    // handlers mid-run and produce flaky assertions. Serialize the whole run
-    // (handler registration through observation capture) behind a single lock.
-    static HARNESS_GUARD: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    let _harness_guard = HARNESS_GUARD
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
+    // concurrent harness runs (and concurrent `start_channels` calls) in the
+    // same process can overwrite each other's handlers mid-run and produce
+    // flaky assertions. Serialize the whole run (handler registration through
+    // observation capture) behind the shared agent-handler lock.
+    let _harness_guard = lock_agent_handler().await;
 
-    init_global(DEFAULT_CAPACITY);
+    crate::core::bus::init().await.expect("bus init");
+    let mut event_rx = crate::core::bus::BUS
+        .get()
+        .expect("bus initialised")
+        .receiver();
     let _ =
         crate::openhuman::agent::harness::definition::AgentDefinitionRegistry::init_global_builtins(
         );
@@ -310,70 +386,71 @@ pub async fn run_dispatch_harness(options: DispatchHarnessOptions) -> DispatchHa
     let handler_error = options.handler_error.clone();
     let handler_delay = Duration::from_millis(options.handler_delay_ms);
 
-    register_native_global::<AgentTurnRequest, AgentTurnResponse, _, _>(AGENT_RUN_TURN_METHOD, {
-        let handler_roles = Arc::clone(&handler_roles);
-        let handler_text = Arc::clone(&handler_text);
-        let handler_provider = Arc::clone(&handler_provider);
-        let handler_channel = Arc::clone(&handler_channel);
-        let handler_progress = Arc::clone(&handler_progress);
-        move |req| {
+    BUS.native()
+        .register::<AgentTurnRequest, AgentTurnResponse, _, _>(AGENT_RUN_TURN_METHOD, {
             let handler_roles = Arc::clone(&handler_roles);
             let handler_text = Arc::clone(&handler_text);
             let handler_provider = Arc::clone(&handler_provider);
             let handler_channel = Arc::clone(&handler_channel);
             let handler_progress = Arc::clone(&handler_progress);
-            let response_text = response_text.clone();
-            let handler_error = handler_error.clone();
-            async move {
-                *handler_roles.lock().expect("roles lock") =
-                    req.history.iter().map(|msg| msg.role.clone()).collect();
-                *handler_text.lock().expect("text lock") = req
-                    .history
-                    .iter()
-                    .map(|msg| msg.content.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n---\n");
-                *handler_provider.lock().expect("provider lock") = req.provider_name;
-                *handler_channel.lock().expect("channel lock") = req.channel_name;
+            move |req| {
+                let handler_roles = Arc::clone(&handler_roles);
+                let handler_text = Arc::clone(&handler_text);
+                let handler_provider = Arc::clone(&handler_provider);
+                let handler_channel = Arc::clone(&handler_channel);
+                let handler_progress = Arc::clone(&handler_progress);
+                let response_text = response_text.clone();
+                let handler_error = handler_error.clone();
+                async move {
+                    *handler_roles.lock().expect("roles lock") =
+                        req.history.iter().map(|msg| msg.role.clone()).collect();
+                    *handler_text.lock().expect("text lock") = req
+                        .history
+                        .iter()
+                        .map(|msg| msg.content.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n---\n");
+                    *handler_provider.lock().expect("provider lock") = req.provider_name;
+                    *handler_channel.lock().expect("channel lock") = req.channel_name;
 
-                if let Some(tx) = req.on_progress {
-                    handler_progress.fetch_add(1, Ordering::SeqCst);
-                    let _ = tx.send(AgentProgress::TurnStarted).await;
-                    let _ = tx
-                        .send(AgentProgress::ThinkingDelta {
-                            delta: "thinking".to_string(),
-                            iteration: 1,
-                        })
-                        .await;
-                    let _ = tx
-                        .send(AgentProgress::TextDelta {
-                            delta: "partial ".to_string(),
-                            iteration: 1,
-                        })
-                        .await;
-                    let _ = tx
-                        .send(AgentProgress::ToolCallStarted {
-                            call_id: "call-1".to_string(),
-                            tool_name: "harness_tool".to_string(),
-                            arguments: serde_json::json!({}),
-                            iteration: 1,
-                        })
-                        .await;
-                }
+                    if let Some(tx) = req.on_progress {
+                        handler_progress.fetch_add(1, Ordering::SeqCst);
+                        let _ = tx.send(AgentProgress::TurnStarted).await;
+                        let _ = tx
+                            .send(AgentProgress::ThinkingDelta {
+                                delta: "thinking".to_string(),
+                                iteration: 1,
+                            })
+                            .await;
+                        let _ = tx
+                            .send(AgentProgress::TextDelta {
+                                delta: "partial ".to_string(),
+                                iteration: 1,
+                            })
+                            .await;
+                        let _ = tx
+                            .send(AgentProgress::ToolCallStarted {
+                                call_id: "call-1".to_string(),
+                                tool_name: "harness_tool".to_string(),
+                                arguments: serde_json::json!({}),
+                                iteration: 1,
+                                display_label: None,
+                                display_detail: None,
+                            })
+                            .await;
+                    }
 
-                if !handler_delay.is_zero() {
-                    tokio::time::sleep(handler_delay).await;
-                }
+                    if !handler_delay.is_zero() {
+                        tokio::time::sleep(handler_delay).await;
+                    }
 
-                match handler_error {
-                    Some(message) => Err(message),
-                    None => Ok(AgentTurnResponse {
-                        text: response_text,
-                    }),
+                    match handler_error {
+                        Some(message) => Err(message),
+                        None => Ok(AgentTurnResponse::new(response_text)),
+                    }
                 }
             }
-        }
-    });
+        });
 
     let state = Arc::new(HarnessState::default());
     let channel_impl = Arc::new(HarnessChannel {
@@ -386,9 +463,12 @@ pub async fn run_dispatch_harness(options: DispatchHarnessOptions) -> DispatchHa
     let mut channels_by_name = HashMap::new();
     channels_by_name.insert(options.channel_name.clone(), channel);
 
-    let provider: Arc<dyn Provider> = Arc::new(HarnessProvider);
+    let model: Arc<dyn ChatModel<()>> = Arc::new(HarnessModel);
     let mut provider_cache = HashMap::new();
-    provider_cache.insert("harness-provider".to_string(), Arc::clone(&provider));
+    provider_cache.insert(
+        "harness-provider".to_string(),
+        crate::openhuman::agent::tinyagents::TurnModelSource::from_model(Arc::clone(&model)),
+    );
     let conversation_histories = Arc::new(Mutex::new(HashMap::new()));
     let history_key = if options.channel_name == "telegram" {
         format!("{}_alice_reply", options.channel_name)
@@ -408,15 +488,17 @@ pub async fn run_dispatch_harness(options: DispatchHarnessOptions) -> DispatchHa
 
     let ctx = Arc::new(ChannelRuntimeContext {
         channels_by_name: Arc::new(channels_by_name),
-        provider,
+        turn_model_source: Some(
+            crate::openhuman::agent::tinyagents::TurnModelSource::from_model(model),
+        ),
         default_provider: Arc::new("harness-provider".to_string()),
-        memory: Arc::new(HarnessMemory {
+        memory: crate::openhuman::memory::guard::in_memory::guard_over(Arc::new(HarnessMemory {
             entries: options
                 .memory_entries
                 .into_iter()
                 .map(memory_entry)
                 .collect(),
-        }),
+        })),
         tools_registry: Arc::new(vec![Box::new(HarnessTool) as Box<dyn Tool>]),
         system_prompt: Arc::new("system prompt".to_string()),
         model: Arc::new("harness-model".to_string()),
@@ -425,30 +507,54 @@ pub async fn run_dispatch_harness(options: DispatchHarnessOptions) -> DispatchHa
         max_tool_iterations: 3,
         min_relevance_score: 0.2,
         conversation_histories: Arc::clone(&conversation_histories),
-        provider_cache: Arc::new(Mutex::new(provider_cache)),
+        turn_model_source_cache: Arc::new(Mutex::new(provider_cache)),
         route_overrides: Arc::new(Mutex::new(HashMap::new())),
         api_url: None,
         inference_url: None,
         reliability: Arc::new(ReliabilityConfig::default()),
         provider_runtime_options: ProviderRuntimeOptions::default(),
-        workspace_dir: Arc::new(PathBuf::from(std::env::temp_dir())),
+        workspace_dir: Arc::new(std::env::temp_dir()),
         message_timeout_secs: options.timeout_secs,
         multimodal: MultimodalConfig::default(),
+        multimodal_files: MultimodalFileConfig::default(),
+        config: None,
     });
 
-    process_channel_message(
-        Arc::clone(&ctx),
-        ChannelMessage {
-            id: "m1".to_string(),
-            sender: "alice".to_string(),
-            reply_target: "reply".to_string(),
-            content: options.content,
-            channel: options.channel_name,
-            timestamp: 1,
-            thread_ts: options.thread_ts,
-        },
-    )
-    .await;
+    let expected_event_channel = options.channel_name.clone();
+
+    let message = ChannelMessage {
+        id: "m1".to_string(),
+        sender: "alice".to_string(),
+        reply_target: "reply".to_string(),
+        content: options.content,
+        channel: options.channel_name,
+        timestamp: 1,
+        thread_ts: options.thread_ts,
+    };
+    if let Some(inbound_envelope) = options.inbound_envelope {
+        process_channel_runtime_message(
+            Arc::clone(&ctx),
+            RuntimeChannelMessage::with_inbound_envelope(message, inbound_envelope),
+        )
+        .await;
+    } else {
+        process_channel_message(Arc::clone(&ctx), message).await;
+    }
+
+    let received_event_envelope = loop {
+        match event_rx.try_recv() {
+            Ok(DomainEvent::ChannelMessageReceived {
+                channel,
+                message_id,
+                inbound_envelope,
+                ..
+            }) if channel == expected_event_channel && message_id == "m1" => {
+                break inbound_envelope;
+            }
+            Ok(_) => {}
+            Err(_) => break None,
+        }
+    };
 
     let sends = state.sends.lock().await.clone();
     let handler_history_roles = handler_roles.lock().expect("roles lock").clone();
@@ -466,6 +572,7 @@ pub async fn run_dispatch_harness(options: DispatchHarnessOptions) -> DispatchHa
         sends,
         start_typing_calls: state.start_typing_calls.load(Ordering::SeqCst),
         stop_typing_calls: state.stop_typing_calls.load(Ordering::SeqCst),
+        received_event_envelope,
         handler_history_roles,
         handler_history_text,
         handler_provider_name,

@@ -1,7 +1,7 @@
 // Reusable GitHub branch picker — dropdown sourced from
 // `composio_execute(GITHUB_LIST_BRANCHES)` for the linked repo input.
 //
-// Used by SkillsRunnerBody for any skill input whose name matches the
+// Used by WorkflowRunnerBody for any skill input whose name matches the
 // branch-shaped conventions (`branch`, `target_branch`, `base_branch`,
 // `pr_base`, `head_branch`). Depends on a sibling `repo`-shaped input
 // for which repo to list branches for; if that sibling is empty, the
@@ -10,12 +10,12 @@
 // Refetches whenever `repo` changes. Like RepoPicker, this is a
 // parallel component to the inline impl in DevWorkflowPanel — the
 // original panel stays untouched.
-
 import createDebug from 'debug';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { execute as composioExecute } from '../../../lib/composio/composioApi';
 import { useT } from '../../../lib/i18n/I18nContext';
+import { NativeSelect } from '../../ui';
 
 const log = createDebug('app:skills:BranchPicker');
 
@@ -23,7 +23,7 @@ interface GhBranch {
   name: string;
 }
 
-export interface BranchPickerProps {
+interface BranchPickerProps {
   /** Selected branch name (or empty). */
   value: string;
   /** Fires with the picked branch name. */
@@ -113,18 +113,14 @@ const BranchPicker = ({ value, onChange, repo, id, placeholder, disabled }: Bran
     void loadBranches();
   }, [loadBranches]);
 
-  const selectClass =
-    'w-full rounded border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-800 px-3 py-2 text-sm text-stone-900 dark:text-stone-100';
-
   return (
     <div>
-      <select
+      <NativeSelect
         id={id}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={e => onChange(e.target.value)}
         disabled={disabled || loading || !repo}
-        className={selectClass}
-      >
+        className="w-full">
         <option value="">
           {!repo
             ? t('settings.skillsRunner.branchPicker.needRepo')
@@ -132,15 +128,13 @@ const BranchPicker = ({ value, onChange, repo, id, placeholder, disabled }: Bran
               ? t('settings.skillsRunner.branchPicker.loading')
               : (placeholder ?? t('settings.skillsRunner.branchPicker.select'))}
         </option>
-        {branches.map((b) => (
+        {branches.map(b => (
           <option key={b.name} value={b.name}>
             {b.name}
           </option>
         ))}
-      </select>
-      {error && (
-        <p className="text-xs text-red-600 dark:text-red-400 mt-1">{error}</p>
-      )}
+      </NativeSelect>
+      {error && <p className="text-xs text-coral-500 mt-1">{error}</p>}
     </div>
   );
 };

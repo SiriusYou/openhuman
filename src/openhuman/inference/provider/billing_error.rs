@@ -11,6 +11,23 @@ pub fn is_budget_exhausted_message(body: &str) -> bool {
         "budget exceeded",
         "add credits",
         "insufficient balance",
+        // abacus's out-of-credits 400 wording (TAURI-RUST-D6X): the managed
+        // route-llm account is exhausted. The full body is
+        // `"You have no remaining credits to use the LLM apis."`. Anchored on
+        // the "no remaining credits" fragment (not the broader "remaining
+        // credits", which a positive "you have N remaining credits" balance
+        // message could trip) to keep the list tight per the rule above.
+        "no remaining credits",
+        // Anthropic's BYO-key out-of-credits 400 wording (TAURI-RUST-4MM):
+        // the full body is `"Your credit balance is too low to access the
+        // Anthropic API. Please go to Plans & Billing to upgrade or purchase
+        // credits."` (direct provider, "anthropic API error", not the managed
+        // "OpenHuman API error"). Anchored on the "credit balance is too low"
+        // fragment — the "too low" qualifier keeps a positive-balance message
+        // (e.g. "your credit balance is $50") from tripping, per the tight-list
+        // rule above. OpenHuman has no lever over a third-party Anthropic
+        // account's balance; budget toast already surfaced in the UI.
+        "credit balance is too low",
     ];
 
     let lower = body.to_ascii_lowercase();
@@ -18,43 +35,5 @@ pub fn is_budget_exhausted_message(body: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn detects_known_budget_exhaustion_phrases() {
-        for body in [
-            "Insufficient budget",
-            "Budget exceeded",
-            "Insufficient balance",
-            "Add credits to continue",
-        ] {
-            assert!(
-                is_budget_exhausted_message(body),
-                "{body:?} must be classified as budget-exhausted user-state"
-            );
-        }
-    }
-
-    #[test]
-    fn detection_is_case_insensitive() {
-        assert!(is_budget_exhausted_message("INSUFFICIENT BUDGET"));
-        assert!(is_budget_exhausted_message("budget EXCEEDED — ADD credits"));
-        assert!(is_budget_exhausted_message("Insufficient BALANCE"));
-    }
-
-    #[test]
-    fn ignores_non_budget_messages() {
-        for body in [
-            "Bad request: missing field",
-            "Invalid request: model not found",
-            "HTTP 400 Bad Request",
-            "",
-        ] {
-            assert!(
-                !is_budget_exhausted_message(body),
-                "{body:?} must not be classified as budget-exhausted"
-            );
-        }
-    }
-}
+#[path = "billing_error_tests.rs"]
+mod tests;

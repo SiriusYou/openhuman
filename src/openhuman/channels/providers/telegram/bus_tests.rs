@@ -1,6 +1,7 @@
 use super::bus::TelegramRemoteSubscriber;
-use crate::core::event_bus::{DomainEvent, EventHandler};
+use crate::core::events::DomainEvent;
 use tempfile::tempdir;
+use tinybus::EventHandler;
 
 #[tokio::test]
 async fn subscriber_marks_busy_on_received_and_clears_on_processed() {
@@ -17,6 +18,7 @@ async fn subscriber_marks_busy_on_received_and_clears_on_processed() {
             reply_target: "chat-99".into(),
             content: "hi".into(),
             thread_ts: Some("1".into()),
+            inbound_envelope: None,
             workspace_dir: dir.path().to_path_buf(),
         })
         .await;
@@ -34,6 +36,8 @@ async fn subscriber_marks_busy_on_received_and_clears_on_processed() {
             content: "hi".into(),
             thread_ts: Some("1".into()),
             response: "ok".into(),
+            provider: "test-provider".into(),
+            model: "test-model".into(),
             elapsed_ms: 10,
             success: true,
             workspace_dir: dir.path().to_path_buf(),
@@ -58,6 +62,7 @@ async fn subscriber_ignores_non_telegram_channel_events() {
             reply_target: "chat-99".into(),
             content: "hi".into(),
             thread_ts: None,
+            inbound_envelope: None,
             workspace_dir: dir.path().to_path_buf(),
         })
         .await;
@@ -83,6 +88,7 @@ async fn telegram_received_matching_workspace_sets_busy() {
             reply_target: "chat-10".into(),
             content: "hi".into(),
             thread_ts: None,
+            inbound_envelope: None,
             workspace_dir: dir.path().to_path_buf(),
         })
         .await;
@@ -107,6 +113,7 @@ async fn telegram_received_stale_workspace_does_not_set_busy() {
             reply_target: "chat-20".into(),
             content: "hi".into(),
             thread_ts: None,
+            inbound_envelope: None,
             workspace_dir: stale.path().to_path_buf(),
         })
         .await;
@@ -131,6 +138,7 @@ async fn telegram_processed_matching_workspace_clears_busy() {
             reply_target: "chat-30".into(),
             content: "hi".into(),
             thread_ts: None,
+            inbound_envelope: None,
             workspace_dir: dir.path().to_path_buf(),
         })
         .await;
@@ -149,6 +157,8 @@ async fn telegram_processed_matching_workspace_clears_busy() {
             content: "hi".into(),
             thread_ts: None,
             response: "done".into(),
+            provider: "test-provider".into(),
+            model: "test-model".into(),
             elapsed_ms: 50,
             success: true,
             workspace_dir: dir.path().to_path_buf(),
@@ -176,6 +186,7 @@ async fn telegram_processed_stale_workspace_does_not_clear_busy() {
             reply_target: "chat-40".into(),
             content: "hi".into(),
             thread_ts: None,
+            inbound_envelope: None,
             workspace_dir: dir.path().to_path_buf(),
         })
         .await;
@@ -194,6 +205,8 @@ async fn telegram_processed_stale_workspace_does_not_clear_busy() {
             content: "hi".into(),
             thread_ts: None,
             response: "done".into(),
+            provider: "test-provider".into(),
+            model: "test-model".into(),
             elapsed_ms: 50,
             success: true,
             workspace_dir: stale.path().to_path_buf(),

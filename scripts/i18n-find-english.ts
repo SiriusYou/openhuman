@@ -54,35 +54,56 @@ const ALL_LOCALES = [...Object.keys(NATIVE_SCRIPT), ...LATIN_LOCALES];
 const INTENTIONAL_ENGLISH = new Set([
   "app.connectionIndicator.coreOffline",
   "channels.activeRouteValue",
+  "conversations.backgroundTasks.cronSchedCron", // Cron expression label; Cron is the scheduler name
   "composio.integrationSlugsExample",
   "composio.integrationSlugsPlaceholder",
+  "settings.ai.deploymentNamePlaceholder", // Example Azure deployment id; an identifier, not prose
   "devOptions.toolPolicyDiagnostics.mcpAllowlists.allowDeny",
+  "intelligence.agents.subagentCountOne",
   "intelligence.diagram.skillInstallCommand",
   "intelligence.memoryChunk.detail.embeddingInfo",
   "mcp.playground.argsLabel",
+  "mcp.tab.source.smithery",
   "memorySources.globPatternPlaceholder",
+  "rewards.community.discordDetails", // "Discord" — brand/product name, same in every locale
+  "rewards.community.rewardTokens", // "+{tokens} tokens" — "tokens" is the technical unit, kept in every locale (the recurring "/mo" variant IS translated)
+  "nav.agentWorld",
+  "orchPage.medulla.title", // "Medulla" — brand/product name, same in every locale
   "memorySources.searchQueryPlaceholder",
   "migration.vendor.hermes",
-  "screenAwareness.debug.defaultPanicHotkey",
+  "namespaceOverview.entitiesShort",
   "settings.ai.connectionsPerTick",
+  "settings.ai.claudeCode.button", // Claude Code is a product name
+  "settings.ai.claudeCode.modalTitle", // Claude Code CLI is a product name
   "settings.ai.localModelResolved",
   "settings.ai.localOllama",
   "settings.ai.minutesShort",
+  "settings.ai.loops.cadence.thirtyMin", // "30 min" — identical abbreviation in es/fr/pt/it/pl
+  "settings.ai.loops.cadence.twentyMin", // "20 min" — identical abbreviation in es/fr/pt/it/pl
   "settings.ai.openAiUrlLabel",
+  "settings.appearance.fontSizeUnit", // "px" — CSS unit, identical in every locale
   "settings.billing.inferenceBudget.dailySpendPoint",
+  "settings.gateway.identityPlaceholder", // "~/.ssh/id_ed25519" — a file-path example; the leading ~ makes it fail the single-token technical test, but it is not prose
   "settings.localModel.download.embeddingModel",
   "settings.localModel.download.ttsOutput",
   "settings.localModel.status.contextOkBadge",
   "settings.localModel.status.expectedChat",
   "settings.localModel.status.expectedVision",
   "settings.mcpServer.clientClaudeDesktop",
+  "settings.sandbox.backend.bubblewrap",
+  "settings.sandbox.backend.firejail",
+  "settings.sandbox.backend.landlock",
   "settings.search.allowedSitesPlaceholder",
   "settings.search.engineBraveLabel",
+  "flows.nodeSummary.agent.withPrompt", // "“{prompt}” · {model}" — quoted prompt + model id; only the quote glyph varies per locale, no prose to translate
+  "flows.nodeSummary.http.withUrl", // "{method} {url}" — HTTP method + URL are literal, untranslatable data
   "settings.taskSources.name",
   "skills.create.allowedToolsPlaceholder",
   "skills.create.optional",
+  "skills.meetingBots.wakePhraseHint",
   "skills.meetingBots.platforms.gmeet",
   "skills.meetingBots.platforms.teams",
+  "subconscious.interval.minutes",
   "subconscious.interval.fifteenMinutes",
   "subconscious.interval.fiveMinutes",
   "subconscious.interval.tenMinutes",
@@ -90,9 +111,8 @@ const INTENTIONAL_ENGLISH = new Set([
   "vault.excludesPlaceholder",
   "vault.syncSummaryDuration",
   "voice.providers.chip.piper",
-  "voice.providers.chip.whisper",
-  "voice.providers.whisperModelBase",
   "walkthrough.tooltip.stepCounter",
+  "workflows.create.optional",
   "workspace.obsidianConfigDirPlaceholder",
 ]);
 

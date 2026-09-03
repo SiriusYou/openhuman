@@ -18,12 +18,7 @@
 import { waitForApp, waitForAppReady, waitForAuthBootstrap } from '../helpers/app-helpers';
 import { callOpenhumanRpc } from '../helpers/core-rpc';
 import { triggerAuthDeepLinkBypass } from '../helpers/deep-link-helpers';
-import {
-  hasAppChrome,
-  textExists,
-  waitForWebView,
-  waitForWindowVisible,
-} from '../helpers/element-helpers';
+import { hasAppChrome, waitForWebView, waitForWindowVisible } from '../helpers/element-helpers';
 import { resetApp } from '../helpers/reset-app';
 import {
   dismissBootCheckGateIfVisible,
@@ -107,7 +102,7 @@ describe('Logout -> re-login onboarding overlay', function () {
 
     // ── Second login (re-login) ───────────────────────────────────────────────
     // Use the bypass deep-link path (key=auth) which skips the
-    // consumeLoginToken→/telegram/login-tokens/ exchange. After the complex
+    // consumeLoginToken→/auth/login-token/consume exchange. After the complex
     // logout→test_reset→reload cycle, the full consume flow can race against
     // waitForOAuthAuthReadiness timing — the bypass avoids that instability
     // while still exercising the core auth path (storeSession, session-token
@@ -141,11 +136,23 @@ describe('Logout -> re-login onboarding overlay', function () {
     // ── Onboarding must be in clean first-step state ─────────────────────────
     // If stale mid-flow state from session 1 leaked, a later step would render
     // instead of the initial welcome step.
-    const onFirstStep = await browser.execute(
-      () => document.querySelector('[data-testid="onboarding-welcome-step"]') !== null
+    await browser.waitUntil(
+      async () =>
+        (await browser.execute(
+          () => document.querySelector('[data-testid="onboarding-welcome-step"]') !== null
+        )) as boolean,
+      { timeout: 10_000, interval: 250, timeoutMsg: 'Onboarding welcome step did not mount' }
     );
-    expect(onFirstStep).toBe(true);
-    expect(await textExists("Hi. I'm OpenHuman.")).toBe(true);
-    expect(await textExists('Get Started')).toBe(true);
+    const firstStep = await browser.execute(() => {
+      const welcome = document.querySelector('[data-testid="onboarding-welcome-step"]');
+      return {
+        mounted: welcome !== null,
+        heading: welcome?.querySelector('h1')?.textContent?.trim() ?? '',
+        hasCta: welcome?.querySelector('button[aria-label="Get Started"]') !== null,
+      };
+    });
+    expect(firstStep.mounted).toBe(true);
+    expect(firstStep.heading).toBe("Hi. I'm OpenHuman.");
+    expect(firstStep.hasCta).toBe(true);
   });
 });

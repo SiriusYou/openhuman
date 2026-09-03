@@ -1,13 +1,17 @@
 /**
- * Smithery registry browser with debounced search and pagination.
+ * MCP server catalog browser with debounced search and pagination.
  * Clicking "Install" on a card opens the InstallDialog flow.
  */
 import debug from 'debug';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { useDebouncedValue } from '../../../hooks/useDebouncedValue';
 import { useT } from '../../../lib/i18n/I18nContext';
 import { mcpClientsApi } from '../../../services/api/mcpClientsApi';
-import SmitheryServerCard from './SmitheryServerCard';
+import Button from '../../ui/Button';
+import Input from '../../ui/Input';
+import { mcpRegistryErrorMessage } from './mcpRegistryErrorMessage';
+import McpServerCard from './McpServerCard';
 import type { SmitheryServer } from './types';
 
 const log = debug('mcp-clients:catalog');
@@ -26,7 +30,7 @@ const McpCatalogBrowser = ({ onSelectInstall }: McpCatalogBrowserProps) => {
   const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedQuery = useDebouncedValue(query, DEBOUNCE_MS);
   // Monotonically-increasing counter used to discard stale registrySearch
   // responses when a newer request has already been issued.
   const requestSeqRef = useRef(0);
@@ -56,7 +60,7 @@ const McpCatalogBrowser = ({ onSelectInstall }: McpCatalogBrowserProps) => {
         log('loaded %d servers (append=%s)', incoming.length, append);
       } catch (err) {
         if (seq !== requestSeqRef.current) return;
-        const msg = err instanceof Error ? err.message : t('mcp.catalog.loadFailed');
+        const msg = mcpRegistryErrorMessage(err, t, 'mcp.catalog.loadFailed');
         log('catalog fetch error: %s', msg);
         setError(msg);
       } finally {
@@ -67,32 +71,32 @@ const McpCatalogBrowser = ({ onSelectInstall }: McpCatalogBrowserProps) => {
     },
     [t]
   );
+  const lastEffectFetchRef = useRef<{ query: string; fetchPage: typeof fetchPage } | null>(null);
 
-  // Debounce the query and reset to page 1 whenever it changes.
+  // Reset to page 1 whenever the debounced query changes.
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      void fetchPage(query, 1, false);
-    }, DEBOUNCE_MS);
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-  }, [query, fetchPage]);
+    const lastFetch = lastEffectFetchRef.current;
+    if (lastFetch?.query === debouncedQuery && lastFetch.fetchPage === fetchPage) {
+      return;
+    }
+    lastEffectFetchRef.current = { query: debouncedQuery, fetchPage };
+    void fetchPage(debouncedQuery, 1, false);
+  }, [debouncedQuery, fetchPage]);
 
   const handleLoadMore = () => {
-    void fetchPage(query, page + 1, true);
+    void fetchPage(debouncedQuery, page + 1, true);
   };
 
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <input
+        <Input
           type="search"
           aria-label={t('mcp.catalog.searchAria')}
           placeholder={t('mcp.catalog.searchPlaceholder')}
           value={query}
           onChange={e => setQuery(e.target.value)}
-          className="flex-1 rounded-lg border border-stone-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 text-sm text-stone-800 dark:text-neutral-100 placeholder:text-stone-400 dark:placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-primary-500/40"
+          className="flex-1"
         />
       </div>
 
@@ -103,11 +107,9 @@ const McpCatalogBrowser = ({ onSelectInstall }: McpCatalogBrowserProps) => {
       )}
 
       {loading && servers.length === 0 ? (
-        <div className="text-sm text-stone-400 dark:text-neutral-500 py-6 text-center">
-          {t('common.loading')}
-        </div>
+        <div className="text-sm text-content-faint py-6 text-center">{t('common.loading')}</div>
       ) : servers.length === 0 ? (
-        <div className="text-sm text-stone-400 dark:text-neutral-500 py-6 text-center">
+        <div className="text-sm text-content-faint py-6 text-center">
           {query
             ? t('mcp.catalog.noResultsFor').replace('{query}', query)
             : t('mcp.catalog.noResults')}
@@ -116,23 +118,19 @@ const McpCatalogBrowser = ({ onSelectInstall }: McpCatalogBrowserProps) => {
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {servers.map(server => (
-              <SmitheryServerCard
+              <McpServerCard
                 key={server.qualified_name}
                 server={server}
-                onInstall={onSelectInstall}
+                onSelect={onSelectInstall}
               />
             ))}
           </div>
 
           {page < totalPages && (
             <div className="flex justify-center pt-2">
-              <button
-                type="button"
-                disabled={loading}
-                onClick={handleLoadMore}
-                className="rounded-lg border border-stone-200 dark:border-neutral-700 px-4 py-2 text-sm font-medium text-stone-600 dark:text-neutral-300 hover:border-stone-300 dark:hover:border-neutral-600 disabled:opacity-50">
+              <Button variant="secondary" size="md" disabled={loading} onClick={handleLoadMore}>
                 {loading ? t('common.loading') : t('mcp.catalog.loadMore')}
-              </button>
+              </Button>
             </div>
           )}
         </>

@@ -19,158 +19,32 @@
  * `MemoryStatsBar.tsx` (tiles) and the inline `ToggleRow` in
  * `settings/panels/AIPanel.tsx` (switch markup).
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { useT } from '../../lib/i18n/I18nContext';
+import { reportMemoryPipelineFailure, reportMemoryQuarantine } from '../../lib/userErrors/report';
+import { useAppDispatch } from '../../store/hooks';
 import type { ToastNotification } from '../../types/intelligence';
+import { memoryTreeRetryFailed, memoryTreeSetEnabled } from '../../utils/tauriCommands';
+import { trackAnalyticsEvent } from '../analytics';
+import { Card } from '../ui';
+import Button from '../ui/Button';
+import Switch from '../ui/Switch';
 import {
-  memoryTreePipelineStatus,
-  type MemoryTreePipelineStatus,
-  memoryTreeSetEnabled,
-} from '../../utils/tauriCommands';
+  classifyIntegration,
+  formatBytes,
+  formatRelativeMs,
+  IntegrationHealthStrip,
+  providerIconChar,
+  statusDotClass,
+  useMemoryTreeStatus,
+} from './memoryTreeStatusHelpers';
 
-/** Translator function shape exposed by `useT()`. */
-type TFn = (key: string, fallback?: string) => string;
-
-/**
- * Adaptive polling cadence — match the existing memory ingestion
- * panel so the two surfaces feel like one.
- */
-const FAST_POLL_MS = 1500;
-const DEFAULT_POLL_MS = 4000;
-
-/**
- * Public hook so unit tests (and any future caller) can subscribe to the
- * pipeline-status stream without re-implementing the polling dance.
- */
-function useMemoryTreeStatus(): {
-  status: MemoryTreePipelineStatus | null;
-  loading: boolean;
-  error: string | null;
-  refresh: () => Promise<void>;
-} {
-  const [status, setStatus] = useState<MemoryTreePipelineStatus | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const cancelledRef = useRef(false);
-  const statusRef = useRef<MemoryTreePipelineStatus | null>(null);
-  statusRef.current = status;
-
-  const fetchOnce = useCallback(async () => {
-    console.debug('[ui-flow][memory-tree-status] fetchOnce: entry');
-    try {
-      const next = await memoryTreePipelineStatus();
-      if (cancelledRef.current) return;
-      setStatus(next);
-      setError(null);
-      console.debug(
-        '[ui-flow][memory-tree-status] fetchOnce: ok status=%s total=%d',
-        next.status,
-        next.total_chunks
-      );
-    } catch (err) {
-      if (cancelledRef.current) return;
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn('[ui-flow][memory-tree-status] fetchOnce: error %s', message);
-      setError(message);
-    } finally {
-      if (!cancelledRef.current) setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    cancelledRef.current = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const tick = async () => {
-      await fetchOnce();
-      if (cancelledRef.current) return;
-      const live = statusRef.current;
-      const fast = live?.is_syncing || (live?.pipeline_jobs?.running ?? 0) > 0;
-      timer = setTimeout(tick, fast ? FAST_POLL_MS : DEFAULT_POLL_MS);
-    };
-
-    void tick();
-
-    return () => {
-      cancelledRef.current = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [fetchOnce]);
-
-  return { status, loading, error, refresh: fetchOnce };
-}
+export { classifyIntegration, providerIconChar };
 
 interface MemoryTreeStatusPanelProps {
   onToast?: (toast: Omit<ToastNotification, 'id'>) => void;
-}
-
-/**
- * Format a millisecond timestamp as a coarse "5 min ago" style label.
- * Returns the localized `Never` placeholder when `ms` is 0/falsy.
- *
- * Intentionally light — no dayjs dependency, no plural rules. Buckets
- * (just-now / seconds / minutes / hours / days) are enough for the status
- * tile; the precise timestamp is one level deeper in the workspace UI.
- *
- * Strings flow through `t()` from `useT()` so the panel localizes
- * cleanly. `{count}` placeholders are substituted client-side because
- * `t()` does not interpolate (see `I18nContext.tsx`).
- */
-function formatRelativeMs(ms: number, t: TFn, neverLabel: string): string {
-  if (!ms || ms <= 0) return neverLabel;
-  const diffMs = Date.now() - ms;
-  if (diffMs < 0) return neverLabel; // clock skew safety
-  const sec = Math.floor(diffMs / 1000);
-  if (sec < 30) return t('memoryTree.status.justNow');
-  if (sec < 60) return t('memoryTree.status.secondsAgo').replace('{count}', String(sec));
-  const min = Math.floor(sec / 60);
-  if (min < 60) {
-    if (min === 1) return t('memoryTree.status.minuteAgo');
-    return t('memoryTree.status.minutesAgo').replace('{count}', String(min));
-  }
-  const hr = Math.floor(min / 60);
-  if (hr < 24) {
-    if (hr === 1) return t('memoryTree.status.hourAgo');
-    return t('memoryTree.status.hoursAgo').replace('{count}', String(hr));
-  }
-  const day = Math.floor(hr / 24);
-  if (day === 1) return t('memoryTree.status.dayAgo');
-  return t('memoryTree.status.daysAgo').replace('{count}', String(day));
-}
-
-/**
- * Format a raw byte count as KiB / MiB / GiB — sized to the order of
- * magnitude. Negative / zero ⇒ `0 B`.
- */
-function formatBytes(n: number): string {
-  if (!n || n <= 0) return '0 B';
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-  let v = n;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i += 1;
-  }
-  // 1 decimal place once we're past bytes, integer for plain bytes.
-  return `${i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
-}
-
-/** Map the wire status to a dot color token + animation flag. */
-function statusDotClass(kind: MemoryTreePipelineStatus['status']): string {
-  switch (kind) {
-    case 'running':
-      return 'bg-sage-400';
-    case 'syncing':
-      return 'bg-sage-500 animate-pulse';
-    case 'paused':
-      return 'bg-stone-400 dark:bg-neutral-500';
-    case 'error':
-      return 'bg-coral-500';
-    case 'idle':
-    default:
-      return 'bg-stone-400 dark:bg-neutral-500';
-  }
 }
 
 /**
@@ -181,8 +55,41 @@ function statusDotClass(kind: MemoryTreePipelineStatus['status']): string {
  */
 export function MemoryTreeStatusPanel({ onToast }: MemoryTreeStatusPanelProps) {
   const { t } = useT();
-  const { status, loading, error, refresh } = useMemoryTreeStatus();
+  const navigate = useNavigate();
+  const dispatch = useAppDispatch();
+  const { status, storedItems, integrations, loading, error, refresh } = useMemoryTreeStatus();
   const [toggleBusy, setToggleBusy] = useState(false);
+  const [retryBusy, setRetryBusy] = useState(false);
+
+  // #002 (FR-004): the single first blocking cause. Prefer the explicit
+  // `first_blocking_cause`; fall back to the active degradation cause so older
+  // payload shapes still surface something actionable. Derived ONCE here so the
+  // escalation, the status label, the CTA, and the banner all key off the same
+  // cause — a payload that carries only `degraded.cause` (and no
+  // `first_blocking_cause`) must not render the banner one way while the
+  // escalation and budget label read a different, empty cause.
+  const blockingCause = status?.first_blocking_cause ?? status?.degraded?.cause ?? null;
+
+  // #5324: this panel was the ONLY place a budget-exhausted memory pipeline
+  // was ever surfaced, so users who never opened it experienced weeks of
+  // silently broken memory. Escalate the typed cause into the shell-mounted
+  // UserErrorCenter, which stays visible across routes and after the panel
+  // unmounts. The store dedupes on descriptor id, so polling re-reports bump
+  // the recurrence count rather than stacking entries.
+  const blockingCauseCode = blockingCause?.code ?? null;
+  useEffect(() => {
+    reportMemoryPipelineFailure(dispatch, blockingCauseCode);
+  }, [dispatch, blockingCauseCode]);
+  // openhuman#5820: this panel polls faster than the shell, so a re-sync
+  // retires the quarantine notice as soon as the first chunk lands.
+  const quarantine = status?.quarantine ?? null;
+  const quarantineKey = quarantine
+    ? `${quarantine.quarantined_at_ms}:${quarantine.resynced}`
+    : null;
+  useEffect(() => {
+    reportMemoryQuarantine(dispatch, quarantine);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the fields that matter
+  }, [dispatch, quarantineKey]);
 
   const handleToggle = useCallback(async () => {
     if (!status || toggleBusy) return;
@@ -201,8 +108,62 @@ export function MemoryTreeStatusPanel({ onToast }: MemoryTreeStatusPanelProps) {
     }
   }, [status, toggleBusy, refresh, onToast, t]);
 
+  /**
+   * Requeue every terminally-failed job.
+   *
+   * An unrecoverable failure (auth, budget, dimension mismatch) is terminal by
+   * design — the worker never retries it — so a batch that failed under a
+   * since-fixed config stays parked forever and pins this panel on `error`.
+   * The `memory_tree_retry_failed` RPC existed for exactly this, but had no
+   * caller anywhere in the app, leaving the user with a permanent error state
+   * and no way to clear it.
+   */
+  const handleRetryFailed = useCallback(async () => {
+    if (retryBusy) {
+      console.debug('[ui-flow][memory-tree-status] retryFailed: skipped busy=true');
+      return;
+    }
+    console.debug('[ui-flow][memory-tree-status] retryFailed: entry');
+    setRetryBusy(true);
+    console.debug('[ui-flow][memory-tree-status] retryFailed: busy=true rpc:start');
+    try {
+      const { requeued } = await memoryTreeRetryFailed();
+      console.debug('[ui-flow][memory-tree-status] retryFailed: rpc:ok requeued=%d', requeued);
+      // Record the successful domain outcome (not just the click). Privacy-safe:
+      // a non-identifying count only, no ids or user text.
+      trackAnalyticsEvent('memory_tree_retry_succeeded', { count: requeued });
+      onToast?.({
+        type: 'success',
+        title: t('memoryTree.status.retryFailedDone'),
+        message: t('memoryTree.status.retryFailedCount').replace('{count}', String(requeued)),
+      });
+      await refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn('[ui-flow][memory-tree-status] retryFailed: error %s', message);
+      onToast?.({ type: 'error', title: t('memoryTree.status.retryFailedError'), message });
+    } finally {
+      console.debug('[ui-flow][memory-tree-status] retryFailed: busy=false exit');
+      setRetryBusy(false);
+    }
+  }, [retryBusy, refresh, onToast, t]);
+
   const statusKind = status?.status ?? 'idle';
+  // #5324: "Error — 936 unrecoverable failures need action" told the user
+  // nothing they could act on. When the blocking cause is a spent embedding
+  // budget, name that state exactly. Derived here rather than as a new wire
+  // status so older clients keep deserialising the payload unchanged and the
+  // existing `status` precedence rules stay untouched.
+  //
+  // Scoped to the states the budget actually explains. `first_blocking_cause`
+  // reports the most recent failed job even when the user has since paused the
+  // tree themselves, so without this guard a manually-paused tree carrying an
+  // old budget failure would be relabelled and hide the real reason it stopped.
+  const isBudgetExhausted =
+    blockingCause?.code === 'budget_exhausted' &&
+    (statusKind === 'error' || statusKind === 'degraded');
   const statusLabel: string = (() => {
+    if (isBudgetExhausted) return t('memoryTree.status.statusBudgetExhausted');
     switch (statusKind) {
       case 'running':
         return t('memoryTree.status.statusRunning');
@@ -212,27 +173,34 @@ export function MemoryTreeStatusPanel({ onToast }: MemoryTreeStatusPanelProps) {
         return t('memoryTree.status.statusSyncing');
       case 'error':
         return t('memoryTree.status.statusError');
+      case 'degraded':
+        return t('memoryTree.status.statusDegraded');
       case 'idle':
       default:
         return t('memoryTree.status.statusIdle');
     }
   })();
 
+  // `blockingCause` (derived above) is rendered verbatim in the banner below
+  // with a localized remediation.
+  const degraded = status?.degraded;
+
+  // Parked failures are the one panel state the user can act on directly, and
+  // the affordance is keyed off the counter rather than off the blocking-cause
+  // banner: a failure the pipeline has already worked past no longer surfaces a
+  // remediation, but its rows still sit in `failed` and still need clearing.
+  const failedJobs = status?.pipeline_jobs.failed ?? 0;
+
   const checked = !(status?.is_paused ?? false);
 
-  const tileClass =
-    'rounded-xl border border-stone-200 dark:border-neutral-800 bg-stone-50 dark:bg-neutral-800/60 p-3 transition-colors hover:bg-stone-100 dark:hover:bg-neutral-800';
-  const labelClass =
-    'text-[11px] uppercase tracking-wide text-stone-500 dark:text-neutral-400 mb-1';
-  const valueClass = 'text-xl font-semibold text-stone-900 dark:text-neutral-100';
-  const skeletonClass = 'h-7 w-16 rounded bg-stone-200 dark:bg-neutral-800 animate-pulse';
+  const labelClass = 'text-[11px] uppercase tracking-wide text-content-muted mb-1';
+  const valueClass = 'text-xl font-semibold text-content';
+  const skeletonClass = 'h-7 w-16 rounded bg-surface-strong animate-pulse';
 
   return (
     <div className="space-y-3" data-testid="memory-tree-status-panel">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-stone-900 dark:text-neutral-100">
-          {t('memoryTree.status.title')}
-        </h2>
+        <h2 className="text-sm font-semibold text-content">{t('memoryTree.status.title')}</h2>
       </div>
 
       {error && !loading ? (
@@ -241,20 +209,71 @@ export function MemoryTreeStatusPanel({ onToast }: MemoryTreeStatusPanelProps) {
           className="flex items-center justify-between gap-3 rounded-lg border border-coral-200 dark:border-coral-500/30 bg-coral-50 dark:bg-coral-500/10 px-3 py-2 text-sm text-coral-700 dark:text-coral-300"
           data-testid="memory-tree-status-error">
           <span>{t('memoryTree.status.fetchError')}</span>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            tone="danger"
+            size="xs"
             onClick={() => {
               void refresh();
-            }}
-            className="rounded-md border border-coral-300 dark:border-coral-500/40 bg-white dark:bg-neutral-900 px-2 py-1 text-xs font-medium text-coral-700 dark:text-coral-300 hover:bg-coral-50 dark:hover:bg-coral-500/20">
+            }}>
             {t('memoryTree.status.retry')}
-          </button>
+          </Button>
+        </div>
+      ) : null}
+
+      {/* #002 (FR-004): actionable first-blocking-cause banner. Shown when the
+          core reports a typed cause — names the problem + the fix instead of a
+          generic "error". Degraded badges below distinguish recall vs structure. */}
+      {!loading && blockingCause ? (
+        <div
+          className="rounded-lg border border-amber-200 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200"
+          data-testid="memory-tree-blocking-cause">
+          <div className="font-medium" data-testid="memory-tree-blocking-cause-remediation">
+            {t(blockingCause.remediation_key, t('memory.health.remediation.unknown'))}
+          </div>
+          {/* #5324: the remediation text names the fix ("set up local Ollama
+              embeddings or add your own key") but left the user to find that
+              screen themselves. One click, no embeddings knowledge required. */}
+          {isBudgetExhausted ? (
+            <div className="mt-2">
+              <Button
+                variant="secondary"
+                size="xs"
+                data-testid="memory-tree-budget-cta"
+                analyticsId="memory-tree-budget-configure-embeddings"
+                onClick={() => {
+                  navigate('/connections?tab=embeddings');
+                }}>
+                {t('userErrors.action.openEmbeddingsSettings')}
+              </Button>
+            </div>
+          ) : null}
+          {degraded?.semantic_recall || degraded?.structure ? (
+            <div className="mt-1 flex flex-wrap gap-1.5" data-testid="memory-tree-degraded-badges">
+              {degraded?.semantic_recall ? (
+                <span
+                  className="inline-flex items-center rounded-full bg-amber-100 dark:bg-amber-500/20 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-200"
+                  data-testid="memory-tree-badge-recall">
+                  {t('memoryTree.status.degradedRecall')}
+                </span>
+              ) : null}
+              {degraded?.structure ? (
+                <span
+                  className="inline-flex items-center rounded-full bg-amber-100 dark:bg-amber-500/20 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-200"
+                  data-testid="memory-tree-badge-structure">
+                  {t('memoryTree.status.degradedStructure')}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="memory-tree-status-tiles">
         {/* Status tile ── color-coded pill */}
-        <div className={tileClass}>
+        <Card
+          divided={false}
+          className="bg-surface-muted p-3 transition-colors hover:bg-surface-hover">
           <div className={labelClass}>{t('memoryTree.status.statusTile')}</div>
           {loading || !status ? (
             <div className={skeletonClass} />
@@ -270,16 +289,33 @@ export function MemoryTreeStatusPanel({ onToast }: MemoryTreeStatusPanelProps) {
                 </span>
               </div>
               {status.reason ? (
-                <div className="mt-0.5 text-[11px] text-stone-500 dark:text-neutral-400">
-                  {status.reason}
+                <div className="mt-0.5 text-[11px] text-content-muted">{status.reason}</div>
+              ) : null}
+              {failedJobs > 0 ? (
+                <div className="mt-2">
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    disabled={retryBusy}
+                    data-testid="memory-tree-retry-failed"
+                    analyticsId="memory-tree-retry-failed-jobs"
+                    onClick={() => {
+                      void handleRetryFailed();
+                    }}>
+                    {retryBusy
+                      ? t('memoryTree.status.retryFailedBusy')
+                      : t('memoryTree.status.retryFailed')}
+                  </Button>
                 </div>
               ) : null}
             </>
           )}
-        </div>
+        </Card>
 
         {/* Last-sync tile */}
-        <div className={tileClass}>
+        <Card
+          divided={false}
+          className="bg-surface-muted p-3 transition-colors hover:bg-surface-hover">
           <div className={labelClass}>{t('memoryTree.status.lastSyncTile')}</div>
           {loading || !status ? (
             <div className={skeletonClass} />
@@ -288,10 +324,28 @@ export function MemoryTreeStatusPanel({ onToast }: MemoryTreeStatusPanelProps) {
               {formatRelativeMs(status.last_sync_ms, t, t('memoryTree.status.never'))}
             </div>
           )}
-        </div>
+        </Card>
+
+        {/* Stored items tile — the document/search-index store, the number a
+            user checks after a sync. Distinct from the summary-tree leaves
+            tile beside it, which counts a different, much smaller store. */}
+        <Card
+          divided={false}
+          className="bg-surface-muted p-3 transition-colors hover:bg-surface-hover">
+          <div className={labelClass}>{t('memoryTree.status.storedItemsTile')}</div>
+          {storedItems === null ? (
+            <div className={skeletonClass} />
+          ) : (
+            <div className={valueClass} data-testid="memory-stored-items">
+              {new Intl.NumberFormat().format(storedItems)}
+            </div>
+          )}
+        </Card>
 
         {/* Total chunks tile */}
-        <div className={tileClass}>
+        <Card
+          divided={false}
+          className="bg-surface-muted p-3 transition-colors hover:bg-surface-hover">
           <div className={labelClass}>{t('memoryTree.status.totalChunksTile')}</div>
           {loading || !status ? (
             <div className={skeletonClass} />
@@ -300,10 +354,12 @@ export function MemoryTreeStatusPanel({ onToast }: MemoryTreeStatusPanelProps) {
               {new Intl.NumberFormat().format(status.total_chunks)}
             </div>
           )}
-        </div>
+        </Card>
 
         {/* Wiki size tile */}
-        <div className={tileClass}>
+        <Card
+          divided={false}
+          className="bg-surface-muted p-3 transition-colors hover:bg-surface-hover">
           <div className={labelClass}>{t('memoryTree.status.wikiSizeTile')}</div>
           {loading || !status ? (
             <div className={skeletonClass} />
@@ -312,46 +368,46 @@ export function MemoryTreeStatusPanel({ onToast }: MemoryTreeStatusPanelProps) {
               {formatBytes(status.wiki_size_bytes)}
             </div>
           )}
-        </div>
+        </Card>
       </div>
+
+      {/* #002 (FR-010 / US5): extraction coverage. Only meaningful once chunks
+          exist; near-0% with chunks present means the wiki is built but has no
+          structure (the extraction model is failing). */}
+      {!loading && status && status.total_chunks > 0 && status.extraction_coverage != null ? (
+        <div className="text-xs text-content-muted" data-testid="memory-tree-extraction-coverage">
+          {t('memoryTree.status.extractionCoverage').replace(
+            '{pct}',
+            String(Math.round((status.extraction_coverage ?? 0) * 100))
+          )}
+        </div>
+      ) : null}
+
+      <IntegrationHealthStrip integrations={integrations} loading={loading} t={t} />
 
       {/* Auto-sync toggle row — markup mirrors AIPanel's inline ToggleRow */}
       <div
-        className="flex items-center justify-between gap-3 rounded-lg border border-stone-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 px-3 py-2"
+        className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-3 py-2"
         data-testid="memory-tree-status-toggle-row">
         <div className="min-w-0">
-          <div className="text-sm font-medium text-stone-900 dark:text-neutral-100">
+          <div className="text-sm font-medium text-content">
             {t('memoryTree.status.autoSyncLabel')}
           </div>
-          <div className="text-xs text-stone-500 dark:text-neutral-400">
+          <div className="text-xs text-content-muted">
             {t('memoryTree.status.autoSyncDescription')}
           </div>
         </div>
-        <button
-          type="button"
-          role="switch"
+        <Switch
+          id="memory-tree-status-toggle"
           aria-label={t('memoryTree.status.autoSyncLabel')}
-          aria-checked={checked}
+          checked={checked}
           disabled={toggleBusy || loading || !status}
-          onClick={() => {
+          onCheckedChange={() => {
             void handleToggle();
           }}
           data-testid="memory-tree-status-toggle"
-          className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-wait disabled:opacity-60 ${
-            checked ? 'bg-primary-500' : 'bg-stone-300 dark:bg-neutral-700'
-          }`}>
-          <span
-            aria-hidden
-            className={`inline-block h-4 w-4 transform rounded-full bg-white dark:bg-neutral-900 shadow transition-transform ${
-              checked ? 'translate-x-4' : 'translate-x-0.5'
-            }`}
-          />
-        </button>
+        />
       </div>
     </div>
   );
 }
-
-// Re-export the hook so unit tests can opt into the polling subscription
-// directly without re-implementing it.
-export { useMemoryTreeStatus };

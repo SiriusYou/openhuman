@@ -5,15 +5,14 @@
 //! - Setting up secret scrubbing for outgoing error reports.
 //! - Dispatching command-line arguments to the core logic in `openhuman_core`.
 
-use once_cell::sync::Lazy;
-use regex::Regex;
-
 /// Main application entry point.
 ///
 /// It initializes the Sentry SDK for error monitoring, ensuring that sensitive
 /// information is redacted before being sent to the server. After setup, it
 /// delegates execution to the core library based on CLI arguments.
 fn main() {
+    restore_default_sigpipe();
+
     // Load `.env` before `sentry::init` so a DSN defined only in the dotenv
     // file is visible to the Sentry client at startup. `dotenvy::dotenv()` is
     // a no-op for variables already present in the process environment, and
@@ -31,6 +30,10 @@ fn main() {
     //      the GH org-level variable can be renamed)
     //   3. Each of the same names baked at compile time via `option_env!`
     // If none resolve to a non-empty value, `sentry::init` returns a no-op guard.
+    //
+    // The whole init (guard + secret-scrubbing `before_send`) is gated on the
+    // `crash-reporting` feature; a slim build compiles it out entirely.
+    #[cfg(feature = "crash-reporting")]
     let _sentry_guard = sentry::init(sentry::ClientOptions {
         dsn: std::env::var("OPENHUMAN_CORE_SENTRY_DSN")
             .ok()
@@ -59,6 +62,29 @@ fn main() {
             if openhuman_core::core::observability::is_transient_provider_http_failure(&event) {
                 return None;
             }
+            if openhuman_core::core::observability::is_all_transient_provider_exhaustion_event(
+                &event,
+            ) {
+                return None;
+            }
+            // Defense-in-depth: drop managed-backend `errorCode` events (#870)
+            // the backend owns (F2/F4) — primary suppression lives in
+            // `api_error` / the streaming gates and the `web_channel`
+            // re-report classifier. The malformed `BAD_REQUEST` carve-out
+            // (F8) is excluded by the underlying decision, so a client-built
+            // bad payload still pages.
+            if openhuman_core::core::observability::is_backend_error_code_event(&event) {
+                return None;
+            }
+            // Defense-in-depth: drop transient streaming transport blips
+            // (domain=llm_provider, failure=transport) — flaky-network
+            // timeouts/resets recovered by retry/fallback (F7). The primary
+            // gate lives at the `stream_chat` / `stream_chat_history` emit
+            // sites.
+            if openhuman_core::core::observability::is_transient_provider_transport_failure(&event)
+            {
+                return None;
+            }
             // Defense-in-depth for budget-exhausted 400s. Emit sites demote the
             // known backend responses before they hit Sentry; this catches any
             // future non_2xx/status=400 event that carries the same tight body
@@ -66,17 +92,41 @@ fn main() {
             if openhuman_core::core::observability::is_budget_event(&event) {
                 return None;
             }
-            // CORE-RUST-EK (~827 events): drop all HTTP 401 responses from the
-            // embeddings call path (domain=embeddings, failure=non_2xx,
-            // status=401). The primary suppression for the OpenHuman-backend
-            // "Invalid token" shape lives in `expected_error_kind` /
-            // `is_session_expired_message`. This is defense-in-depth that also
-            // catches third-party provider 401s (e.g. OpenAI `invalid_api_key`
-            // body) that don't carry the OpenHuman envelope and therefore fall
-            // through the string-based classifier to Sentry.
-            if openhuman_core::core::observability::is_embeddings_api_key_401_event(&event) {
+            // Defense-in-depth for insufficient-credits 402s. The native_chat
+            // emit site demotes them, but the compatible provider reports the
+            // same out-of-balance 402 from chat_with_system / chat_with_history
+            // / the streaming gates / api_error too; this is the single net
+            // that catches every path (TAURI-RUST-C62).
+            if openhuman_core::core::observability::is_insufficient_credits_event(&event) {
+                return None;
+            }
+            // Drop provider monthly-quota exhausted events — third-party plan
+            // allotment spent (e.g. Kiro `MONTHLY_REQUEST_COUNT`, sometimes
+            // wrapped in a 500 envelope so the 402-gated credits filter above
+            // misses it). No local lever (TAURI-RUST-C9A).
+            if openhuman_core::core::observability::is_quota_exhausted_event(&event) {
+                return None;
+            }
+            // Defense-in-depth for Ollama Cloud hosted-inference 500s. The
+            // native_chat / streaming_chat / api_error emit sites demote them and
+            // the agent re-report routes through `TransientUpstreamHttp`, but the
+            // compatible provider can report the same `Internal Server Error
+            // (ref: …)` body from other paths; this is the single net that
+            // catches every path (TAURI-RUST-5MV).
+            if openhuman_core::core::observability::is_ollama_cloud_internal_500_event(&event) {
+                return None;
+            }
+            // Defense-in-depth: drop Windows `ERROR_FILE_SYSTEM_LIMITATION`
+            // (os error 665) — a persistent host-filesystem condition with
+            // zero local lever and no Sentry remediation path. The primary
+            // suppression lives at the emit site via `expected_error_kind` →
+            // `ExpectedErrorKind::WindowsFileSystemLimitation`; this catches
+            // any call site that uses `report_error` directly instead of
+            // `report_error_or_expected` (TAURI-RUST-QT0: 6,050 events / 1 user).
+            if openhuman_core::core::observability::is_windows_file_system_limitation_event(&event)
+            {
                 log::debug!(
-                    "[sentry-embeddings-401-filter] dropping embeddings api-key 401 event_id={:?}",
+                    "[sentry-fs-limitation-filter] dropping Windows file-system-limitation event (os error 665) event_id={:?}",
                     event.event_id
                 );
                 return None;
@@ -85,7 +135,7 @@ fn main() {
             // slipped past the call-site filters in
             // `agent::harness::session::runtime::run_single`,
             // `channels::runtime::dispatch`, and
-            // `channels::providers::web::run_chat_task`. The cap is a
+            // `web_chat::run_chat_task`. The cap is a
             // deterministic agent-state outcome surfaced to the user via
             // the chat-rendered "Error: …" message — Sentry is the wrong
             // surface for it (OPENHUMAN-TAURI-99 / -98).
@@ -95,45 +145,18 @@ fn main() {
             if openhuman_core::core::observability::is_transient_backend_api_failure(&event)
                 || openhuman_core::core::observability::is_transient_integrations_failure(&event)
                 || openhuman_core::core::observability::is_updater_transient_event(&event)
+                || openhuman_core::core::observability::is_skill_install_user_fetch_failure(&event)
             {
                 return None;
             }
-            // Defense-in-depth: upstream rate-limit events that slipped past
-            // the call-site suppressors in `ops::api_error` (primary guard)
-            // and `report_error_or_expected` (secondary guard via
-            // `expected_error_kind`). Catches the three major shapes:
-            //   · `rate_limit_error` type in the JSON body (OPENHUMAN-TAURI-2E,
-            //     OPENHUMAN-TAURI-RQ — ~2 223 events combined)
-            //   · `"upstream rate limit exceeded"` in a 500 body (TAURI-6Y —
-            //     ~19 849 events)
-            //   · `"429 rate limit exceeded"` in a 500 body (TAURI-S — ~6 984
-            //     events)
-            // The primary per-attempt suppression lives in
-            // `openhuman::inference::provider::ops::api_error` (skips
-            // `report_error` entirely for rate-limit bodies) and in
-            // `embeddings::openai::embed` (uses `report_error_or_expected` with
-            // the canonical `"Embedding API error ({status}): …"` format so
-            // `is_transient_upstream_http_message` catches it). This filter is
-            // the last line of defense for any future call site that adds a new
-            // report path without routing through one of those two guards.
-            {
-                let direct = event.message.as_deref();
-                let from_logentry = event.logentry.as_ref().map(|l| l.message.as_str());
-                let from_exception = event.exception.last().and_then(|e| e.value.as_deref());
-                let is_rate_limited = [direct, from_logentry, from_exception]
-                    .into_iter()
-                    .flatten()
-                    .map(str::to_ascii_lowercase)
-                    .any(|lower| {
-                        openhuman_core::core::observability::is_upstream_rate_limit_message(&lower)
-                    });
-                if is_rate_limited {
-                    log::debug!(
-                        "[sentry-rate-limit-filter] dropping upstream rate-limit event_id={:?}",
-                        event.event_id
-                    );
-                    return None;
-                }
+            // Defense-in-depth: drop skill-install fetch 4xx (esp. 404/410) —
+            // a missing/renamed catalog `SKILL.md` is expected user-input state
+            // surfaced to the UI, not a Sentry-actionable defect. Primary
+            // suppression lives at the `install_workflow_from_url_with_home`
+            // emit site; this catches any future skills call site that reports
+            // a 4xx. 5xx (genuine remote failure) still reports. TAURI-RUST-CGE.
+            if openhuman_core::core::observability::is_skills_install_client_error_event(&event) {
+                return None;
             }
             // Defense-in-depth: 404 on PATCH/DELETE to a channel-message path
             // is an expected state (provider-side delete or backend GC). Primary
@@ -152,6 +175,59 @@ fn main() {
             // filter catches any future call site that re-emits the same
             // shape — keeping OPENHUMAN-TAURI-25 / -1Q / -27 / -1G off
             // Sentry permanently (~185 events/day combined).
+            // Defense-in-depth: drop opaque "GET /auth/me" events from the
+            // `openhuman.auth_get_me` RPC. The primary fix in
+            // `credentials::ops::auth_get_me` walks the full anyhow context
+            // chain so `is_transient_message_failure` can demote transient
+            // transport failures at the rpc dispatcher. This catches any
+            // future regression where a sibling call site collapses the
+            // chain via `e.to_string()` and reproduces TAURI-RUST-10
+            // (~409 events / 17 users).
+            if openhuman_core::core::observability::is_auth_get_me_opaque_transport_event(&event) {
+                log::debug!(
+                    "[sentry-auth-get-me-opaque-filter] dropping opaque transport event_id={:?}",
+                    event.event_id
+                );
+                return None;
+            }
+            // Defense-in-depth: drop user-config provider errors that
+            // slipped past the call-site classifiers — 4xx client errors,
+            // subscription/payment issues, embedding API authorization
+            // failures. These are user misconfigurations, not application
+            // bugs (targets ~22 Sentry issues / ~26k events from the issue
+            // audit). Primary suppression lives at individual emit sites;
+            // this catch-all net catches any future new path that bypasses
+            // those gates.
+            if openhuman_core::core::observability::is_user_config_provider_event(&event) {
+                log::debug!(
+                    "[sentry-user-config-filter] dropping user-config provider event event_id={:?}",
+                    event.event_id
+                );
+                return None;
+            }
+            // Defense-in-depth: drop connectivity / network flakiness events
+            // that escaped the call-site classifiers — "Failed to fetch",
+            // connection refused, gateway 502/504, HTTP 401 from frontend
+            // connectivity. These are transient self-resolving conditions,
+            // not actionable code defects (targets ~8 Sentry issues).
+            if openhuman_core::core::observability::is_connectivity_event(&event) {
+                log::debug!(
+                    "[sentry-connectivity-filter] dropping connectivity event event_id={:?}",
+                    event.event_id
+                );
+                return None;
+            }
+            // Drop events from stale releases (clients running versions
+            // more than 6 minor versions behind the current build). Errors
+            // from ancient code are not actionable against the current
+            // codebase (targets ~4 Sentry issues).
+            if openhuman_core::core::observability::is_stale_release_event(&event) {
+                log::debug!(
+                    "[sentry-stale-release-filter] dropping stale release event event_id={:?}",
+                    event.event_id
+                );
+                return None;
+            }
             if openhuman_core::core::observability::is_session_expired_event(&event) {
                 // Metadata-only log shape — `event.message` carries the raw
                 // backend response body (often a JSON envelope with the
@@ -170,14 +246,25 @@ fn main() {
             // Attach the cached account uid so Sentry can count unique users
             // affected by an issue. We only carry `id` — never email, name,
             // or IP — so this stays consistent with `send_default_pii: false`.
-            // Empty/missing on early-startup events (cache populates after
-            // the first `auth_get_me` RPC); that's expected.
-            event.user = openhuman_core::openhuman::app_state::peek_cached_current_user_identity()
-                .and_then(|identity| identity.id)
-                .map(|id| sentry::User {
-                    id: Some(id),
-                    ..Default::default()
-                });
+            //
+            // Issue #3135: the primary source for `event.user` is now the
+            // Sentry scope, bound proactively at session boundaries
+            // (credentials::store_session / clear_session) and at server boot
+            // (run_server_inner). The `app_state_snapshot` cache is kept as a
+            // fallback so any pre-boot / pre-login event that still rides
+            // the legacy path retains its previous attribution behaviour —
+            // but we only consult it when the scope hasn't already bound a
+            // user, otherwise we'd silently clobber the scope binding when
+            // the cache is empty (root cause of the original userCount=0).
+            if event.user.is_none() {
+                event.user =
+                    openhuman_core::openhuman::desktop::app_state::peek_cached_current_user_identity()
+                        .and_then(|identity| identity.id)
+                        .map(|id| sentry::User {
+                            id: Some(id),
+                            ..Default::default()
+                        });
+            }
             // Scrub secrets from exception values and top-level message.
             for exc in &mut event.exception.values {
                 if let Some(ref value) = exc.value {
@@ -190,6 +277,9 @@ fn main() {
             Some(event)
         })),
         sample_rate: 1.0,
+        transport: Some(std::sync::Arc::new(
+            openhuman_core::core::sentry_transport::factory,
+        )),
         ..sentry::ClientOptions::default()
     });
 
@@ -203,6 +293,19 @@ fn main() {
     }
 }
 
+#[cfg(unix)]
+fn restore_default_sigpipe() {
+    // Rust ignores SIGPIPE at startup. That makes writes to a closed pipe
+    // return EPIPE, which the print macros turn into a panic. CLI tools should
+    // instead terminate quietly when a downstream reader such as `head` exits.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_default_sigpipe() {}
+
 // ---------------------------------------------------------------------------
 // Release / environment resolution for Sentry
 // ---------------------------------------------------------------------------
@@ -213,6 +316,7 @@ fn main() {
 /// `app/src/utils/config.ts`) so events from every surface group under
 /// the same release in the Sentry dashboard and benefit from the same
 /// source-map upload.
+#[cfg(feature = "crash-reporting")]
 fn build_release_tag() -> String {
     let version = env!("CARGO_PKG_VERSION");
     let sha = option_env!("OPENHUMAN_BUILD_SHA").unwrap_or("").trim();
@@ -229,6 +333,7 @@ fn build_release_tag() -> String {
 /// Honors `OPENHUMAN_APP_ENV` at runtime (`staging` / `production`) so the
 /// same binary could in principle be redeployed between environments; falls
 /// back to debug/release detection when unset.
+#[cfg(feature = "crash-reporting")]
 fn resolve_environment() -> String {
     if let Ok(value) = std::env::var("OPENHUMAN_APP_ENV") {
         let trimmed = value.trim().to_ascii_lowercase();
@@ -247,53 +352,16 @@ fn resolve_environment() -> String {
 // Secret scrubbing
 // ---------------------------------------------------------------------------
 
-/// Ordered most-specific → least-specific. Keep in sync with
-/// `src/openhuman/memory/safety/mod.rs`.
-static SECRET_PATTERNS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
-    vec![
-        // Matches "Bearer <token>" and redacts the token.
-        (Regex::new(r"(?i)(bearer\s+)\S+").unwrap(), "${1}[REDACTED]"),
-        // Matches "api-key: <key>" or "api_key=<key>" and redacts the key.
-        (
-            Regex::new(r"(?i)(api[_-]?key[=:\s]+)\S+").unwrap(),
-            "${1}[REDACTED]",
-        ),
-        // \b anchor prevents matching `cancellation_token=` etc.
-        (
-            Regex::new(r"(?i)\b(token[=:\s]+)\S+").unwrap(),
-            "${1}[REDACTED]",
-        ),
-        // Anthropic keys (sk-ant-api03-...) contain hyphens the generic
-        // sk- pattern below won't match.
-        (
-            Regex::new(r"sk-ant-[A-Za-z0-9\-_]{16,}").unwrap(),
-            "[REDACTED]",
-        ),
-        // OpenAI admin keys (sk-admin-...).
-        (
-            Regex::new(r"sk-admin-[A-Za-z0-9\-_]{12,}").unwrap(),
-            "[REDACTED]",
-        ),
-        // OpenAI project-scoped and org-scoped keys (sk-proj-... / sk-org-...).
-        (
-            Regex::new(r"sk-(?:proj|org)-[A-Za-z0-9\-_]{12,}").unwrap(),
-            "[REDACTED]",
-        ),
-        // Generic catch-all for any sk- format not covered above.
-        (Regex::new(r"sk-[a-zA-Z0-9]{20,}").unwrap(), "[REDACTED]"),
-    ]
-});
-
-/// Replaces patterns that look like secrets with `[REDACTED]`.
+/// Sentry `before_send` secret scrubbing. Delegates to the shared, always-on
+/// [`openhuman_core::core::log_redaction::scrub_secrets`] so the redaction
+/// patterns stay a single source of truth (the same pass also runs on the
+/// always-on diagnostic logs in `core::observability`).
+#[cfg(feature = "crash-reporting")]
 fn scrub_secrets(input: &str) -> String {
-    let mut result = input.to_string();
-    for (re, replacement) in SECRET_PATTERNS.iter() {
-        result = re.replace_all(&result, *replacement).into_owned();
-    }
-    result
+    openhuman_core::core::log_redaction::scrub_secrets(input)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "crash-reporting"))]
 mod tests {
     use super::*;
 

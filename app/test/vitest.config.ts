@@ -20,6 +20,7 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
+      "@": path.resolve(projectRoot, "src"),
       buffer: "buffer",
       process: "process/browser",
       util: "util",
@@ -70,6 +71,8 @@ export default defineConfig({
         "src/**/types.ts",
         "src/**/types/*.ts",
         "src/types/**",
+        // Dev-only visual harnesses (not shipped, not unit-tested by design).
+        "src/pages/dev/**",
       ],
       reporter: ["text", "text-summary", "html", "lcov"],
       // thresholds: {

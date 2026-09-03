@@ -10,7 +10,7 @@ test.describe('Crypto Payment Flow', () => {
 
   test('billing panel shows the moved-to-web redirect page', async ({ page }) => {
     await waitForAppReady(page);
-    await expect(page.getByRole('heading', { name: 'Open billing dashboard' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Billing' })).toBeVisible();
     await expect(page.getByText(/Billing moved to the web/i)).toBeVisible();
   });
 
@@ -19,14 +19,12 @@ test.describe('Crypto Payment Flow', () => {
     await expect(page.getByRole('button', { name: 'Open billing dashboard' })).toBeVisible();
   });
 
-  test('opening-browser status copy is shown on mount', async ({ page }) => {
+  test('shows the moved-to-web explanation on mount', async ({ page }) => {
     await waitForAppReady(page);
+    // Billing no longer auto-opens the browser on mount; the panel explains that
+    // billing moved to the web instead of showing an "opening browser" status.
     await expect(
-      page
-        .getByText(
-          /Opening your browser|If your browser did not open, use the button above\.|The browser could not be opened automatically\./
-        )
-        .first()
+      page.getByText(/Subscription changes, payment methods, credits, and invoices are now managed/)
     ).toBeVisible();
   });
 });

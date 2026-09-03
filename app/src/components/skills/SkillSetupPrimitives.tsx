@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-import { CheckIcon, ModalShell } from '../ui';
+import { Button, CheckIcon, ModalShell } from '../ui';
 
 interface SkillSetupModalShellProps {
   children: ReactNode;
@@ -45,7 +45,7 @@ export function SetupNotice({ children, tone = 'sage', icon, className }: SetupN
       className={`rounded-xl border p-3 text-xs ${NOTICE_CLASSES[tone]} ${
         icon ? 'flex items-start gap-2' : ''
       } ${className ?? ''}`}>
-      {icon ? <span className="mt-0.5 flex-shrink-0">{icon}</span> : null}
+      {icon ? <span className="mt-0.5 shrink-0">{icon}</span> : null}
       <div className="min-w-0">{children}</div>
     </div>
   );
@@ -59,9 +59,9 @@ interface SetupSettingRowProps {
 
 export function SetupSettingRow({ label, value, mono = false }: SetupSettingRowProps) {
   return (
-    <div className="flex items-center justify-between rounded-xl border border-stone-200 dark:border-neutral-800 bg-stone-50 dark:bg-neutral-800/60 px-3 py-2.5">
-      <span className="text-sm text-stone-700 dark:text-neutral-200">{label}</span>
-      <span className={`text-xs text-stone-500 dark:text-neutral-400 ${mono ? 'font-mono' : ''}`}>
+    <div className="flex items-center justify-between rounded-xl border border-line bg-surface-muted px-3 py-2.5">
+      <span className="text-sm text-content-secondary">{label}</span>
+      <span className={`text-xs text-content-muted ${mono ? 'font-mono' : ''}`}>
         {value}
       </span>
     </div>
@@ -92,25 +92,27 @@ export function SetupSuccess({
       </div>
 
       <div>
-        <h3 className="text-sm font-semibold text-stone-900 dark:text-neutral-100">{title}</h3>
-        <p className="mt-1 text-xs text-stone-500 dark:text-neutral-400 leading-relaxed">
+        <h3 className="text-sm font-semibold text-content">{title}</h3>
+        <p className="mt-1 text-xs text-content-muted leading-relaxed">
           {description}
         </p>
       </div>
 
       <div className="flex flex-col gap-2">
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="lg"
           onClick={onSettings}
-          className="w-full rounded-xl border border-primary-200 bg-primary-50 px-4 py-2.5 text-sm font-medium text-primary-700 hover:bg-primary-100 transition-colors">
+          className="w-full rounded-xl border-primary-200 bg-primary-50 text-sm font-medium text-primary-700 hover:bg-primary-100">
           {settingsLabel}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="secondary"
+          size="lg"
           onClick={onFinish}
-          className="w-full rounded-xl border border-stone-200 dark:border-neutral-800 bg-stone-50 dark:bg-neutral-800/60 px-4 py-2.5 text-sm font-medium text-stone-600 dark:text-neutral-300 hover:bg-stone-100 dark:hover:bg-neutral-800 dark:bg-neutral-800 transition-colors">
+          className="w-full rounded-xl border-line bg-surface-muted text-sm font-medium text-content-secondary hover:bg-surface-hover dark:bg-surface-muted">
           {finishLabel}
-        </button>
+        </Button>
       </div>
     </div>
   );

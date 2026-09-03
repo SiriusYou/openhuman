@@ -51,7 +51,6 @@ export interface LocalAiAssetsStatus {
   chat: LocalAiAssetStatus;
   vision: LocalAiAssetStatus;
   embedding: LocalAiAssetStatus;
-  stt: LocalAiAssetStatus;
   tts: LocalAiAssetStatus;
   quantization: string;
   /**
@@ -86,7 +85,6 @@ export interface LocalAiDownloadsProgress {
   chat: LocalAiDownloadProgressItem;
   vision: LocalAiDownloadProgressItem;
   embedding: LocalAiDownloadProgressItem;
-  stt: LocalAiDownloadProgressItem;
   tts: LocalAiDownloadProgressItem;
   /** Mirrors `LocalAiAssetsStatus.ollama_available` — see that field. */
   ollama_available: boolean;
@@ -190,6 +188,13 @@ export interface InstalledModelInfo {
   /** Native context window in tokens, or null when `/api/show` didn't report it. */
   context_length?: number | null;
   eligibility?: ModelContextEligibility | null;
+  /**
+   * Whether the model can serve chat/completions (from Ollama `/api/show`
+   * `capabilities`). `false` = embedding-only model that must be hidden from
+   * the chat-model picker; `null` = unknown (older Ollama / `/api/show` miss),
+   * treated as visible (fail-open). See Sentry TAURI-RUST-4P6.
+   */
+  chat_capable?: boolean | null;
 }
 
 export interface LocalAiDiagnostics {
@@ -291,7 +296,7 @@ export async function openhumanLocalAiTranscribe(
   audioPath: string
 ): Promise<CommandResponse<LocalAiSpeechResult>> {
   return await callCoreRpc<CommandResponse<LocalAiSpeechResult>>({
-    method: 'openhuman.local_ai_transcribe',
+    method: 'openhuman.inference_transcribe',
     params: { audio_path: audioPath },
   });
 }
@@ -301,7 +306,7 @@ export async function openhumanLocalAiTranscribeBytes(
   extension?: string
 ): Promise<CommandResponse<LocalAiSpeechResult>> {
   return await callCoreRpc<CommandResponse<LocalAiSpeechResult>>({
-    method: 'openhuman.local_ai_transcribe_bytes',
+    method: 'openhuman.inference_transcribe_bytes',
     params: { audio_bytes: audioBytes, extension },
   });
 }
@@ -311,7 +316,7 @@ export async function openhumanLocalAiTts(
   outputPath?: string
 ): Promise<CommandResponse<LocalAiTtsResult>> {
   return await callCoreRpc<CommandResponse<LocalAiTtsResult>>({
-    method: 'openhuman.local_ai_tts',
+    method: 'openhuman.inference_tts',
     params: { text, output_path: outputPath },
   });
 }
@@ -347,7 +352,7 @@ export async function openhumanLocalAiAssetsStatus(): Promise<
   CommandResponse<LocalAiAssetsStatus>
 > {
   return await callCoreRpc<CommandResponse<LocalAiAssetsStatus>>({
-    method: 'openhuman.local_ai_assets_status',
+    method: 'openhuman.inference_assets_status',
   });
 }
 
@@ -355,7 +360,7 @@ export async function openhumanLocalAiDownloadsProgress(): Promise<
   CommandResponse<LocalAiDownloadsProgress>
 > {
   return await callCoreRpc<CommandResponse<LocalAiDownloadsProgress>>({
-    method: 'openhuman.local_ai_downloads_progress',
+    method: 'openhuman.inference_downloads_progress',
   });
 }
 
@@ -363,7 +368,7 @@ export async function openhumanLocalAiDownloadAsset(
   capability: 'chat' | 'vision' | 'embedding' | 'stt' | 'tts'
 ): Promise<CommandResponse<LocalAiAssetsStatus>> {
   return await callCoreRpc<CommandResponse<LocalAiAssetsStatus>>({
-    method: 'openhuman.local_ai_download_asset',
+    method: 'openhuman.inference_download_asset',
     params: { capability },
   });
 }
@@ -400,7 +405,7 @@ export async function openhumanLocalAiTestConnection(
   url: string
 ): Promise<OllamaConnectionTestResult> {
   return await callCoreRpc<OllamaConnectionTestResult>({
-    method: 'openhuman.local_ai_test_connection',
+    method: 'openhuman.inference_test_connection',
     params: { url },
   });
 }

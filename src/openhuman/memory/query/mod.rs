@@ -7,27 +7,24 @@
 //! the recommended single entry point for the `memory` orchestration layer.
 
 mod backend;
+mod cover_window;
 mod drill_down;
+mod fast_walk;
 mod fetch_leaves;
 mod ingest_document;
 mod query_source;
 mod search_entities;
-pub mod smart_walk;
-pub mod walk;
+#[cfg(test)]
+mod test_workspace;
 
 // Re-export individual tool types for callers that need them directly
 // (e.g. tool registration in ops.rs).
+pub use cover_window::MemoryTreeCoverWindowTool;
 pub use drill_down::MemoryTreeDrillDownTool;
 pub use fetch_leaves::MemoryTreeFetchLeavesTool;
 pub use ingest_document::MemoryTreeIngestDocumentTool;
 pub use query_source::MemoryTreeQuerySourceTool;
 pub use search_entities::MemoryTreeSearchEntitiesTool;
-pub use smart_walk::{
-    run_smart_walk, SmartMemoryWalkTool, SmartWalkOptions, SmartWalkOutcome, SmartWalkStep,
-    SmartWalkStopReason,
-};
-pub use walk::MemoryTreeWalkTool as MemoryQueryWalkTool;
-pub use walk::{run_walk, MemoryTreeWalkTool, WalkOptions, WalkOutcome, WalkStep, WalkStopReason};
 pub use MemoryTreeTool as MemoryQueryTool;
 
 use crate::openhuman::tools::traits::{Tool, ToolResult};
@@ -51,10 +48,11 @@ impl Tool for MemoryTreeTool {
          canonical id — call first when the user mentions someone by name), \
          `query_source` (filter by source type + time window), \
          `drill_down` (expand a coarse summary one level), \
+         `cover_window` (minimum node set covering a time window [since_ms, until_ms] — use for last-24h / time-bounded recaps), \
          `fetch_leaves` (pull raw chunks for citation), `ingest_document` (write a document into the tree for future retrieval), \
-         `walk` (agentic multi-turn walk — LLM navigates summaries and returns a synthesized answer for a natural-language query), \
-         `smart_walk` (multi-strategy retrieval — combines vector search, keyword search, entity lookup, \
-         and tree browsing across raw files, wiki summaries, documents, and episodic memories)."
+         `walk` / `smart_walk` (deterministic E2GraphRAG retrieval — extracts query entities, routes between \
+         entity-graph (local) and dense-summary (global) search with no LLM, and returns ranked evidence \
+         hits for a natural-language query)."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -64,9 +62,18 @@ impl Tool for MemoryTreeTool {
                 "mode": {
                     "type": "string",
                     "enum": ["search_entities", "query_source",
-                             "drill_down", "fetch_leaves", "ingest_document", "walk",
+                             "drill_down", "cover_window", "fetch_leaves", "ingest_document", "walk",
                              "smart_walk"],
                     "description": "Which operation to run (retrieval or write)."
+                },
+                // cover_window params (epoch-milliseconds)
+                "since_ms": {
+                    "type": "integer",
+                    "description": "cover_window: inclusive window start, epoch-milliseconds."
+                },
+                "until_ms": {
+                    "type": "integer",
+                    "description": "cover_window: inclusive window end, epoch-milliseconds."
                 },
                 // search_entities params
                 "query": {
@@ -85,7 +92,12 @@ impl Tool for MemoryTreeTool {
                 },
                 "time_window_days": {
                     "type": "integer",
-                    "description": "query_source: look-back window in days."
+                    "description": "query_source / walk / smart_walk: look-back window in days (applied to the dense/global branch for walk)."
+                },
+                // walk / smart_walk params
+                "max_hops": {
+                    "type": "integer",
+                    "description": "walk / smart_walk: entity-graph relatedness hop threshold for E2GraphRAG routing (default 2, capped at 4)."
                 },
                 // drill_down params
                 "node_id": {
@@ -143,14 +155,14 @@ impl Tool for MemoryTreeTool {
             "search_entities" => MemoryTreeSearchEntitiesTool.execute(args).await,
             "query_source" => MemoryTreeQuerySourceTool.execute(args).await,
             "drill_down" => MemoryTreeDrillDownTool.execute(args).await,
+            "cover_window" => MemoryTreeCoverWindowTool.execute(args).await,
             "fetch_leaves" => MemoryTreeFetchLeavesTool.execute(args).await,
             "ingest_document" => MemoryTreeIngestDocumentTool.execute(args).await,
-            "walk" => MemoryTreeWalkTool.execute(args).await,
-            "smart_walk" => SmartMemoryWalkTool.execute(args).await,
+            "walk" | "smart_walk" => fast_walk::run_fast_walk(args).await,
             other => {
                 log::debug!("[tool][memory_tree] unknown_mode mode={other}");
                 Err(anyhow::anyhow!(
-                    "memory_tree: unknown mode `{other}`. Valid: search_entities, query_source, drill_down, fetch_leaves, ingest_document, walk, smart_walk"
+                    "memory_tree: unknown mode `{other}`. Valid: search_entities, query_source, drill_down, cover_window, fetch_leaves, ingest_document, walk, smart_walk"
                 ))
             }
         }
@@ -158,91 +170,5 @@ impl Tool for MemoryTreeTool {
 }
 
 #[cfg(test)]
-mod memory_tree_dispatcher_tests {
-    use super::*;
-    use crate::openhuman::tools::traits::Tool;
-    use serde_json::json;
-
-    #[test]
-    fn memory_tree_tool_name_is_correct() {
-        assert_eq!(MemoryTreeTool.name(), "memory_tree");
-    }
-
-    #[test]
-    fn memory_tree_schema_requires_mode() {
-        let schema = MemoryTreeTool.parameters_schema();
-        let required = schema.get("required").and_then(|r| r.as_array()).unwrap();
-        assert!(required.iter().any(|v| v.as_str() == Some("mode")));
-    }
-
-    #[test]
-    fn memory_tree_schema_mode_enum_has_all_modes() {
-        let schema = MemoryTreeTool.parameters_schema();
-        let modes: Vec<&str> = schema
-            .get("properties")
-            .unwrap()
-            .get("mode")
-            .unwrap()
-            .get("enum")
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
-        assert!(modes.contains(&"search_entities"));
-        assert!(modes.contains(&"query_source"));
-        assert!(modes.contains(&"drill_down"));
-        assert!(modes.contains(&"fetch_leaves"));
-        assert!(modes.contains(&"ingest_document"));
-        assert!(modes.contains(&"walk"));
-        assert!(modes.contains(&"smart_walk"));
-        // Removed with the global/topic trees.
-        assert!(!modes.contains(&"query_topic"));
-        assert!(!modes.contains(&"query_global"));
-    }
-
-    #[test]
-    fn memory_tree_schema_exposes_source_window_days() {
-        let schema = MemoryTreeTool.parameters_schema();
-        let properties = schema
-            .get("properties")
-            .and_then(|p| p.as_object())
-            .unwrap();
-        assert!(properties.contains_key("time_window_days"));
-    }
-
-    #[tokio::test]
-    async fn memory_tree_unknown_mode_returns_error() {
-        let result = MemoryTreeTool
-            .execute(json!({"mode": "invalid_mode"}))
-            .await;
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("unknown mode"),
-            "Expected 'unknown mode' in: {msg}"
-        );
-    }
-
-    #[tokio::test]
-    async fn memory_tree_missing_mode_returns_error() {
-        let result = MemoryTreeTool.execute(json!({})).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn memory_tree_fetch_leaves_mode_dispatches_successfully() {
-        let result = MemoryTreeTool
-            .execute(json!({
-                "mode": "fetch_leaves",
-                "chunk_ids": ["chunk-does-not-exist"]
-            }))
-            .await
-            .expect("fetch_leaves mode should dispatch successfully");
-        assert!(!result.is_error);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&result.text()).expect("result should be valid json");
-        assert!(parsed.is_array());
-    }
-}
+#[path = "mod_memory_tree_dispatcher_tests_tests.rs"]
+mod memory_tree_dispatcher_tests;

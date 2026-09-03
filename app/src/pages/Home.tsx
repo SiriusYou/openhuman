@@ -1,50 +1,22 @@
-import createDebug from 'debug';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import ConnectionIndicator from '../components/ConnectionIndicator';
-import {
-  DiscordBanner,
-  EarlyBirdyBanner,
-  PromotionalCreditsBanner,
-  UsageLimitBanner,
-} from '../components/home/HomeBanners';
-import { dismissBanner, shouldShowBanner } from '../components/upsell/upsellDismissState';
-import { useUsageState } from '../hooks/useUsageState';
+import { DiscordBanner, PromotionalCreditsBanner } from '../components/home/HomeBanners';
+import Button from '../components/ui/Button';
 import { useUser } from '../hooks/useUser';
 import { useT } from '../lib/i18n/I18nContext';
 import { restartCoreProcess } from '../services/coreProcessControl';
-import { selectBlockingState, selectConnectivityErrors } from '../store/connectivitySelectors';
+import { selectBlockingState } from '../store/connectivitySelectors';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { resolveTheme, setThemeMode, type ThemeMode } from '../store/themeSlice';
 import { APP_VERSION } from '../utils/config';
-import { openhumanCronList } from '../utils/tauriCommands';
+import { resolveUserName } from '../utils/userName';
 
-const homeLog = createDebug('app:home');
+/** @deprecated Use `resolveUserName` from `utils/userName`. Kept for back-compat. */
+export const resolveHomeUserName = resolveUserName;
+
 type TranslateFn = (key: string, fallback?: string) => string;
-
-export function resolveHomeUserName(user: unknown): string {
-  if (!user || typeof user !== 'object') return 'User';
-
-  const record = user as Record<string, unknown>;
-  const firstName =
-    (typeof record.firstName === 'string' && record.firstName.trim()) ||
-    (typeof record.first_name === 'string' && record.first_name.trim()) ||
-    '';
-  const lastName =
-    (typeof record.lastName === 'string' && record.lastName.trim()) ||
-    (typeof record.last_name === 'string' && record.last_name.trim()) ||
-    '';
-  const username = typeof record.username === 'string' ? record.username.trim() : '';
-  const email = typeof record.email === 'string' ? record.email.trim() : '';
-
-  const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
-  if (fullName) return fullName;
-  if (firstName) return firstName;
-  if (username) return username.startsWith('@') ? username : `@${username}`;
-  if (email) return email.split('@')[0] || 'User';
-  return 'User';
-}
 
 function registryCardCopy(
   t: TranslateFn,
@@ -85,23 +57,12 @@ const Home = () => {
   const { t } = useT();
   const { user } = useUser();
   const navigate = useNavigate();
-  const { shouldShowBudgetCompletedMessage } = useUsageState();
   const _userName = resolveHomeUserName(user);
   const userName = _userName.split(' ')[0]; // Get first name only
   const promoCredits = user?.usage?.promotionBalanceUsd ?? 0;
   const isFreeTier =
     user?.subscription?.plan === 'FREE' || !user?.subscription?.hasActiveSubscription;
   const showPromoBanner = isFreeTier && promoCredits > 0.01;
-
-  // Early birdy banner: once dismissed it stays gone (cooldown longer than any realistic session).
-  const [showEarlyBirdy, setShowEarlyBirdy] = useState(() =>
-    shouldShowBanner('home-earlybirdy', Number.MAX_SAFE_INTEGER)
-  );
-
-  const handleDismissEarlyBirdy = () => {
-    dismissBanner('home-earlybirdy');
-    setShowEarlyBirdy(false);
-  };
 
   const welcomeVariants = useMemo(
     () => [`Welcome, ${userName} 👋`, `Let's cook, ${userName} 🧑‍🍳.`, `Time to Zone In 🧘🏻`],
@@ -114,24 +75,9 @@ const Home = () => {
   // failure mode now has its own copy so the user knows *which* link is
   // broken instead of seeing a single conflated "device offline" line.
   const blocking = useAppSelector(selectBlockingState);
-  const connectivityErrors = useAppSelector(selectConnectivityErrors);
+  const connectivityErrors = useAppSelector(state => state.connectivity.lastError);
   const [isRestartingCore, setIsRestartingCore] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
-
-  // Routine count for the card on home.
-  const [activeRoutineCount, setActiveRoutineCount] = useState<number | null>(null);
-  const loadRoutineCount = useCallback(async () => {
-    try {
-      const response = await openhumanCronList();
-      const activeCount = response.result.filter(j => j.enabled).length;
-      setActiveRoutineCount(activeCount);
-    } catch (err) {
-      homeLog('failed to load routine count', err);
-    }
-  }, []);
-  useEffect(() => {
-    void loadRoutineCount();
-  }, [loadRoutineCount]);
 
   const dispatch = useAppDispatch();
   const themeMode = useAppSelector(state => state.theme.mode) as ThemeMode;
@@ -204,37 +150,34 @@ const Home = () => {
 
   return (
     <div className="min-h-full flex flex-col items-center justify-center p-4">
-      <div className="max-w-md w-full">
-        {shouldShowBudgetCompletedMessage && (
-          <UsageLimitBanner
-            tone="danger"
-            icon="⚠️"
-            title={t('home.usageExhaustedTitle')}
-            message={t('home.usageExhaustedBody')}
-            ctaLabel={t('home.usageExhaustedCta')}
-          />
-        )}
+      {/* Welcome title */}
+      <h1 className="min-h-14 text-32l font-bold text-content text-center">
+        {typedWelcome}
+        <span aria-hidden="true" className="ml-0.5 inline-block text-primary-500 animate-pulse">
+          |
+        </span>
+      </h1>
 
+      <div className="max-w-md w-full">
         {showPromoBanner && <PromotionalCreditsBanner promoCredits={promoCredits} />}
 
         {/* Main card — data-walkthrough target for step 1 */}
         <div
           data-walkthrough="home-card"
-          className="bg-white dark:bg-neutral-900 rounded-2xl shadow-soft border border-stone-200 dark:border-neutral-800 p-6 animate-fade-up">
+          className="bg-surface rounded-2xl shadow-soft border border-line p-6 animate-fade-up">
           {/* Header row: version centered, theme toggle right-aligned.
               The empty left spacer matches the toggle's width so the version
               stays visually centered. */}
           <div className="flex items-center justify-between mb-4">
             <div className="w-9" aria-hidden="true" />
-            <span className="text-xs text-center text-stone-400 dark:text-neutral-500">
-              v{APP_VERSION}
-            </span>
-            <button
-              type="button"
+            <span className="text-xs text-center text-content-faint">v{APP_VERSION}</span>
+            <Button
+              iconOnly
+              variant="tertiary"
               onClick={toggleTheme}
               aria-label={isDark ? t('home.themeToggle.toLight') : t('home.themeToggle.toDark')}
               title={isDark ? t('home.themeToggle.toLight') : t('home.themeToggle.toDark')}
-              className="p-2 rounded-full text-stone-500 dark:text-neutral-400 hover:text-stone-700 dark:hover:text-neutral-200 hover:bg-stone-100 dark:hover:bg-neutral-800/60 transition-colors">
+              className="rounded-full">
               {isDark ? (
                 <svg
                   className="w-5 h-5"
@@ -264,16 +207,8 @@ const Home = () => {
                   />
                 </svg>
               )}
-            </button>
+            </Button>
           </div>
-
-          {/* Welcome title */}
-          <h1 className="min-h-[3.5rem] text-32l font-bold text-stone-900 dark:text-neutral-100 text-center">
-            {typedWelcome}
-            <span aria-hidden="true" className="ml-0.5 inline-block text-primary-500 animate-pulse">
-              |
-            </span>
-          </h1>
 
           {/* Connection status */}
           <div className="flex justify-center mb-3">
@@ -283,7 +218,7 @@ const Home = () => {
           {/* Description — copy mirrors the active blocking state so the
               user never sees a "connected" message while the pill shows a
               failure. (#1527) */}
-          <p className="text-sm text-stone-500 dark:text-neutral-400 text-center mb-6 leading-relaxed">
+          <p className="text-sm text-content-muted text-center mb-6 leading-relaxed">
             {statusCopy}
           </p>
 
@@ -295,7 +230,7 @@ const Home = () => {
               <button
                 onClick={handleRestartCore}
                 disabled={isRestartingCore}
-                className="w-full py-3 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-medium rounded-xl transition-colors duration-200">
+                className="w-full py-3 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-content-inverted font-medium rounded-xl transition-colors duration-200">
                 {isRestartingCore ? t('home.restartingCore') : t('home.restartCore')}
               </button>
               {restartError && (
@@ -305,176 +240,120 @@ const Home = () => {
           )}
 
           {/* CTA button — data-walkthrough target for step 2 */}
-          <button
+          <Button
             data-walkthrough="home-cta"
+            variant="primary"
+            size="lg"
             onClick={handleStartCooking}
             disabled={blocking === 'core-unreachable' || blocking === 'internet-offline'}
-            className="w-full py-3 bg-primary-500 hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium rounded-xl transition-colors duration-200">
+            className="w-full">
             {t('home.askAssistant')}
-          </button>
+          </Button>
         </div>
 
-        {/* Routines card */}
-        {activeRoutineCount !== null && (
-          <button
-            onClick={() => navigate('/routines')}
-            className="mt-3 w-full bg-white dark:bg-neutral-900 rounded-2xl shadow-soft border border-stone-200 dark:border-neutral-800 p-4 flex items-center gap-3 text-left hover:border-primary-300 dark:hover:border-primary-500/40 transition-colors animate-fade-up">
-            <div className="w-9 h-9 rounded-full bg-primary-50 dark:bg-primary-500/10 flex items-center justify-center flex-shrink-0">
+        <button
+          type="button"
+          onClick={() => navigate('/registries')}
+          className="mt-3 w-full rounded-2xl border border-line bg-surface px-4 py-4 text-left shadow-soft transition-colors hover:border-primary-500/40 hover:bg-surface-muted">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-primary-500/10 text-primary-500">
               <svg
-                className="w-4.5 h-4.5 text-primary-500"
+                className="h-5 w-5"
                 fill="none"
                 stroke="currentColor"
-                viewBox="0 0 24 24">
+                strokeWidth={1.8}
+                viewBox="0 0 24 24"
+                aria-hidden="true">
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  strokeWidth={1.8}
-                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                  d="M4 7.5h16M4 12h16M4 16.5h16M6.75 5.25v13.5M12 5.25v13.5M17.25 5.25v13.5"
                 />
               </svg>
             </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium text-stone-900 dark:text-neutral-100">
-                {t('home.routinesCard')}
-              </div>
-              <div className="text-xs text-stone-500 dark:text-neutral-400">
-                {activeRoutineCount > 0
-                  ? t('home.routinesActive').replace('{count}', String(activeRoutineCount))
-                  : t('routines.emptyHint')}
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-content">{registriesCard.title}</div>
+              <div className="mt-1 text-xs leading-relaxed text-content-muted">
+                {registriesCard.description}
               </div>
             </div>
-            <svg
-              className="w-4 h-4 text-stone-400 dark:text-neutral-500 flex-shrink-0"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-          </button>
-        )}
-
-        <button
-          onClick={() => navigate('/registries')}
-          className="mt-3 w-full bg-white dark:bg-neutral-900 rounded-lg shadow-soft border border-stone-200 dark:border-neutral-800 p-4 flex items-center gap-3 text-left hover:border-primary-300 dark:hover:border-primary-500/40 transition-colors animate-fade-up">
-          <div className="w-9 h-9 rounded-full bg-sage-50 dark:bg-sage-500/10 flex items-center justify-center flex-shrink-0">
-            <svg
-              className="w-4.5 h-4.5 text-sage-600 dark:text-sage-300"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.8}
-                d="M5 7h14M5 12h14M5 17h9"
-              />
-            </svg>
           </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-stone-900 dark:text-neutral-100">
-              {registriesCard.title}
-            </div>
-            <div className="text-xs text-stone-500 dark:text-neutral-400">
-              {registriesCard.description}
-            </div>
-          </div>
-          <svg
-            className="w-4 h-4 text-stone-400 dark:text-neutral-500 flex-shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-          </svg>
         </button>
 
         <button
+          type="button"
           onClick={() => navigate('/workbench')}
-          className="mt-3 w-full bg-white dark:bg-neutral-900 rounded-lg shadow-soft border border-stone-200 dark:border-neutral-800 p-4 flex items-center gap-3 text-left hover:border-primary-300 dark:hover:border-primary-500/40 transition-colors animate-fade-up">
-          <div className="w-9 h-9 rounded-full bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center flex-shrink-0">
-            <svg
-              className="w-4.5 h-4.5 text-amber-600 dark:text-amber-300"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
+          className="mt-3 w-full rounded-2xl border border-line bg-surface px-4 py-4 text-left shadow-soft transition-colors hover:border-primary-500/40 hover:bg-surface-muted">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-amber-500/10 text-amber-600">
+              <svg
+                className="h-5 w-5"
+                fill="none"
+                stroke="currentColor"
                 strokeWidth={1.8}
-                d="M4 6h16M4 12h10M4 18h7"
-              />
-            </svg>
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-stone-900 dark:text-neutral-100">
-              {t('home.youpetWorkbench')}
+                viewBox="0 0 24 24"
+                aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h10M4 18h7" />
+              </svg>
             </div>
-            <div className="text-xs text-stone-500 dark:text-neutral-400">
-              {t('home.youpetWorkbenchDescription')}
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-content">{t('home.youpetWorkbench')}</div>
+              <div className="mt-1 text-xs leading-relaxed text-content-muted">
+                {t('home.youpetWorkbenchDescription')}
+              </div>
             </div>
           </div>
-          <svg
-            className="w-4 h-4 text-stone-400 dark:text-neutral-500 flex-shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-          </svg>
         </button>
 
         <button
+          type="button"
           onClick={() => navigate('/action-requests')}
-          className="mt-3 w-full bg-white dark:bg-neutral-900 rounded-lg shadow-soft border border-stone-200 dark:border-neutral-800 p-4 flex items-center gap-3 text-left hover:border-primary-300 dark:hover:border-primary-500/40 transition-colors animate-fade-up"
-          data-testid="home-action-request-inbox">
-          <div className="w-9 h-9 rounded-full bg-sky-50 dark:bg-sky-500/10 flex items-center justify-center flex-shrink-0">
-            <svg
-              className="w-4.5 h-4.5 text-sky-600 dark:text-sky-300"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
+          data-testid="home-action-request-inbox"
+          className="mt-3 w-full rounded-2xl border border-line bg-surface px-4 py-4 text-left shadow-soft transition-colors hover:border-primary-500/40 hover:bg-surface-muted">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-sky-500/10 text-sky-600">
+              <svg
+                className="h-5 w-5"
+                fill="none"
+                stroke="currentColor"
                 strokeWidth={1.8}
-                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-              />
-            </svg>
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-stone-900 dark:text-neutral-100">
-              {t('home.youpetActionRequests')}
+                viewBox="0 0 24 24"
+                aria-hidden="true">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
             </div>
-            <div className="text-xs text-stone-500 dark:text-neutral-400">
-              {t('home.youpetActionRequestsDescription')}
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-content">
+                {t('home.youpetActionRequests')}
+              </div>
+              <div className="mt-1 text-xs leading-relaxed text-content-muted">
+                {t('home.youpetActionRequestsDescription')}
+              </div>
             </div>
           </div>
-          <svg
-            className="w-4 h-4 text-stone-400 dark:text-neutral-500 flex-shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-          </svg>
         </button>
-
-        {showEarlyBirdy && <EarlyBirdyBanner onDismiss={handleDismissEarlyBirdy} />}
 
         <DiscordBanner />
 
         {/* Next steps — compact directory of where to go next */}
-        {/* <div className="mt-3 bg-white rounded-2xl shadow-soft border border-stone-200 p-4">
-          <div className="text-[11px] uppercase tracking-wide text-stone-400 mb-2">Next steps</div>
-          <div className="divide-y divide-stone-100">
+        {/* <div className="mt-3 bg-surface rounded-2xl shadow-soft border border-line p-4">
+          <div className="text-[11px] uppercase tracking-wide text-content-faint mb-2">Next steps</div>
+          <div className="divide-y divide-line-subtle">
             <button
-              onClick={() => navigate('/skills')}
-              className="w-full flex items-center justify-between py-2.5 text-left hover:bg-stone-50 rounded-md px-2 -mx-2 transition-colors">
+              onClick={() => navigate('/connections')}
+              className="w-full flex items-center justify-between py-2.5 text-left hover:bg-surface-muted rounded-md px-2 -mx-2 transition-colors">
               <div>
-                <div className="text-sm font-medium text-stone-900">Connect your services</div>
-                <div className="text-xs text-stone-500">
+                <div className="text-sm font-medium text-content">Connect your services</div>
+                <div className="text-xs text-content-muted">
                   Give your assistant access to Gmail, Calendar, and more.
                 </div>
               </div>
               <svg
-                className="w-4 h-4 text-stone-400"
+                className="w-4 h-4 text-content-faint"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24">
@@ -488,15 +367,15 @@ const Home = () => {
             </button>
             <button
               onClick={() => navigate('/rewards')}
-              className="w-full flex items-center justify-between py-2.5 text-left hover:bg-stone-50 rounded-md px-2 -mx-2 transition-colors">
+              className="w-full flex items-center justify-between py-2.5 text-left hover:bg-surface-muted rounded-md px-2 -mx-2 transition-colors">
               <div>
-                <div className="text-sm font-medium text-stone-900">Earn rewards</div>
-                <div className="text-xs text-stone-500">
+                <div className="text-sm font-medium text-content">Earn rewards</div>
+                <div className="text-xs text-content-muted">
                   Unlock credits by using OpenHuman and completing milestones.
                 </div>
               </div>
               <svg
-                className="w-4 h-4 text-stone-400"
+                className="w-4 h-4 text-content-faint"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24">
@@ -510,15 +389,15 @@ const Home = () => {
             </button>
             <button
               onClick={() => navigate('/invites')}
-              className="w-full flex items-center justify-between py-2.5 text-left hover:bg-stone-50 rounded-md px-2 -mx-2 transition-colors">
+              className="w-full flex items-center justify-between py-2.5 text-left hover:bg-surface-muted rounded-md px-2 -mx-2 transition-colors">
               <div>
-                <div className="text-sm font-medium text-stone-900">Invite a friend</div>
-                <div className="text-xs text-stone-500">
+                <div className="text-sm font-medium text-content">Invite a friend</div>
+                <div className="text-xs text-content-muted">
                   Share an invite — both of you get credits.
                 </div>
               </div>
               <svg
-                className="w-4 h-4 text-stone-400"
+                className="w-4 h-4 text-content-faint"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24">

@@ -41,12 +41,17 @@ describe('memoryGraphLayout', () => {
     expect(nodeColor(contact())).toBe(CONTACT_COLOR);
   });
 
-  it('nodeRadius shrinks with level and is fixed for chunk/contact', () => {
-    expect(nodeRadius(summary({ level: 0 }))).toBe(10);
-    expect(nodeRadius(summary({ level: 3 }))).toBeCloseTo(7.6);
-    expect(nodeRadius(summary({ level: 99 }))).toBe(4); // floored
+  it('nodeRadius grows with level (capped) and is fixed for chunk/contact', () => {
+    expect(nodeRadius(summary({ level: 0 }))).toBe(5);
+    expect(nodeRadius(summary({ level: 3 }))).toBe(12.5);
+    // Capped at 14: document merge-tier nodes live at a large synthetic level
+    // (MERGE_LEVEL_BASE = 1000+), so the raw `5 + level*2.5` is clamped to keep
+    // the d3 layout/collision sane instead of rendering giant discs.
+    expect(nodeRadius(summary({ level: 4 }))).toBe(14); // 5 + 4*2.5 = 15 → capped
+    expect(nodeRadius(summary({ level: 99 }))).toBe(14);
+    expect(nodeRadius(summary({ level: 1001 }))).toBe(14);
     expect(nodeRadius(contact())).toBe(9);
-    expect(nodeRadius(chunk())).toBe(4);
+    expect(nodeRadius(chunk())).toBe(3);
   });
 
   it('only summary/contact nodes glow', () => {
@@ -63,7 +68,7 @@ describe('memoryGraphLayout', () => {
       chunk({ id: 'orphan', parent_id: 'missing' }), // dangling → dropped
     ];
     const { simNodes, links } = buildGraph(nodes, [], 'tree');
-    expect(simNodes).toHaveLength(4);
+    expect(simNodes).toHaveLength(5); // 4 data nodes + synthetic root hub
     expect(simNodes.every(n => typeof n.x === 'number' && typeof n.y === 'number')).toBe(true);
     const pairs = links.map(l => `${String(l.source)}->${String(l.target)}`);
     expect(pairs).toContain('child->root');
@@ -78,7 +83,7 @@ describe('memoryGraphLayout', () => {
       { from: 'c1', to: 'ghost' }, // dangling endpoint → dropped
     ];
     const { links } = buildGraph(nodes, edges, 'contacts');
-    expect(links).toHaveLength(1);
+    expect(links).toHaveLength(1); // no source nodes → no root links
     expect(String(links[0].source)).toBe('c1');
     expect(String(links[0].target)).toBe('p1');
   });

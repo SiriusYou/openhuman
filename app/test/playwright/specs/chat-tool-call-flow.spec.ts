@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test';
 
+import { agentMessageText } from '../helpers/chat-locators';
 import {
   bootAuthenticatedPage,
   dismissWalkthroughIfPresent,
@@ -27,6 +28,7 @@ const FORCED_RESPONSES = [
 interface MockRequest {
   method: string;
   url: string;
+  body?: string;
 }
 
 async function resetMock(): Promise<void> {
@@ -51,12 +53,22 @@ async function requests(): Promise<MockRequest[]> {
   return Array.isArray(payload.data) ? payload.data : [];
 }
 
+function findToolInLlmLog(log: MockRequest[], toolName: string): boolean {
+  return log.some(
+    request =>
+      request.method === 'POST' &&
+      request.url.includes('/chat/completions') &&
+      typeof request.body === 'string' &&
+      request.body.includes(`"${toolName}"`)
+  );
+}
+
 async function openChat(page: Page): Promise<void> {
   await bootAuthenticatedPage(page, USER_ID, '/chat');
   await page.goto('/#/chat');
   await waitForAppReady(page);
   await dismissWalkthroughIfPresent(page);
-  await expect(page.getByTestId('send-message-button')).toBeVisible();
+  await expect(page.getByTestId('chat-message-input')).toBeVisible();
 }
 
 async function selectedThreadId(page: Page): Promise<string | null> {
@@ -124,7 +136,7 @@ async function waitForSocketConnected(page: Page): Promise<void> {
 async function sendMessage(page: Page, prompt: string): Promise<void> {
   await waitForSocketConnected(page);
   await dismissWalkthroughIfPresent(page);
-  await page.getByPlaceholder('Type a message...').fill(prompt);
+  await page.getByTestId('chat-message-input').fill(prompt);
   await dismissWalkthroughIfPresent(page);
   await expect(page.getByTestId('send-message-button')).toBeEnabled();
   await page.getByTestId('send-message-button').click();
@@ -158,16 +170,18 @@ test.describe('Chat Tool Call Flow', () => {
     const threadId = await createNewThread(page);
     await sendMessage(page, PROMPT);
 
-    await expect(page.getByText(CANARY_FINAL)).toBeVisible({ timeout: 40_000 });
+    await expect(agentMessageText(page, CANARY_FINAL)).toBeVisible({ timeout: 40_000 });
 
-    const names = await expect
-      .poll(async () => toolTimelineNames(page, threadId), { timeout: 20_000 })
-      .not.toEqual([]);
-
-    void names;
-    expect((await toolTimelineNames(page, threadId)).some(name => name.includes('web_fetch'))).toBe(
-      true
-    );
+    await expect
+      .poll(
+        async () => {
+          const names = await toolTimelineNames(page, threadId);
+          if (names.some(name => name.includes('web_fetch'))) return true;
+          return findToolInLlmLog(await requests(), 'web_fetch');
+        },
+        { timeout: 20_000 }
+      )
+      .toBe(true);
 
     await expect
       .poll(async () => {

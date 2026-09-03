@@ -1,9 +1,9 @@
 import debug from 'debug';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useT } from '../../lib/i18n/I18nContext';
-import { transcribeWithFactory } from './voice/sttClient';
+import { isVoiceNotCompiledError, transcribeWithFactory } from './voice/sttClient';
 import { encodeBlobToWav } from './voice/wavEncoder';
 
 /** Minimal descriptor for an audio input device. */
@@ -33,7 +33,7 @@ const STT_RETRY_BASE_MS = 500;
  * Matched case-insensitively against the error message.
  */
 const PERMANENT_ERROR_PATTERNS = [
-  'unknown method', // stale sidecar
+  'unknown method', // core built without the `voice` feature (#4901)
   'audio blob is empty',
   'unavailable in this build',
 ];
@@ -52,6 +52,21 @@ function isTranscriptionCancelledError(err: unknown): err is TranscriptionCancel
 function isTransientError(err: unknown): boolean {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
   return !PERMANENT_ERROR_PATTERNS.some(p => msg.includes(p));
+}
+
+/**
+ * A "binary not found" failure means the engine on the other side of the RPC
+ * could not run at all, which no amount of retrying the *same* codec will fix.
+ * Stop the current codec's retry loop immediately (no wasted backoff) yet still
+ * let `transcribeWithFallback` re-encode to 16 kHz WAV and try once more —
+ * plain WAV is the format every engine accepts, so it is the one shot worth
+ * taking. Deliberately NOT a `PERMANENT_ERROR_PATTERN`: those bail out before
+ * the WAV fallback, which is exactly the path that rescued local STT on macOS
+ * (issue #3425) and still rescues a hosted engine that rejects a container.
+ */
+function isMissingLocalBinaryError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return msg.includes('binary not found');
 }
 
 /**
@@ -75,7 +90,7 @@ export function isLowConfidenceTranscript(text: string): boolean {
 
 /** MIME types MediaRecorder will be asked to use, in priority order.
  *
- *  AAC-in-MP4 is preferred because the hosted STT upstream (GMI Whisper)
+ *  AAC-in-MP4 is preferred because the hosted STT upstream
  *  rejected Opus-in-WebM with "Invalid JSON payload" — AAC is far more
  *  broadly accepted by OpenAI-compatible audio endpoints. We fall through
  *  to WebM/Opus on Chromium builds that haven't shipped MP4 recording, then
@@ -90,7 +105,7 @@ function pickRecorderMime(): string {
   return '';
 }
 
-export interface MicComposerProps {
+interface MicComposerProps {
   /** Disabled while a turn is in flight or the welcome message is pending. */
   disabled: boolean;
   /** Receives the transcribed text — same callback the textarea send uses. */
@@ -106,6 +121,9 @@ export interface MicComposerProps {
   /** When provided, renders a keyboard FAB next to the gear that switches the
    *  surrounding composer back to text input. */
   onSwitchToText?: () => void;
+  /** Fires on every start/stop of capture so the caller can reflect a hot mic —
+   *  the chat mascot uses it to hold its `listening` pose while you speak. */
+  onRecordingChange?: (recording: boolean) => void;
 }
 
 type RecordingState = 'idle' | 'recording' | 'transcribing';
@@ -122,20 +140,22 @@ export { STT_MAX_RETRIES };
  * dispatched STT RPC (`openhuman.voice_stt_dispatch`), then forwards the
  * transcript through `onSubmit` so it joins the agent's normal send pipeline.
  *
- * The provider (cloud vs local Whisper) is resolved server-side from
- * `config.local_ai.stt_provider`, so the renderer doesn't have to know
- * which backend ran — it only sees `{ text, provider }`.
+ * Which hosted engine runs is resolved server-side from
+ * `voice_server.stt_engine` (or an explicit `stt_provider` routing string), so
+ * the renderer doesn't have to know which one ran — it only sees
+ * `{ text, provider }`.
  *
  * Single button, single decision: tap once to start recording, tap again to
  * stop and send. No textarea — that's the whole point of the mascot tab.
  */
-export function MicComposer({
+function MicComposer({
   disabled,
   onSubmit,
   onError,
   language = 'en',
   showDeviceSelector = false,
   onSwitchToText,
+  onRecordingChange,
 }: MicComposerProps) {
   const { t } = useT();
   const [state, setState] = useState<RecordingState>('idle');
@@ -150,6 +170,12 @@ export function MicComposer({
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
   const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
   const gearButtonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  // Final viewport coordinates for the portaled device menu. Computed AFTER the
+  // menu mounts (see positionDeviceMenu) so we can measure its real height and
+  // flip it above the trigger when there isn't room below — otherwise the list
+  // clips off the bottom of the screen when the mic UI sits near the viewport
+  // edge. `null` while the menu is mounted-but-unmeasured (kept invisible).
   const [menuAnchor, setMenuAnchor] = useState<{ top: number; left: number } | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -166,6 +192,20 @@ export function MicComposer({
   const recordingTimerRef = useRef<number | null>(null);
   const countdownRef = useRef<number | null>(null);
   const [remainingSecs, setRemainingSecs] = useState<number | null>(null);
+
+  // Report a hot mic to the caller. Derived from `state` rather than wired into
+  // each of the seven `setState` sites, so every exit path — including the
+  // auto-stop timeout and the error branches — reports exactly once. The
+  // cleanup also fires on unmount, which is what stops a caller (the chat
+  // mascot) from being pinned in a listening pose after this component goes
+  // away mid-recording.
+  const onRecordingChangeRef = useRef(onRecordingChange);
+  onRecordingChangeRef.current = onRecordingChange;
+  useEffect(() => {
+    if (state !== 'recording') return;
+    onRecordingChangeRef.current?.(true);
+    return () => onRecordingChangeRef.current?.(false);
+  }, [state]);
 
   // If the component unmounts mid-record, release the mic so the OS indicator
   // doesn't get stuck on.
@@ -213,6 +253,55 @@ export function MicComposer({
     navigator.mediaDevices?.addEventListener?.('devicechange', onDeviceChange);
     return () => navigator.mediaDevices?.removeEventListener?.('devicechange', onDeviceChange);
   }, [showDeviceSelector]);
+
+  // Boundary-aware placement for the device menu. The menu is portaled to
+  // `document.body` and positioned `fixed`, so it must clamp itself inside the
+  // viewport: open below the gear when there's room, otherwise flip above it,
+  // and horizontally centre-then-clamp. Runs after the menu mounts (and on
+  // resize/scroll while open) so it can measure the menu's real size — a fixed
+  // `rect.bottom + 8` anchor clips the list off-screen near the bottom edge.
+  const positionDeviceMenu = useCallback(() => {
+    const trigger = gearButtonRef.current?.getBoundingClientRect();
+    const menu = menuRef.current?.getBoundingClientRect();
+    if (!trigger || !menu) return;
+    const MARGIN = 8;
+    const viewportH = window.innerHeight;
+    const viewportW = window.innerWidth;
+    const spaceBelow = viewportH - trigger.bottom;
+    const spaceAbove = trigger.top;
+    // Prefer below; flip above only when below can't fit the menu AND above has
+    // more room. Either way the final `top` is clamped into the viewport so the
+    // scrollable max-height fallback keeps every option reachable.
+    const flipUp = spaceBelow < menu.height + MARGIN && spaceAbove > spaceBelow;
+    let top = flipUp ? trigger.top - MARGIN - menu.height : trigger.bottom + MARGIN;
+    top = Math.max(MARGIN, Math.min(top, viewportH - menu.height - MARGIN));
+    let left = trigger.left + trigger.width / 2 - menu.width / 2;
+    left = Math.max(MARGIN, Math.min(left, viewportW - menu.width - MARGIN));
+    composerLog(
+      'positioned device menu: placement=%s top=%d left=%d (spaceBelow=%d spaceAbove=%d menuH=%d)',
+      flipUp ? 'above' : 'below',
+      Math.round(top),
+      Math.round(left),
+      Math.round(spaceBelow),
+      Math.round(spaceAbove),
+      Math.round(menu.height)
+    );
+    setMenuAnchor({ top, left });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!deviceMenuOpen) return;
+    positionDeviceMenu();
+    window.addEventListener('resize', positionDeviceMenu);
+    // Capture-phase scroll so the menu tracks any scrolling ancestor, not just
+    // the window, and stays clamped to the viewport while the page moves.
+    window.addEventListener('scroll', positionDeviceMenu, true);
+    return () => {
+      window.removeEventListener('resize', positionDeviceMenu);
+      window.removeEventListener('scroll', positionDeviceMenu, true);
+    };
+    // devices.length re-measures when the option count (and thus height) changes.
+  }, [deviceMenuOpen, devices.length, positionDeviceMenu]);
 
   // Spacebar = tap-to-toggle (#1471). Scoped to whatever surface mounts
   // this composer — today only the Human agent page. The listener lives
@@ -506,6 +595,13 @@ export function MicComposer({
       }
       const msg = err instanceof Error ? err.message : String(err);
       composerLog('transcribe failed: %s', msg);
+      // The core has no voice domain compiled in (#4901). `msg` is untranslated
+      // developer copy, so render the localized string rather than splicing it
+      // into the `{message}` slot.
+      if (isVoiceNotCompiledError(err)) {
+        onError?.(t('mic.voiceNotCompiled'));
+        return;
+      }
       onError?.(t('mic.transcriptionFailed').replace('{message}', msg));
     } finally {
       if (!disposedRef.current) setState('idle');
@@ -558,6 +654,19 @@ export function MicComposer({
         if (!isTransientError(err)) {
           composerLog(
             '[session:%d] transcribe permanent failure path=%s attempt=%d: %s',
+            sessionIdRef.current,
+            label,
+            attempt,
+            msg
+          );
+          throw err;
+        }
+        if (isMissingLocalBinaryError(err)) {
+          // The local subprocess binary is absent — retrying this codec is
+          // pointless. Bail out now so the caller re-encodes to 16kHz WAV and
+          // uses the in-process engine instead of burning the backoff budget.
+          composerLog(
+            '[session:%d] transcribe missing local binary path=%s attempt=%d — skipping retries for WAV/in-process fallback: %s',
             sessionIdRef.current,
             label,
             attempt,
@@ -679,7 +788,7 @@ export function MicComposer({
           aria-label={isRecording ? t('mic.stopRecording') : t('mic.startRecording')}
           onClick={() => (isRecording ? stopRecording() : void startRecording())}
           disabled={buttonDisabled}
-          className={`relative w-14 h-14 flex items-center justify-center rounded-full text-white shadow-soft transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+          className={`relative w-14 h-14 flex items-center justify-center rounded-full text-content-inverted shadow-soft transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
             isRecording ? 'bg-coral-500 hover:bg-coral-400' : 'bg-primary-500 hover:bg-primary-600'
           }`}>
           {isRecording && (
@@ -721,17 +830,17 @@ export function MicComposer({
             <button
               ref={gearButtonRef}
               type="button"
-              aria-label={t('mic.deviceSelector') || 'Microphone device'}
+              aria-label={t('mic.deviceSelector')}
               aria-expanded={deviceMenuOpen}
               onClick={() => {
-                const rect = gearButtonRef.current?.getBoundingClientRect();
-                if (rect) {
-                  setMenuAnchor({ top: rect.bottom + 8, left: rect.left + rect.width / 2 });
-                }
-                setDeviceMenuOpen(open => !open);
+                const willOpen = !deviceMenuOpen;
+                // Hide the menu until positionDeviceMenu measures it this open
+                // cycle, so it never flashes at the previous cycle's anchor.
+                if (willOpen) setMenuAnchor(null);
+                setDeviceMenuOpen(willOpen);
               }}
               disabled={state !== 'idle'}
-              className="w-8 h-8 flex items-center justify-center rounded-full border border-stone-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-stone-500 dark:text-neutral-400 hover:text-stone-700 dark:hover:text-neutral-200 hover:border-stone-300 dark:hover:border-neutral-600 transition-colors shadow-soft disabled:opacity-40 disabled:cursor-not-allowed">
+              className="w-8 h-8 flex items-center justify-center rounded-full border border-line bg-surface text-content-muted hover:text-content-secondary hover:border-line-strong dark:hover:border-line-strong transition-colors shadow-soft disabled:opacity-40 disabled:cursor-not-allowed">
               <svg
                 className="w-4 h-4"
                 fill="none"
@@ -752,7 +861,6 @@ export function MicComposer({
               </svg>
             </button>
             {deviceMenuOpen &&
-              menuAnchor &&
               createPortal(
                 <>
                   <div
@@ -762,16 +870,21 @@ export function MicComposer({
                     aria-hidden
                   />
                   <div
+                    ref={menuRef}
                     role="menu"
-                    aria-label={t('mic.deviceSelector') || 'Microphone device'}
+                    aria-label={t('mic.deviceSelector')}
                     style={{
                       position: 'fixed',
-                      top: menuAnchor.top,
-                      left: menuAnchor.left,
-                      transform: 'translateX(-50%)',
+                      top: menuAnchor?.top ?? 0,
+                      left: menuAnchor?.left ?? 0,
+                      // Kept out of view (but laid out, so it can be measured)
+                      // until positionDeviceMenu computes the clamped anchor.
+                      visibility: menuAnchor ? 'visible' : 'hidden',
+                      maxHeight: 'calc(100vh - 16px)',
+                      overflowY: 'auto',
                       zIndex: 99999,
                     }}
-                    className="w-64 rounded-xl border border-stone-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-soft py-1">
+                    className="w-64 rounded-xl border border-line bg-surface shadow-soft py-1">
                     {devices.map(d => {
                       const selected = d.deviceId === selectedDeviceId;
                       return (
@@ -786,13 +899,13 @@ export function MicComposer({
                           }}
                           className={`w-full flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors ${
                             selected
-                              ? 'bg-primary-50 dark:bg-primary-900/20 text-stone-900 dark:text-neutral-100'
-                              : 'text-stone-700 dark:text-neutral-200 hover:bg-stone-50 dark:hover:bg-neutral-800'
+                              ? 'bg-primary-50 dark:bg-primary-900/20 text-content'
+                              : 'text-content-secondary hover:bg-surface-hover'
                           }`}>
                           <span className="flex-1 min-w-0 truncate">{d.label}</span>
                           {selected && (
                             <svg
-                              className="w-3.5 h-3.5 text-primary-500 flex-shrink-0"
+                              className="w-3.5 h-3.5 text-primary-500 shrink-0"
                               fill="none"
                               stroke="currentColor"
                               strokeWidth={2.5}
@@ -821,7 +934,7 @@ export function MicComposer({
             title={t('chat.switchToText')}
             onClick={onSwitchToText}
             disabled={state !== 'idle'}
-            className="w-8 h-8 flex items-center justify-center rounded-full border border-stone-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-stone-500 dark:text-neutral-400 hover:text-stone-700 dark:hover:text-neutral-200 hover:border-stone-300 dark:hover:border-neutral-600 transition-colors shadow-soft disabled:opacity-40 disabled:cursor-not-allowed">
+            className="w-8 h-8 flex items-center justify-center rounded-full border border-line bg-surface text-content-muted hover:text-content-secondary hover:border-line-strong dark:hover:border-line-strong transition-colors shadow-soft disabled:opacity-40 disabled:cursor-not-allowed">
             <svg
               className="w-4 h-4"
               fill="none"
@@ -838,7 +951,7 @@ export function MicComposer({
             </svg>
           </button>
         )}
-        <span className="text-xs text-stone-500 dark:text-neutral-400 select-none">{label}</span>
+        <span className="text-xs text-content-muted select-none">{label}</span>
       </div>
     </div>
   );

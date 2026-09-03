@@ -17,8 +17,10 @@ const panels: PanelCheck[] = [
     hash: '/settings/billing',
     markers: ['Billing moved to the web', 'Open billing dashboard', 'credits'],
   },
-  { hash: '/home', markers: ['Ask your assistant anything', 'Your device is connected'] },
-  { hash: '/chat', markers: ['Threads', 'New thread', 'Chat'] },
+  // Home folded into the unified chat surface — /home redirects to /chat.
+  { hash: '/home', markers: [] },
+  // /chat is the Assistant surface (thread list + agent chat header).
+  { hash: '/chat', markers: [] },
 ];
 
 async function waitForPanelLoad(page: Parameters<typeof test>[0]['page']) {
@@ -33,17 +35,13 @@ test.describe('User journey - settings round-trip', () => {
     await bootAuthenticatedPage(page, 'pw-settings-round-trip-' + testSlug, '/home');
   });
 
-  test('starts on /home after login', async ({ page }) => {
+  test('starts on the chat surface after login', async ({ page }) => {
+    // Home folded into the unified chat surface: post-login landing is /chat.
     await waitForAppReady(page);
     await expect
       .poll(async () => page.evaluate(() => window.location.hash), { timeout: PANEL_TIMEOUT })
-      .toMatch(/^#\/home/);
-    const text = await page.locator('#root').innerText();
-    expect(
-      ['Ask your assistant anything', 'Your device is connected'].some(marker =>
-        text.includes(marker)
-      )
-    ).toBe(true);
+      .toMatch(/^#\/chat/);
+    await expect(page.getByTestId('chat-message-input')).toBeVisible();
   });
 
   for (const panel of panels) {
@@ -51,8 +49,12 @@ test.describe('User journey - settings round-trip', () => {
       await page.goto(`/#${panel.hash}`);
       await waitForPanelLoad(page);
 
-      const text = await page.locator('#root').innerText();
-      expect(panel.markers.some(marker => text.includes(marker))).toBe(true);
+      if (panel.hash === '/home' || panel.hash === '/chat') {
+        await expect(page.getByTestId('chat-message-input')).toBeVisible();
+      } else {
+        const text = await page.locator('#root').innerText();
+        expect(panel.markers.some(marker => text.includes(marker))).toBe(true);
+      }
     });
   }
 });

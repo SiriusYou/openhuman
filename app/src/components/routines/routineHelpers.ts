@@ -132,7 +132,10 @@ export function formatNextRun(iso: string): string {
 
   if (diffMs < 0) return target.toLocaleString();
 
-  const diffMin = Math.round(diffMs / 60_000);
+  // Floor (not round) so a value just under an hour stays in the minute branch.
+  // Rounding pushed [59.5, 60) min up to 60, skipping this branch; the hour
+  // branch then floored to 0 and rendered "in 0 hours" (#3757).
+  const diffMin = Math.floor(diffMs / 60_000);
   if (diffMin < 1) return 'in less than a minute';
   if (diffMin < 60) return `in ${diffMin} minute${diffMin !== 1 ? 's' : ''}`;
 
@@ -151,31 +154,6 @@ export function formatNextRun(iso: string): string {
   }
 
   return target.toLocaleString();
-}
-
-/**
- * Format a past ISO timestamp as relative time (e.g. "2 hours ago").
- */
-export function formatTimeAgo(iso: string): string {
-  const past = new Date(iso);
-  const now = new Date();
-  const diffMs = now.getTime() - past.getTime();
-
-  if (diffMs < 0) return past.toLocaleString();
-
-  const diffSec = Math.floor(diffMs / 1000);
-  if (diffSec < 60) return 'just now';
-
-  const diffMin = Math.floor(diffMs / 60_000);
-  if (diffMin < 60) return `${diffMin} minute${diffMin !== 1 ? 's' : ''} ago`;
-
-  const diffHrs = Math.floor(diffMs / 3_600_000);
-  if (diffHrs < 24) return `${diffHrs} hour${diffHrs !== 1 ? 's' : ''} ago`;
-
-  const diffDays = Math.floor(diffMs / 86_400_000);
-  if (diffDays < 30) return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
-
-  return past.toLocaleDateString();
 }
 
 /**

@@ -97,7 +97,7 @@ describe('Gmail (Composio) connector flow', () => {
     console.log(`${LOG} PASS: connected state persists`);
   });
 
-  it('composio_sync RPC routes to mock backend', async function () {
+  it('composio_sync does not tear down the session', async function () {
     this.timeout(30_000);
     clearRequestLog();
     await callOpenhumanRpc('openhuman.composio_sync', { toolkit: TOOLKIT_SLUG });
@@ -160,10 +160,9 @@ describe('Gmail (Composio) connector flow', () => {
     seedComposioConnection(TOOLKIT_SLUG, 'EXPIRED', 'c-gmail-expired');
     await navigateToSkills();
     await waitForText(CONNECTOR_NAME, 10_000);
-    const modal = await openConnectorModal(CONNECTOR_NAME);
-    if (modal) {
-      await assertModalPhase('expired', CONNECTOR_NAME);
-    }
+    const modal = await openConnectorModal(CONNECTOR_NAME, 15_000, 'Auth expired');
+    expect(modal).toBeTruthy();
+    await assertModalPhase('expired', CONNECTOR_NAME);
     await assertSessionNotNuked();
     console.log(`${LOG} PASS: expired auth does not log user out`);
   });

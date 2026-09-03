@@ -8,7 +8,7 @@ fn test_client() -> Arc<IntegrationClient> {
 fn search_tool_metadata_and_schema() {
     let tool = TinyFishSearchTool::new(test_client());
     assert_eq!(tool.name(), "tinyfish_search");
-    assert_eq!(tool.category(), ToolCategory::Skill);
+    assert_eq!(tool.category(), ToolCategory::Workflow);
     assert_eq!(tool.permission_level(), PermissionLevel::ReadOnly);
     assert!(tool.description().contains("TinyFish"));
 
@@ -37,7 +37,7 @@ async fn search_rejects_empty_query() {
 fn fetch_tool_metadata_and_schema() {
     let tool = TinyFishFetchTool::new(test_client());
     assert_eq!(tool.name(), "tinyfish_fetch");
-    assert_eq!(tool.category(), ToolCategory::Skill);
+    assert_eq!(tool.category(), ToolCategory::Workflow);
     assert_eq!(tool.permission_level(), PermissionLevel::ReadOnly);
     assert!(tool.description().contains("JavaScript-heavy"));
 
@@ -75,7 +75,7 @@ async fn fetch_rejects_non_string_url() {
 fn agent_run_tool_metadata_and_schema() {
     let tool = TinyFishAgentRunTool::new(test_client());
     assert_eq!(tool.name(), "tinyfish_agent_run");
-    assert_eq!(tool.category(), ToolCategory::Skill);
+    assert_eq!(tool.category(), ToolCategory::Workflow);
     assert_eq!(tool.permission_level(), PermissionLevel::Execute);
     assert!(tool.description().contains("browser automation"));
 
@@ -177,4 +177,23 @@ fn agent_run_response_deserializes() {
     assert_eq!(resp.status, "COMPLETED");
     assert_eq!(resp.num_of_steps, Some(4));
     assert_eq!(resp.cost_usd, Some(0.12));
+}
+
+#[test]
+fn agent_run_output_hides_internal_run_id() {
+    let resp = TinyFishAgentRunResponse {
+        run_id: Some("run_123".to_string()),
+        status: "COMPLETED".to_string(),
+        result: Some(json!({"ok": true})),
+        error: None,
+        num_of_steps: Some(4),
+        cost_usd: Some(0.12),
+    };
+
+    let output = format_agent_run_response(resp);
+
+    assert!(output.contains("TinyFish automation finished."));
+    assert!(output.contains("Status: COMPLETED"));
+    assert!(!output.contains("Run ID:"));
+    assert!(!output.contains("run_123"));
 }

@@ -23,7 +23,9 @@ import { navigateToSkills } from '../helpers/shared-flows';
 import { clearRequestLog, setMockBehavior, startMockServer, stopMockServer } from '../mock-server';
 
 describe('Composio trigger toggles (UI + core RPC)', () => {
-  before(async () => {
+  before(async function () {
+    // waitForApp() + resetApp() can exceed the default 30s Mocha hook budget.
+    this.timeout(90_000);
     await startMockServer();
     setMockBehavior(
       'composioConnections',
@@ -146,6 +148,8 @@ describe('Composio trigger toggles (UI + core RPC)', () => {
       { timeout: 10_000, interval: 500, timeoutMsg: 'trigger toggles did not render' }
     );
     expect(togglesVisible).toBe(true);
-    expect(await textExists('Gmail New Gmail Message')).toBe(true);
+    // formatTriggerLabel('GMAIL_NEW_GMAIL_MESSAGE', { toolkit: 'gmail' }) strips
+    // the leading 'Gmail' prefix, producing "New Gmail Message".
+    expect(await textExists('New Gmail Message')).toBe(true);
   });
 });

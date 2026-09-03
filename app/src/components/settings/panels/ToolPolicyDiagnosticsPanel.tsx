@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { useT } from '../../../lib/i18n/I18nContext';
 import { callCoreRpc } from '../../../services/coreRpcClient';
-import SettingsHeader from '../components/SettingsHeader';
-import { useSettingsNavigation } from '../hooks/useSettingsNavigation';
+import { SettingsStatusLine } from '../controls';
+import SettingsPanel from '../layout/SettingsPanel';
 
 type ToolPolicyDiagnostics = {
   total_tools: number;
@@ -44,7 +44,6 @@ type ToolPolicyDiagnostics = {
 
 const ToolPolicyDiagnosticsPanel = () => {
   const { t } = useT();
-  const { navigateBack, breadcrumbs } = useSettingsNavigation();
 
   const [status, setStatus] = useState<
     | { kind: 'loading' }
@@ -57,7 +56,7 @@ const ToolPolicyDiagnosticsPanel = () => {
     (async () => {
       try {
         const diagnostics = await callCoreRpc<ToolPolicyDiagnostics>({
-          method: 'tool_registry.diagnostics',
+          method: 'openhuman.tool_registry_diagnostics',
           params: {},
           timeoutMs: 10_000,
         });
@@ -76,20 +75,18 @@ const ToolPolicyDiagnosticsPanel = () => {
   const body = useMemo(() => {
     if (status.kind === 'loading') {
       return (
-        <div className="px-4 py-3 text-sm text-sage-700 dark:text-sage-200">
+        <div className="px-4 py-3 text-sm text-content-muted">
           {t('devOptions.toolPolicyDiagnostics.loading')}
         </div>
       );
     }
     if (status.kind === 'error') {
       return (
-        <div className="px-4 py-3 rounded-lg border border-coral-300 dark:border-coral-500/40 bg-coral-50 dark:bg-coral-500/10">
-          <div className="text-sm font-semibold text-coral-900 dark:text-coral-200">
+        <div className="px-4 py-3">
+          <div className="text-sm font-semibold text-content mb-1">
             {t('devOptions.toolPolicyDiagnostics.unavailable')}
           </div>
-          <div className="text-xs text-coral-800 dark:text-coral-200 mt-1 font-mono break-words">
-            {status.message}
-          </div>
+          <SettingsStatusLine saving={false} error={status.message} savingLabel="" />
         </div>
       );
     }
@@ -99,8 +96,8 @@ const ToolPolicyDiagnosticsPanel = () => {
       d.mcp_write_audit.recent_rows === null ? '—' : String(d.mcp_write_audit.recent_rows);
 
     return (
-      <div className="px-4 pt-3 pb-6 flex flex-col gap-3">
-        <div className="px-4 py-3 rounded-lg border border-sage-300 dark:border-sage-500/40 bg-sage-50 dark:bg-sage-500/10">
+      <div className="px-4 pt-3 pb-6 space-y-3">
+        <div className="px-4 py-3 rounded-xl border border-sage-300 dark:border-sage-500/40 bg-sage-50 dark:bg-sage-500/10">
           <div className="text-sm font-semibold text-sage-900 dark:text-sage-200">
             {t('devOptions.toolPolicyDiagnostics.posture.title')}
           </div>
@@ -136,7 +133,7 @@ const ToolPolicyDiagnosticsPanel = () => {
           </dl>
         </div>
 
-        <div className="px-4 py-3 rounded-lg border border-sage-300 dark:border-sage-500/40 bg-white dark:bg-sage-900/20">
+        <div className="px-4 py-3 rounded-xl border border-sage-300 dark:border-sage-500/40 bg-surface dark:bg-sage-900/20">
           <div className="text-sm font-semibold text-sage-900 dark:text-sage-200">
             {t('devOptions.toolPolicyDiagnostics.inventory.title')}
           </div>
@@ -168,7 +165,7 @@ const ToolPolicyDiagnosticsPanel = () => {
           </dl>
         </div>
 
-        <div className="px-4 py-3 rounded-lg border border-sage-300 dark:border-sage-500/40 bg-white dark:bg-sage-900/20">
+        <div className="px-4 py-3 rounded-xl border border-sage-300 dark:border-sage-500/40 bg-surface dark:bg-sage-900/20">
           <div className="text-sm font-semibold text-sage-900 dark:text-sage-200">
             {t('devOptions.toolPolicyDiagnostics.mcpAllowlists.title')}
           </div>
@@ -198,7 +195,7 @@ const ToolPolicyDiagnosticsPanel = () => {
           )}
         </div>
 
-        <div className="px-4 py-3 rounded-lg border border-sage-300 dark:border-sage-500/40 bg-white dark:bg-sage-900/20">
+        <div className="px-4 py-3 rounded-xl border border-sage-300 dark:border-sage-500/40 bg-surface dark:bg-sage-900/20">
           <div className="text-sm font-semibold text-sage-900 dark:text-sage-200">
             {t('devOptions.toolPolicyDiagnostics.mcpWriteAudit.title')}
           </div>
@@ -208,13 +205,13 @@ const ToolPolicyDiagnosticsPanel = () => {
               .replace('{recentRows}', recentRows)}
           </div>
           {d.mcp_write_audit.last_error && (
-            <div className="mt-2 text-xs text-coral-700 dark:text-coral-200 font-mono break-words">
+            <div className="mt-2 text-xs text-coral-700 dark:text-coral-200 font-mono wrap-break-word">
               {d.mcp_write_audit.last_error}
             </div>
           )}
         </div>
 
-        <div className="px-4 py-3 rounded-lg border border-sage-300 dark:border-sage-500/40 bg-white dark:bg-sage-900/20">
+        <div className="px-4 py-3 rounded-xl border border-sage-300 dark:border-sage-500/40 bg-surface dark:bg-sage-900/20">
           <div className="text-sm font-semibold text-sage-900 dark:text-sage-200">
             {t('devOptions.toolPolicyDiagnostics.recentBlocked.title')}
           </div>
@@ -238,14 +235,16 @@ const ToolPolicyDiagnosticsPanel = () => {
                       {entry.policy}:{entry.action}
                     </span>
                   </div>
-                  <div className="text-sage-700 dark:text-sage-300 break-words">{entry.reason}</div>
+                  <div className="text-sage-700 dark:text-sage-300 wrap-break-word">
+                    {entry.reason}
+                  </div>
                 </li>
               ))}
             </ul>
           )}
         </div>
 
-        <div className="px-4 py-3 rounded-lg border border-sage-300 dark:border-sage-500/40 bg-white dark:bg-sage-900/20">
+        <div className="px-4 py-3 rounded-xl border border-sage-300 dark:border-sage-500/40 bg-surface dark:bg-sage-900/20">
           <div className="text-sm font-semibold text-sage-900 dark:text-sage-200">
             {t('devOptions.toolPolicyDiagnostics.redactedSurfaces.title')}
           </div>
@@ -260,15 +259,7 @@ const ToolPolicyDiagnosticsPanel = () => {
   }, [status, t]);
 
   return (
-    <div className="z-10 relative">
-      <SettingsHeader
-        title={t('devOptions.diagnostics')}
-        showBackButton={true}
-        onBack={navigateBack}
-        breadcrumbs={breadcrumbs}
-      />
-      {body}
-    </div>
+    <SettingsPanel description={t('devOptions.toolPolicyDiagnosticsDesc')}>{body}</SettingsPanel>
   );
 };
 

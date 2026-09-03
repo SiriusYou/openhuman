@@ -1,4 +1,5 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 
 import { renderWithProviders } from '../../../test/test-utils';
@@ -64,6 +65,80 @@ describe('ObsidianVaultSection', () => {
     await waitFor(() => expect(screen.getByTestId('obsidian-vault-guidance')).toBeInTheDocument());
     expect(openUrl).not.toHaveBeenCalled();
     expect(screen.getByTestId('obsidian-vault-path')).toHaveTextContent(ROOT);
+  });
+
+  // #4266: the section lives inside the horizontal MemoryControls toolbar, so
+  // the guidance panel must render out of normal flow (absolute popover) — an
+  // in-flow/`w-full` panel grows the flex item and reflows the whole toolbar.
+  it('guidance panel renders out of flow so the toolbar never reflows', async () => {
+    memoryTreeObsidianVaultStatus.mockResolvedValue(status());
+    renderWithProviders(<ObsidianVaultSection contentRootAbs={ROOT} />);
+
+    fireEvent.click(screen.getByTestId('memory-open-in-obsidian'));
+
+    const panel = await screen.findByTestId('obsidian-vault-guidance');
+    expect(panel).toHaveClass('absolute');
+    expect(panel).not.toHaveClass('w-full');
+    // The section itself stays inline (sized to the button), not a full-width column.
+    expect(screen.getByTestId('obsidian-vault-section')).toHaveClass('inline-flex');
+  });
+
+  // #4266: as a floating popover the panel overlays the graph, so its background
+  // must be opaque — the old translucent `dark:bg-*-500/10` let content bleed
+  // through and made the text unreadable. (The panel moved from the stock
+  // violet ramp to the themeable `primary` one; the opacity contract is
+  // unchanged.)
+  it('guidance panel has an opaque background (does not bleed through)', async () => {
+    memoryTreeObsidianVaultStatus.mockResolvedValue(status());
+    renderWithProviders(<ObsidianVaultSection contentRootAbs={ROOT} />);
+
+    fireEvent.click(screen.getByTestId('memory-open-in-obsidian'));
+
+    const panel = await screen.findByTestId('obsidian-vault-guidance');
+    expect(panel).toHaveClass('bg-primary-50');
+    expect(panel).toHaveClass('dark:bg-primary-950');
+    expect(panel).not.toHaveClass('dark:bg-primary-500/10');
+  });
+
+  // #4266: the floating panel needs explicit dismissal — close button, Escape,
+  // and click-outside all collapse it.
+  it('close button dismisses the guidance panel', async () => {
+    memoryTreeObsidianVaultStatus.mockResolvedValue(status());
+    renderWithProviders(<ObsidianVaultSection contentRootAbs={ROOT} />);
+
+    fireEvent.click(screen.getByTestId('memory-open-in-obsidian'));
+    fireEvent.click(await screen.findByTestId('obsidian-vault-close'));
+
+    await waitFor(() => expect(screen.queryByTestId('obsidian-vault-guidance')).toBeNull());
+  });
+
+  it('Escape key dismisses the guidance panel', async () => {
+    memoryTreeObsidianVaultStatus.mockResolvedValue(status());
+    renderWithProviders(<ObsidianVaultSection contentRootAbs={ROOT} />);
+
+    fireEvent.click(screen.getByTestId('memory-open-in-obsidian'));
+    await screen.findByTestId('obsidian-vault-guidance');
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByTestId('obsidian-vault-guidance')).toBeNull());
+  });
+
+  it('clicking outside the section dismisses the guidance panel', async () => {
+    memoryTreeObsidianVaultStatus.mockResolvedValue(status());
+    renderWithProviders(<ObsidianVaultSection contentRootAbs={ROOT} />);
+
+    fireEvent.click(screen.getByTestId('memory-open-in-obsidian'));
+    await screen.findByTestId('obsidian-vault-guidance');
+    // Radix's dismissable layer listens for `pointerdown`, not `mousedown` —
+    // `userEvent.click` drives the full native pointerdown/pointerup/click
+    // sequence (and, unlike a bare `fireEvent.pointerDown`, waits out Radix's
+    // internal `setTimeout(0)` that defers attaching the outside-pointerdown
+    // listener — otherwise a synchronous dispatch fires before Radix is
+    // listening at all).
+    const user = userEvent.setup();
+    await user.click(document.body);
+
+    await waitFor(() => expect(screen.queryByTestId('obsidian-vault-guidance')).toBeNull());
   });
 
   it('"Open anyway" fires the deep link even when unregistered', async () => {

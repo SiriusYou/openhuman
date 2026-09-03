@@ -1,6 +1,10 @@
 import debug from 'debug';
 
 import type {
+  DerivedTranscriptGetOptions,
+  DerivedTranscriptPage,
+} from '../../types/derivedTranscript';
+import type {
   PurgeResultData,
   Thread,
   ThreadDeleteData,
@@ -9,12 +13,17 @@ import type {
   ThreadsListData,
 } from '../../types/thread';
 import type {
+  AgentRun,
+  AgentRunGetResponse,
+  AgentRunListResponse,
   ClearTurnStateResponse,
   GetTaskBoardResponse,
   GetTurnStateResponse,
   ListTurnStatesResponse,
   PersistedTurnState,
   PutTaskBoardResponse,
+  RunEvent,
+  RunEventListResponse,
   TaskBoard,
   TaskBoardCard,
 } from '../../types/turnState';
@@ -134,6 +143,33 @@ export const threadApi = {
     return data?.turnStates ?? [];
   },
 
+  /**
+   * Per-turn history for one thread, newest first — each turn's own tool
+   * timeline (Phase 4). Cheap enough to call on thread open; full timelines can
+   * be lazily re-fetched per turn via {@link getTurnStateForRequest}.
+   */
+  getTurnStateHistory: async (threadId: string): Promise<PersistedTurnState[]> => {
+    const response = await callCoreRpc<{ data?: ListTurnStatesResponse }>({
+      method: 'openhuman.threads_turn_state_history',
+      params: { thread_id: threadId },
+    });
+    const data = unwrapEnvelope(response);
+    return data?.turnStates ?? [];
+  },
+
+  /** One specific past turn of a thread, by its producing request id (Phase 4). */
+  getTurnStateForRequest: async (
+    threadId: string,
+    requestId: string
+  ): Promise<PersistedTurnState | null> => {
+    const response = await callCoreRpc<{ data?: GetTurnStateResponse }>({
+      method: 'openhuman.threads_turn_state_get_turn',
+      params: { thread_id: threadId, request_id: requestId },
+    });
+    const data = unwrapEnvelope(response);
+    return data?.turnState ?? null;
+  },
+
   clearTurnState: async (threadId: string): Promise<boolean> => {
     const response = await callCoreRpc<{ data?: ClearTurnStateResponse }>({
       method: 'openhuman.threads_turn_state_clear',
@@ -141,6 +177,43 @@ export const threadApi = {
     });
     const data = unwrapEnvelope(response);
     return Boolean(data?.cleared);
+  },
+
+  listRuns: async (filters?: {
+    status?: string;
+    kind?: string;
+    parentRunId?: string;
+    parentThreadId?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<AgentRun[]> => {
+    const response = await callCoreRpc<{ data?: AgentRunListResponse }>({
+      method: 'openhuman.run_ledger_list',
+      params: filters ?? {},
+    });
+    const data = unwrapEnvelope(response);
+    return data?.runs ?? [];
+  },
+
+  getRun: async (id: string): Promise<AgentRun | null> => {
+    const response = await callCoreRpc<{ data?: AgentRunGetResponse }>({
+      method: 'openhuman.run_ledger_get',
+      params: { id },
+    });
+    const data = unwrapEnvelope(response);
+    return data?.run ?? null;
+  },
+
+  listRunEvents: async (
+    runId: string,
+    options?: { afterSequence?: number; limit?: number }
+  ): Promise<RunEvent[]> => {
+    const response = await callCoreRpc<{ data?: RunEventListResponse }>({
+      method: 'openhuman.run_ledger_events',
+      params: { runId, ...options },
+    });
+    const data = unwrapEnvelope(response);
+    return data?.events ?? [];
   },
 
   getTaskBoard: async (threadId: string): Promise<TaskBoard | null> => {
@@ -199,6 +272,27 @@ export const threadApi = {
     const response = await callCoreRpc<Envelope<Thread>>({
       method: 'openhuman.threads_update_title',
       params: { thread_id: threadId, title },
+    });
+    return unwrapEnvelope(response);
+  },
+
+  /**
+   * Transcript-derived view (Phase B/C): project the thread's append-only
+   * `session_raw/*.jsonl` source of truth into typed display items for the
+   * settled-turn restore path. Newest-first paginated; `cursor` comes from a
+   * prior page's `nextCursor`, `limit` defaults to 50 (core-clamped to 500).
+   *
+   * A thread with no persisted transcript yet returns an empty page with
+   * `hasTranscript: false` (not an error) — the caller then falls back to the
+   * legacy `turn_state_history` hydration.
+   */
+  getDerivedTranscript: async (
+    threadId: string,
+    options?: DerivedTranscriptGetOptions
+  ): Promise<DerivedTranscriptPage> => {
+    const response = await callCoreRpc<Envelope<DerivedTranscriptPage>>({
+      method: 'openhuman.threads_transcript_get',
+      params: { thread_id: threadId, cursor: options?.cursor, limit: options?.limit },
     });
     return unwrapEnvelope(response);
   },

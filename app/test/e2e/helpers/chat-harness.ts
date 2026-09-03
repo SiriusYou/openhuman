@@ -6,7 +6,7 @@
  * needs:
  *
  *   - `button[title="New thread"]`       — icon-only button, no text
- *   - `textarea[placeholder="Type a message..."]` — React-controlled
+ *   - `textarea[placeholder="Send a message..."]` — React-controlled
  *     input that should be driven through WebDriver so React observes
  *     the same input events a user would produce
  *   - `button[aria-label="Send message"]` — icon-only button
@@ -21,17 +21,35 @@
 
 /** Click a button identified by its `title` attribute. Returns `true`
  *  if a matching button was found and clicked. Polls because the
- *  composer renders asynchronously after a thread is created. */
+ *  composer renders asynchronously after a thread is created.
+ *
+ *  Matching is tolerant of trailing keyboard-shortcut hints that the UI
+ *  appends in parentheses: the composer-flattening refactor (#3611) renamed
+ *  the new-thread button's title from `t('chat.newThread')` ("New thread")
+ *  to `t('chat.newThreadShortcut')` ("New thread (/new)"). The button itself
+ *  carries a stable `data-testid="new-thread-button"`, so for that affordance
+ *  we prefer the test id and fall back to exact/prefix title matching for any
+ *  other titled button a spec may target. */
 export async function clickByTitle(title: string, timeoutMs = 6_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const clicked = await browser.execute((t: string) => {
-      const el = document.querySelector(
-        `button[title=${JSON.stringify(t)}]`
-      ) as HTMLButtonElement | null;
-      if (!el) return false;
-      el.click();
-      return true;
+      const click = (el: HTMLButtonElement | null) => {
+        if (!el) return false;
+        el.click();
+        return true;
+      };
+      // The new-thread button is the canonical `clickByTitle` target and
+      // exposes a stable test id — prefer it over the i18n title string.
+      if (t === 'New thread' || t.startsWith('New thread')) {
+        if (click(document.querySelector('[data-testid="new-thread-button"]'))) return true;
+      }
+      // Exact title match, then prefix match (handles " (/new)" style suffixes).
+      if (click(document.querySelector(`button[title=${JSON.stringify(t)}]`))) return true;
+      const prefixMatch = Array.from(
+        document.querySelectorAll<HTMLButtonElement>('button[title]')
+      ).find(b => (b.getAttribute('title') ?? '').startsWith(t));
+      return click(prefixMatch ?? null);
     }, title);
     if (clicked) return true;
     await browser.pause(200);
@@ -39,47 +57,98 @@ export async function clickByTitle(title: string, timeoutMs = 6_000): Promise<bo
   return false;
 }
 
-const COMPOSER_SELECTOR = 'textarea[placeholder="Type a message..."]';
+// Chat now uses assistant-ui's Lexical contenteditable surface. Keep the
+// former textarea selector as a fallback for the voice/legacy embed, but make
+// all harness flows target the stable semantic textbox rather than a specific
+// editor implementation.
+const COMPOSER_SELECTOR =
+  'textarea[placeholder="Send a message..."], [contenteditable="true"][role="textbox"][aria-label="Message input"]';
+
+/** True once the Conversations page has mounted its composer/header.
+ *
+ *  The composer-flattening refactor (#3611) removed the "Threads" sidebar
+ *  heading that specs previously polled via `textExists('Threads')`, so that
+ *  check could never resolve and every chat spec failed with "Conversations
+ *  did not mount". The chat header's new-thread button and the composer
+ *  textarea are both stable, always-rendered mount signals — poll for either. */
+export async function chatMounted(): Promise<boolean> {
+  return browser.execute(
+    (composerSel: string) =>
+      document.querySelector('[data-testid="new-thread-button"]') !== null ||
+      document.querySelector(composerSel) !== null,
+    COMPOSER_SELECTOR
+  );
+}
 
 /** Type into the chat composer through WebDriver so React's controlled
  *  input state and the DOM stay in sync. */
 export async function typeIntoComposer(text: string): Promise<void> {
-  const composer = await browser.$(COMPOSER_SELECTOR);
-  await composer.waitForDisplayed({ timeout: 10_000 });
-  await composer.waitForEnabled({ timeout: 10_000 });
+  let actual = '';
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    // Creating a thread can replace the controlled composer after the selected
+    // thread id changes. Resolve it afresh on every attempt so a late React
+    // commit cannot leave WebDriver typing into a detached element.
+    const composer = await browser.$(COMPOSER_SELECTOR);
+    await composer.waitForDisplayed({ timeout: 10_000 });
+    await composer.waitForEnabled({ timeout: 10_000 });
 
-  // Step 1: Focus via JS — avoids the coordinate-based click that gets
-  // intercepted by AppUpdatePrompt (z-[9998], fixed bottom-4 right-4).
-  // We also select-all any existing text so the subsequent delete clears it.
-  const focused = await browser.execute((sel: string) => {
-    const el = document.querySelector(sel) as HTMLTextAreaElement | null;
-    if (!el) return false;
-    el.focus();
-    el.select();
-    return true;
-  }, COMPOSER_SELECTOR);
-  if (!focused) {
-    throw new Error('typeIntoComposer: textarea not found');
+    // Focus via JS — avoids the coordinate-based click that gets intercepted
+    // by AppUpdatePrompt. Select any partial value before deleting it.
+    const focused = await browser.execute((sel: string) => {
+      const el = document.querySelector(sel) as HTMLTextAreaElement | HTMLElement | null;
+      if (!el) return false;
+      el.focus();
+      if (el instanceof HTMLTextAreaElement) {
+        el.select();
+      } else {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+      return true;
+    }, COMPOSER_SELECTOR);
+    if (!focused) continue;
+
+    // WebKitWebDriver drops trailing key events even when they are paced. Use
+    // the native textarea setter for the legacy field or textContent for the
+    // assistant-ui Lexical field, then emit the bubbling input event each
+    // surface observes.
+    const typed = await browser.execute(
+      (sel: string, nextValue: string) => {
+        const el = document.querySelector(sel) as HTMLElement | null;
+        if (!el) return false;
+        if (el instanceof HTMLTextAreaElement) {
+          const setter = Object.getOwnPropertyDescriptor(
+            window.HTMLTextAreaElement.prototype,
+            'value'
+          )?.set;
+          if (setter) setter.call(el, nextValue);
+          else el.value = nextValue;
+        } else {
+          el.textContent = nextValue;
+        }
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: nextValue }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      },
+      COMPOSER_SELECTOR,
+      text
+    );
+    if (!typed) continue;
+    await browser.pause(200);
+    actual = (await browser.execute((sel: string) => {
+      const el = document.querySelector(sel) as HTMLTextAreaElement | HTMLElement | null;
+      if (!el) return '';
+      return el instanceof HTMLTextAreaElement ? el.value : (el.textContent ?? '');
+    }, COMPOSER_SELECTOR)) as string;
+    if (actual === text) return;
   }
 
-  // Step 2: Clear existing content.  el.select() inside browser.execute already
-  // selected all text; browser.keys('Delete') now removes the selection so
-  // React's controlled state sees an empty value before we start typing.
-  await browser.pause(80);
-  await browser.keys('Delete');
-  await browser.pause(80);
-
-  // Step 3: Type the text using real OS-level keyboard events (browser.keys).
-  // Unlike synthetic DOM events dispatched via browser.execute(), these go
-  // through Chromium's normal input pipeline, triggering React's onChange
-  // on the controlled textarea and correctly updating `inputValue` state so
-  // the send button becomes enabled.
-  await browser.keys(text.split(''));
-
-  await browser.waitUntil(async () => (await composer.getValue()) === text, {
-    timeout: 5_000,
-    timeoutMsg: 'chat composer did not receive typed text',
-  });
+  throw new Error(
+    `chat composer did not receive typed text after 3 attempts (actual length ${actual.length}, expected ${text.length})`
+  );
 }
 
 /** Click the chat composer's send button. Returns `false` if the

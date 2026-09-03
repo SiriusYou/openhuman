@@ -25,9 +25,8 @@ use openhuman_core::api::config::{
     OPENHUMAN_INFERENCE_PATH, VITE_APP_ENV_VAR,
 };
 use openhuman_core::core::auth::{init_rpc_token, CORE_TOKEN_ENV_VAR};
-use openhuman_core::core::event_bus::{DomainEvent, EventHandler};
+use openhuman_core::core::events::DomainEvent;
 use openhuman_core::core::jsonrpc::build_core_http_router;
-use openhuman_core::openhuman::app_state::app_state_schemas;
 use openhuman_core::openhuman::config::schema::{
     generate_provider_id, generate_voice_provider_id, is_slug_reserved, is_voice_slug_reserved,
     migrate_legacy_fields, AuditConfig, AuthStyle, CapabilityProviderConfig,
@@ -47,30 +46,43 @@ use openhuman_core::openhuman::config::{
     Config, DaemonConfig, DelegateAgentConfig, DictationActivationMode, LlmBackend,
     ReflectionSource, TeamModelConfig, UpdateRestartStrategy,
 };
-use openhuman_core::openhuman::connectivity::{
+use openhuman_core::openhuman::desktop::app_state::app_state_schemas;
+use openhuman_core::openhuman::platform::connectivity::{
     all_connectivity_controller_schemas, all_connectivity_registered_controllers,
     connectivity_controller_schema,
 };
-use openhuman_core::openhuman::credentials::bus::SessionExpiredSubscriber;
-use openhuman_core::openhuman::credentials::cli::{
+use openhuman_core::openhuman::security::credentials::bus::SessionExpiredSubscriber;
+use openhuman_core::openhuman::security::credentials::cli::{
     cli_auth_list, cli_auth_login, cli_auth_logout, cli_auth_status, parse_field_equals_entries,
 };
-use openhuman_core::openhuman::credentials::profiles::{AuthProfile, AuthProfilesStore, TokenSet};
-use openhuman_core::openhuman::credentials::session_support::{
+use openhuman_core::openhuman::security::credentials::profiles::{
+    AuthProfile, AuthProfilesStore, TokenSet,
+};
+use openhuman_core::openhuman::security::credentials::session_support::{
     build_session_state, get_session_token, is_local_session_token, load_app_session_profile,
     parse_fields_value, profile_name_or_default, session_state_from_profile,
     session_token_from_profile, summarize_auth_profile,
 };
-use openhuman_core::openhuman::credentials::{
+use openhuman_core::openhuman::security::credentials::{
     clear_composio_api_key, decrypt_secret, encrypt_secret, get_composio_api_key,
     list_provider_credentials_by_prefix, normalize_provider, rpc_store_composio_api_key,
     store_composio_api_key, AuthService, APP_SESSION_PROVIDER, COMPOSIO_DIRECT_PROVIDER,
 };
+use tinybus::EventHandler;
 
 const TEST_RPC_TOKEN: &str = "worker-a-domain-e2e-token";
 
 static AUTH_INIT: OnceLock<()> = OnceLock::new();
-static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+// This file is both its own integration target AND `#[path]`-included as
+// `base_coverage` by `raw_coverage/config_credentials_raw_coverage_e2e.rs`.
+// `ENV_LOCK` aliases `crate::SHARED_ENV_LOCK`, which resolves to this file's
+// own static when built standalone (separate process, isolated env) and to the
+// aggregate's shared static when nested into `raw_coverage_all` (so its env
+// mutations serialize against every other aggregated suite). The nested copy of
+// this static is simply unused.
+#[allow(dead_code)]
+pub static SHARED_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static ENV_LOCK: &OnceLock<Mutex<()>> = &crate::SHARED_ENV_LOCK;
 
 struct EnvVarGuard {
     key: &'static str,
@@ -154,12 +166,9 @@ async fn serve_mock_backend() -> (
     let app = Router::new()
         .route("/auth/me", get(mock_auth_me))
         .route("/api/auth/me", get(mock_auth_me))
+        .route("/auth/login-token/consume", post(mock_consume_login_token))
         .route(
-            "/telegram/login-tokens/{token}/consume",
-            post(mock_consume_login_token),
-        )
-        .route(
-            "/api/telegram/login-tokens/{token}/consume",
+            "/api/auth/login-token/consume",
             post(mock_consume_login_token),
         )
         .route(
@@ -370,11 +379,17 @@ async fn static_auth_me(
     }))
 }
 
-async fn mock_consume_login_token(AxumPath(token): AxumPath<String>) -> Json<Value> {
+async fn mock_consume_login_token(Json(body): Json<Value>) -> Json<Value> {
+    // Token now arrives in the JSON body (`{ token }`), not the URL path, and the
+    // response field is `jwt` (matches backend `routes/auth.ts`).
+    let token = body
+        .get("token")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     Json(json!({
         "success": true,
         "data": {
-            "jwtToken": format!("jwt-from-{token}")
+            "jwt": format!("jwt-from-{token}")
         }
     }))
 }
@@ -669,8 +684,10 @@ fn config_schema_helpers_cover_provider_voice_agent_and_channel_defaults() {
     migrate_legacy_fields(&mut minimax_legacy);
     assert_eq!(minimax_legacy.slug, "minimax");
     assert_eq!(minimax_legacy.label, "MiniMax");
-    assert_eq!(minimax_legacy.endpoint, "https://api.minimax.io/anthropic");
-    assert_eq!(minimax_legacy.auth_style, AuthStyle::Anthropic);
+    // MiniMax uses its OpenAI-compatible /v1 surface + Bearer (TAURI-RUST-8X3);
+    // the legacy `type=minimax` migration fills from the corrected catalog.
+    assert_eq!(minimax_legacy.endpoint, "https://api.minimax.io/v1");
+    assert_eq!(minimax_legacy.auth_style, AuthStyle::Bearer);
     assert_eq!(AuthStyle::OpenhumanJwt.as_str(), "openhuman_jwt");
     assert_eq!(AuthStyle::Anthropic.as_str(), "anthropic");
     assert_eq!(AuthStyle::None.as_str(), "none");
@@ -1049,9 +1066,6 @@ fn config_schema_defaults_cover_dashboard_capability_memory_and_security_shapes(
     assert_eq!(audit.log_path, "audit.log");
     assert_eq!(audit.max_size_mb, 100);
 
-    let meet: openhuman_core::openhuman::config::schema::MeetConfig =
-        serde_json::from_value(json!({})).expect("meet defaults");
-    assert!(!meet.auto_orchestrator_handoff);
     let observability: openhuman_core::openhuman::config::schema::ObservabilityConfig =
         serde_json::from_value(json!({})).expect("observability defaults");
     assert!(observability.analytics_enabled);
@@ -1168,23 +1182,6 @@ fn config_schema_defaults_cover_dashboard_capability_memory_and_security_shapes(
         let _: openhuman_core::openhuman::config::schema::McpAuthConfig =
             serde_json::from_value(auth).expect("mcp auth variant should deserialize");
     }
-
-    let incomplete_poly = openhuman_core::openhuman::config::schema::PolymarketClobCredentials {
-        api_key: " key ".into(),
-        secret: "   ".into(),
-        passphrase: " pass ".into(),
-    };
-    assert!(!incomplete_poly.is_complete());
-    let complete_poly = openhuman_core::openhuman::config::schema::PolymarketClobCredentials {
-        api_key: " key ".into(),
-        secret: " secret ".into(),
-        passphrase: " pass ".into(),
-    };
-    assert!(complete_poly.is_complete());
-    assert_eq!(
-        format!("{complete_poly:?}"),
-        "PolymarketClobCredentials { api_key: \"<redacted>\", secret: \"<redacted>\", passphrase: \"<redacted>\" }"
-    );
 }
 
 #[test]
@@ -1912,6 +1909,7 @@ async fn config_env_overlay_public_loader_applies_runtime_and_tool_overrides() {
         EnvVarGuard::set("OPENHUMAN_PARALLEL_API_KEY", "parallel-key"),
         EnvVarGuard::set("OPENHUMAN_BRAVE_API_KEY", "brave-key"),
         EnvVarGuard::set("OPENHUMAN_QUERIT_API_KEY", "querit-key"),
+        EnvVarGuard::set("OPENHUMAN_EXA_API_KEY", "exa-key"),
         EnvVarGuard::set("OPENHUMAN_SEARCH_MAX_RESULTS", "11"),
         EnvVarGuard::set("OPENHUMAN_SEARCH_TIMEOUT_SECS", "8"),
         EnvVarGuard::set("OPENHUMAN_WEB_SEARCH_ENABLED", "0"),
@@ -2005,6 +2003,7 @@ async fn config_env_overlay_public_loader_applies_runtime_and_tool_overrides() {
     assert!(config.search.parallel.has_key());
     assert!(config.search.brave.has_key());
     assert!(config.search.querit.has_key());
+    assert!(config.search.exa.has_key());
     assert_eq!(config.search.max_results, 11);
     assert_eq!(config.web_search.max_results, 7);
     assert!(config.proxy.enabled);
@@ -2102,8 +2101,10 @@ async fn config_save_and_load_encrypts_channel_secret_fields() {
     config.search.parallel.api_key = Some("parallel-secret".into());
     config.search.brave.api_key = Some("brave-secret".into());
     config.search.querit.api_key = Some("querit-secret".into());
+    config.search.exa.api_key = Some("exa-secret".into());
     config.channels_config.telegram = Some(TelegramConfig {
         bot_token: "telegram-secret".into(),
+        chat_id: None,
         allowed_users: vec!["alice".into()],
         stream_mode: Default::default(),
         draft_update_interval_ms: 1000,
@@ -2184,6 +2185,7 @@ async fn config_save_and_load_encrypts_channel_secret_fields() {
     for secret in [
         "api-secret",
         "parallel-secret",
+        "exa-secret",
         "telegram-secret",
         "discord-secret",
         "slack-bot-secret",
@@ -2211,6 +2213,7 @@ async fn config_save_and_load_encrypts_channel_secret_fields() {
         loaded.search.parallel.api_key.as_deref(),
         Some("parallel-secret")
     );
+    assert_eq!(loaded.search.exa.api_key.as_deref(), Some("exa-secret"));
     assert_eq!(
         loaded
             .channels_config
@@ -2581,45 +2584,53 @@ async fn credentials_public_ops_cover_service_and_missing_session_error_paths() 
     std::fs::create_dir_all(config.config_path.parent().expect("config parent"))
         .expect("create config parent");
 
-    openhuman_core::openhuman::credentials::start_login_gated_services(&config).await;
-    openhuman_core::openhuman::credentials::stop_login_gated_services(&config).await;
+    openhuman_core::openhuman::security::credentials::start_login_gated_services(&config).await;
+    openhuman_core::openhuman::security::credentials::stop_login_gated_services(&config).await;
 
     assert!(
-        openhuman_core::openhuman::credentials::auth_create_channel_link_token(&config, "   ")
-            .await
-            .expect_err("blank channel should fail")
-            .contains("channel is required")
+        openhuman_core::openhuman::security::credentials::auth_create_channel_link_token(
+            &config, "   "
+        )
+        .await
+        .expect_err("blank channel should fail")
+        .contains("channel is required")
     );
     assert!(
-        openhuman_core::openhuman::credentials::auth_create_channel_link_token(&config, "matrix")
-            .await
-            .expect_err("unsupported channel should fail")
-            .contains("unsupported channel")
+        openhuman_core::openhuman::security::credentials::auth_create_channel_link_token(
+            &config, "matrix"
+        )
+        .await
+        .expect_err("unsupported channel should fail")
+        .contains("unsupported channel")
     );
     assert!(
-        openhuman_core::openhuman::credentials::auth_create_channel_link_token(&config, "telegram")
-            .await
-            .expect_err("missing session should fail")
-            .contains("session JWT required")
+        openhuman_core::openhuman::security::credentials::auth_create_channel_link_token(
+            &config, "telegram"
+        )
+        .await
+        .expect_err("missing session should fail")
+        .contains("session JWT required")
     );
-    assert!(openhuman_core::openhuman::credentials::oauth_connect(
-        &config,
-        "github",
-        Some("skill"),
-        Some("code"),
-        Some("handoff"),
-    )
-    .await
-    .expect_err("oauth connect without session should fail")
-    .contains("session JWT required"));
     assert!(
-        openhuman_core::openhuman::credentials::oauth_list_integrations(&config)
+        openhuman_core::openhuman::security::credentials::oauth_connect(
+            &config,
+            "github",
+            Some("skill"),
+            Some("code"),
+            Some("handoff"),
+        )
+        .await
+        .expect_err("oauth connect without session should fail")
+        .contains("session JWT required")
+    );
+    assert!(
+        openhuman_core::openhuman::security::credentials::oauth_list_integrations(&config)
             .await
             .expect_err("oauth list without session should fail")
             .contains("session JWT required")
     );
     assert!(
-        openhuman_core::openhuman::credentials::oauth_fetch_integration_tokens(
+        openhuman_core::openhuman::security::credentials::oauth_fetch_integration_tokens(
             &config,
             "0123456789abcdef01234567",
             "0123456789abcdef0123456789abcdef",
@@ -2629,7 +2640,7 @@ async fn credentials_public_ops_cover_service_and_missing_session_error_paths() 
         .contains("session JWT required")
     );
     assert!(
-        openhuman_core::openhuman::credentials::oauth_fetch_client_key(
+        openhuman_core::openhuman::security::credentials::oauth_fetch_client_key(
             &config,
             "0123456789abcdef01234567",
         )
@@ -2638,7 +2649,7 @@ async fn credentials_public_ops_cover_service_and_missing_session_error_paths() 
         .contains("session JWT required")
     );
     assert!(
-        openhuman_core::openhuman::credentials::oauth_revoke_integration(
+        openhuman_core::openhuman::security::credentials::oauth_revoke_integration(
             &config,
             "0123456789abcdef01234567",
         )
@@ -2783,6 +2794,9 @@ async fn worker_a_controller_schemas_are_fully_exposed() {
             vec![
                 "openhuman.config_agent_server_status",
                 "openhuman.config_get",
+                "openhuman.config_get_activity_level_settings",
+                "openhuman.config_get_agent_paths",
+                "openhuman.config_get_agent_settings",
                 "openhuman.config_get_analytics_settings",
                 "openhuman.config_get_autonomy_settings",
                 "openhuman.config_get_client_config",
@@ -2790,26 +2804,32 @@ async fn worker_a_controller_schemas_are_fully_exposed() {
                 "openhuman.config_get_dashboard_settings",
                 "openhuman.config_get_data_paths",
                 "openhuman.config_get_dictation_settings",
-                "openhuman.config_get_meet_settings",
+                "openhuman.config_get_memory_sync_settings",
                 "openhuman.config_get_onboarding_completed",
+                "openhuman.config_get_privacy_mode",
                 "openhuman.config_get_runtime_flags",
+                "openhuman.config_get_sandbox_settings",
                 "openhuman.config_get_search_settings",
                 "openhuman.config_get_voice_server_settings",
                 "openhuman.config_reset_local_data",
                 "openhuman.config_resolve_api_url",
                 "openhuman.config_set_browser_allow_all",
                 "openhuman.config_set_onboarding_completed",
+                "openhuman.config_set_privacy_mode",
+                "openhuman.config_update_activity_level_settings",
+                "openhuman.config_update_agent_paths",
+                "openhuman.config_update_agent_settings",
                 "openhuman.config_update_analytics_settings",
                 "openhuman.config_update_autonomy_settings",
                 "openhuman.config_update_browser_settings",
                 "openhuman.config_update_composio_trigger_settings",
                 "openhuman.config_update_dictation_settings",
                 "openhuman.config_update_local_ai_settings",
-                "openhuman.config_update_meet_settings",
                 "openhuman.config_update_memory_settings",
+                "openhuman.config_update_memory_sync_settings",
                 "openhuman.config_update_model_settings",
                 "openhuman.config_update_runtime_settings",
-                "openhuman.config_update_screen_intelligence_settings",
+                "openhuman.config_update_sandbox_settings",
                 "openhuman.config_update_search_settings",
                 "openhuman.config_update_voice_server_settings",
                 "openhuman.config_workspace_onboarding_flag_exists",
@@ -2844,6 +2864,28 @@ async fn worker_a_controller_schemas_are_fully_exposed() {
             ],
         ),
         ("connectivity", vec!["openhuman.connectivity_diag"]),
+        (
+            "memory_sources",
+            vec![
+                "openhuman.memory_sources_add",
+                "openhuman.memory_sources_apply_all_in",
+                "openhuman.memory_sources_coding_session_status",
+                "openhuman.memory_sources_estimate_sync_cost",
+                "openhuman.memory_sources_get",
+                "openhuman.memory_sources_ingest_coding_sessions",
+                "openhuman.memory_sources_list",
+                "openhuman.memory_sources_list_items",
+                "openhuman.memory_sources_monthly_cost_summary",
+                "openhuman.memory_sources_read_item",
+                "openhuman.memory_sources_reconcile",
+                "openhuman.memory_sources_remove",
+                "openhuman.memory_sources_status_list",
+                "openhuman.memory_sources_supported_toolkits",
+                "openhuman.memory_sources_sync",
+                "openhuman.memory_sources_sync_audit_log",
+                "openhuman.memory_sources_update",
+            ],
+        ),
     ] {
         assert_eq!(
             schema_method_names(&schema, namespace),
@@ -2930,6 +2972,64 @@ async fn config_controller_mutations_round_trip_over_json_rpc() {
         "client config must not echo local API keys: {client_payload}"
     );
 
+    // The model registry is seeded + price/context-window-enriched from the
+    // static pricing catalog on load (in-memory), so a fresh workspace surfaces
+    // real numbers over RPC. Validates the full path: catalog → seed-on-load →
+    // client_config_json → JSON-RPC. (The earlier update_model_settings call did
+    // not include `model_registry`, so the seeded registry is left intact.)
+    let registry = client_payload
+        .get("model_registry")
+        .and_then(Value::as_array)
+        .expect("client config should expose model_registry");
+    assert!(
+        !registry.is_empty(),
+        "model_registry should be auto-seeded from the pricing catalog: {client_payload}"
+    );
+    let opus = registry
+        .iter()
+        .find(|m| m.get("id").and_then(Value::as_str) == Some("claude-opus-4-8"))
+        .unwrap_or_else(|| panic!("seeded registry should contain claude-opus-4-8: {registry:?}"));
+    assert_eq!(
+        opus.get("provider").and_then(Value::as_str),
+        Some("anthropic")
+    );
+    assert_eq!(
+        opus.get("cost_per_1m_input").and_then(Value::as_f64),
+        Some(5.0),
+        "input price should be pre-filled from the catalog: {opus:?}"
+    );
+    assert_eq!(
+        opus.get("cost_per_1m_output").and_then(Value::as_f64),
+        Some(25.0),
+        "output price should be pre-filled from the catalog: {opus:?}"
+    );
+    assert_eq!(
+        opus.get("context_window").and_then(Value::as_u64),
+        Some(1_000_000),
+        "context window should be pre-filled from the catalog: {opus:?}"
+    );
+    // Every seeded entry carries non-zero pricing + context window — the whole
+    // point of the catalog pre-fill.
+    for entry in registry {
+        let id = entry.get("id").and_then(Value::as_str).unwrap_or("<none>");
+        assert!(
+            entry
+                .get("cost_per_1m_output")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+                > 0.0,
+            "{id} missing output price: {entry:?}"
+        );
+        assert!(
+            entry
+                .get("context_window")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                > 0,
+            "{id} missing context window: {entry:?}"
+        );
+    }
+
     let memory = rpc(
         &harness.rpc_base,
         10_004,
@@ -2949,26 +3049,11 @@ async fn config_controller_mutations_round_trip_over_json_rpc() {
     for (id, method, params) in [
         (
             10_005,
-            "openhuman.config_update_screen_intelligence_settings",
-            json!({
-                "enabled": false,
-                "capture_policy": "off",
-                "baseline_fps": 0.5,
-                "vision_enabled": false,
-                "autocomplete_enabled": false,
-                "use_vision_model": false,
-                "keep_screenshots": false,
-                "allowlist": ["Finder"],
-                "denylist": ["Passwords"]
-            }),
-        ),
-        (
-            10_006,
             "openhuman.config_update_runtime_settings",
             json!({ "kind": "local", "reasoning_enabled": true }),
         ),
         (
-            10_007,
+            10_006,
             "openhuman.config_update_browser_settings",
             json!({ "enabled": true }),
         ),
@@ -3192,30 +3277,6 @@ async fn config_runtime_flags_settings_readbacks_and_validation_paths_are_exerci
         Some(false)
     );
 
-    ok(
-        &rpc(
-            &harness.rpc_base,
-            11_006,
-            "openhuman.config_update_meet_settings",
-            json!({ "auto_orchestrator_handoff": true }),
-        )
-        .await,
-        "update_meet_settings true",
-    );
-    let meet = rpc(
-        &harness.rpc_base,
-        11_007,
-        "openhuman.config_get_meet_settings",
-        json!({}),
-    )
-    .await;
-    assert_eq!(
-        payload(&meet, "get_meet_settings")
-            .get("auto_orchestrator_handoff")
-            .and_then(Value::as_bool),
-        Some(true)
-    );
-
     let onboarding_before = rpc(
         &harness.rpc_base,
         11_008,
@@ -3345,6 +3406,7 @@ async fn config_runtime_flags_settings_readbacks_and_validation_paths_are_exerci
             "parallel_api_key": " parallel-rpc-key ",
             "brave_api_key": " brave-rpc-key ",
             "querit_api_key": " querit-rpc-key ",
+            "exa_api_key": " exa-rpc-key ",
             "allowed_domains": [" example.com ", "", "example.com", "docs.example.com"],
             "allow_all": false
         }),
@@ -3400,6 +3462,12 @@ async fn config_runtime_flags_settings_readbacks_and_validation_paths_are_exerci
         Some(true)
     );
     assert_eq!(
+        search_payload
+            .get("exa_configured")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
         search_payload.get("allow_all").and_then(Value::as_bool),
         Some(false)
     );
@@ -3415,6 +3483,7 @@ async fn config_runtime_flags_settings_readbacks_and_validation_paths_are_exerci
             "parallel_api_key": " ",
             "brave_api_key": " ",
             "querit_api_key": " ",
+            "exa_api_key": " ",
             "allow_all": true
         }),
     )
@@ -3520,16 +3589,6 @@ async fn config_runtime_flags_settings_readbacks_and_validation_paths_are_exerci
         &rpc(
             &harness.rpc_base,
             11_019,
-            "openhuman.config_update_screen_intelligence_settings",
-            json!({ "baseline_fps": 99.0 }),
-        )
-        .await,
-        "update_screen_intelligence_settings clamps baseline",
-    );
-    ok(
-        &rpc(
-            &harness.rpc_base,
-            11_020,
             "openhuman.config_update_voice_server_settings",
             json!({
                 "min_duration_secs": -1.0,
@@ -3539,12 +3598,8 @@ async fn config_runtime_flags_settings_readbacks_and_validation_paths_are_exerci
         .await,
         "update_voice_server_settings clamps non-negative floats",
     );
-    let config = rpc(&harness.rpc_base, 11_021, "openhuman.config_get", json!({})).await;
+    let config = rpc(&harness.rpc_base, 11_020, "openhuman.config_get", json!({})).await;
     let config_payload = payload(&config, "config_get after clamps");
-    assert_eq!(
-        config_payload.pointer("/config/screen_intelligence/baseline_fps"),
-        Some(&json!(30.0))
-    );
     assert_eq!(
         config_payload.pointer("/config/voice_server/min_duration_secs"),
         Some(&json!(0.0))
@@ -4190,8 +4245,9 @@ async fn auth_remote_backend_paths_and_app_state_current_user_cache_round_trip()
         "the second snapshot should reuse the current-user cache"
     );
 
-    let identity = openhuman_core::openhuman::app_state::peek_cached_current_user_identity()
-        .expect("snapshot should seed cached identity");
+    let identity =
+        openhuman_core::openhuman::desktop::app_state::peek_cached_current_user_identity()
+            .expect("snapshot should seed cached identity");
     assert_eq!(identity.id.as_deref(), Some("remote-user-1"));
     assert_eq!(identity.name.as_deref(), Some("Remote Worker"));
     assert_eq!(
@@ -4309,7 +4365,8 @@ async fn app_state_snapshot_clears_empty_current_user_cache_and_falls_back_to_st
         "empty backend users should clear the cache and fall back to stored identity"
     );
     assert!(
-        openhuman_core::openhuman::app_state::peek_cached_current_user_identity().is_none(),
+        openhuman_core::openhuman::desktop::app_state::peek_cached_current_user_identity()
+            .is_none(),
         "empty backend user should clear the process current-user cache"
     );
 
@@ -4456,7 +4513,8 @@ async fn app_state_snapshot_clears_null_current_user_cache_and_falls_back_to_sto
         "null backend users should clear the cache and fall back to stored identity"
     );
     assert!(
-        openhuman_core::openhuman::app_state::peek_cached_current_user_identity().is_none(),
+        openhuman_core::openhuman::desktop::app_state::peek_cached_current_user_identity()
+            .is_none(),
         "null backend user should clear the process current-user cache"
     );
 
@@ -4516,8 +4574,9 @@ async fn app_state_cached_identity_peek_accepts_legacy_current_user_fields() {
         2,
         "store_session and snapshot should each fetch the static backend once"
     );
-    let identity = openhuman_core::openhuman::app_state::peek_cached_current_user_identity()
-        .expect("legacy current-user keys should produce a prompt identity");
+    let identity =
+        openhuman_core::openhuman::desktop::app_state::peek_cached_current_user_identity()
+            .expect("legacy current-user keys should produce a prompt identity");
     assert_eq!(identity.id.as_deref(), Some("legacy-user-id"));
     assert_eq!(identity.name.as_deref(), Some("Legacy Display"));
     assert_eq!(
@@ -4575,8 +4634,9 @@ async fn app_state_cached_identity_peek_accepts_camel_case_fallback_fields() {
             .and_then(Value::as_str),
         Some("camel-user-id")
     );
-    let identity = openhuman_core::openhuman::app_state::peek_cached_current_user_identity()
-        .expect("camel-case current-user keys should produce a prompt identity");
+    let identity =
+        openhuman_core::openhuman::desktop::app_state::peek_cached_current_user_identity()
+            .expect("camel-case current-user keys should produce a prompt identity");
     assert_eq!(identity.id.as_deref(), Some("camel-user-id"));
     assert_eq!(identity.name.as_deref(), Some("Camel Full Name"));
     assert_eq!(identity.email, None);
@@ -4636,7 +4696,8 @@ async fn app_state_cached_identity_peek_ignores_current_user_without_identity_fi
         "store_session and snapshot should each fetch the no-identity backend once"
     );
     assert!(
-        openhuman_core::openhuman::app_state::peek_cached_current_user_identity().is_none(),
+        openhuman_core::openhuman::desktop::app_state::peek_cached_current_user_identity()
+            .is_none(),
         "current-user objects without id/name/email should not produce prompt identity"
     );
 
@@ -4775,11 +4836,10 @@ async fn app_state_snapshot_degrades_runtime_service_status_failures() {
     let _service_state =
         EnvVarGuard::set_to_path("OPENHUMAN_SERVICE_MOCK_STATE_FILE", &service_state_path);
 
-    // The runtime snapshot cache is process-global and not keyed by config.
-    // Let prior app_state_snapshot tests age out so this call exercises the
-    // service-status fallback instead of returning a cached runtime.
-    tokio::time::sleep(Duration::from_millis(2_100)).await;
-
+    // The runtime snapshot cache is keyed by config identity (workspace_dir), so
+    // this harness's unique workspace guarantees a cache miss regardless of prior
+    // app_state_snapshot tests — the call exercises the service-status fallback
+    // against our injected mock rather than returning a foreign cached runtime.
     let snapshot = rpc(
         &harness.rpc_base,
         30_051,
@@ -5305,7 +5365,7 @@ fn credentials_profile_store_recovers_dropped_entries_empty_files_and_datetime_e
     let tmp = tempdir().expect("tempdir");
 
     let default_profiles =
-        openhuman_core::openhuman::credentials::profiles::AuthProfilesData::default();
+        openhuman_core::openhuman::security::credentials::profiles::AuthProfilesData::default();
     assert_eq!(default_profiles.schema_version, 1);
     assert!(default_profiles.profiles.is_empty());
 
@@ -5442,14 +5502,27 @@ fn credentials_profile_store_recovers_dropped_entries_empty_files_and_datetime_e
         .to_string(),
     )
     .expect("write missing oauth secret fixture");
-    let missing_secret_err = AuthProfilesStore::new(&missing_oauth_secret_dir, false)
+    let missing_secret = AuthProfilesStore::new(&missing_oauth_secret_dir, false)
         .load()
-        .expect_err("oauth profile missing access token should fail");
+        .expect("oauth profile missing access token should be dropped");
+    assert!(missing_secret.profiles.is_empty());
+    assert!(missing_secret.active_profiles.is_empty());
+    let rewritten_missing_secret: Value = serde_json::from_str(
+        &std::fs::read_to_string(missing_oauth_secret_dir.join("auth-profiles.json"))
+            .expect("read rewritten missing oauth secret profile store"),
+    )
+    .expect("rewritten missing oauth secret store should be json");
     assert!(
-        missing_secret_err
-            .to_string()
-            .contains("OAuth profile missing access_token"),
-        "unexpected missing oauth secret error: {missing_secret_err:#}"
+        rewritten_missing_secret
+            .pointer("/profiles/github:missing-access")
+            .is_none(),
+        "missing oauth secret profile should be purged from persisted store: {rewritten_missing_secret}"
+    );
+    assert!(
+        rewritten_missing_secret
+            .pointer("/active_profiles/github")
+            .is_none(),
+        "active pointer to missing oauth secret profile should be purged: {rewritten_missing_secret}"
     );
 
     let public_api_dir = tmp.path().join("public-api-errors");
@@ -5532,7 +5605,7 @@ fn credentials_profile_store_keychain_migration_and_fallback_paths_are_determini
     let hit_dir = tmp.path().join("keychain-hit");
     std::fs::create_dir_all(&hit_dir).expect("create keychain hit dir");
     let hit_profile_id = "github:main";
-    openhuman_core::openhuman::keyring::set(
+    openhuman_core::openhuman::security::keyring::set(
         "keychain-hit",
         &format!("auth:{hit_profile_id}"),
         &json!({
@@ -5631,7 +5704,7 @@ fn credentials_profile_store_keychain_migration_and_fallback_paths_are_determini
             .and_then(|profile| profile.token.as_deref()),
         Some("plain-token-for-migration")
     );
-    let migrated_keychain = openhuman_core::openhuman::keyring::get(
+    let migrated_keychain = openhuman_core::openhuman::security::keyring::get(
         "keychain-migrate",
         &format!("auth:{migrate_profile_id}"),
     )
@@ -5645,7 +5718,7 @@ fn credentials_profile_store_keychain_migration_and_fallback_paths_are_determini
     let fallback_dir = tmp.path().join("keychain-fallback");
     std::fs::create_dir_all(&fallback_dir).expect("create keychain fallback dir");
     let fallback_profile_id = "slack:bot";
-    openhuman_core::openhuman::keyring::set(
+    openhuman_core::openhuman::security::keyring::set(
         "keychain-fallback",
         &format!("auth:{fallback_profile_id}"),
         "not-json",
@@ -5691,7 +5764,7 @@ fn credentials_profile_store_keychain_migration_and_fallback_paths_are_determini
         "migrated profile should be removable"
     );
     assert!(
-        openhuman_core::openhuman::keyring::get(
+        openhuman_core::openhuman::security::keyring::get(
             "keychain-migrate",
             &format!("auth:{migrate_profile_id}"),
         )
@@ -5742,9 +5815,9 @@ fn connectivity_public_helpers_cover_schemas_and_port_probe() {
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe listener");
     let port = listener.local_addr().expect("probe local addr").port();
-    assert!(openhuman_core::openhuman::connectivity::ops::is_port_in_use(port));
+    assert!(openhuman_core::openhuman::platform::connectivity::ops::is_port_in_use(port));
     drop(listener);
-    let _ = openhuman_core::openhuman::connectivity::ops::is_port_in_use(port);
+    let _ = openhuman_core::openhuman::platform::connectivity::ops::is_port_in_use(port);
 }
 
 #[tokio::test]
@@ -5764,7 +5837,7 @@ async fn connectivity_pick_listen_port_uses_fallback_when_preferred_is_busy() {
     }
     let held_listener = held_listener.expect("find preferred port with fallback room");
 
-    let picked = openhuman_core::openhuman::connectivity::rpc::pick_listen_port_for_host(
+    let picked = openhuman_core::openhuman::platform::connectivity::rpc::pick_listen_port_for_host(
         "127.0.0.1",
         preferred,
     )
@@ -5780,10 +5853,12 @@ async fn connectivity_pick_listen_port_uses_fallback_when_preferred_is_busy() {
 async fn connectivity_pick_listen_port_covers_direct_bind_and_exhausted_fallbacks() {
     let _lock = env_lock();
 
-    let direct =
-        openhuman_core::openhuman::connectivity::rpc::pick_listen_port_for_host("127.0.0.1", 0)
-            .await
-            .expect("port 0 should bind directly");
+    let direct = openhuman_core::openhuman::platform::connectivity::rpc::pick_listen_port_for_host(
+        "127.0.0.1",
+        0,
+    )
+    .await
+    .expect("port 0 should bind directly");
     assert_eq!(direct.fallback_from, None);
     drop(direct.listener);
 
@@ -5813,14 +5888,15 @@ async fn connectivity_pick_listen_port_covers_direct_bind_and_exhausted_fallback
         }
     }
     let preferred = preferred.expect("reserve preferred port and fallback range");
-    let exhausted = openhuman_core::openhuman::connectivity::rpc::pick_listen_port_for_host(
-        "127.0.0.1",
-        preferred,
-    )
-    .await
-    .expect_err("busy preferred and fallback range should fail");
+    let exhausted =
+        openhuman_core::openhuman::platform::connectivity::rpc::pick_listen_port_for_host(
+            "127.0.0.1",
+            preferred,
+        )
+        .await
+        .expect_err("busy preferred and fallback range should fail");
     match &exhausted {
-        openhuman_core::openhuman::connectivity::rpc::PickListenPortError::NoAvailablePort {
+        openhuman_core::openhuman::platform::connectivity::rpc::PickListenPortError::NoAvailablePort {
             preferred: err_preferred,
             attempted,
             fingerprint,
@@ -5842,7 +5918,7 @@ async fn connectivity_pick_listen_port_covers_direct_bind_and_exhausted_fallback
     );
 
     let takeover =
-        openhuman_core::openhuman::connectivity::rpc::PickListenPortError::WouldTakeOver {
+        openhuman_core::openhuman::platform::connectivity::rpc::PickListenPortError::WouldTakeOver {
             preferred,
             fingerprint: "openhuman-core".into(),
         };
@@ -5850,7 +5926,7 @@ async fn connectivity_pick_listen_port_covers_direct_bind_and_exhausted_fallback
         .to_string()
         .contains("stale-listener takeover required"));
     let bind_failed =
-        openhuman_core::openhuman::connectivity::rpc::PickListenPortError::BindFailed {
+        openhuman_core::openhuman::platform::connectivity::rpc::PickListenPortError::BindFailed {
             port: preferred,
             reason: "synthetic bind failure".into(),
         };
@@ -5897,19 +5973,19 @@ async fn connectivity_diag_reports_runtime_port_sources() {
     {
         let _rpc_url = EnvVarGuard::set("OPENHUMAN_CORE_RPC_URL", "http://127.0.0.1:4567/rpc");
         let _core_port = EnvVarGuard::set("OPENHUMAN_CORE_PORT", "7788");
-        let snapshot = openhuman_core::openhuman::connectivity::rpc::snapshot();
+        let snapshot = openhuman_core::openhuman::platform::connectivity::rpc::snapshot();
         assert_eq!(snapshot.listen_port, 4567);
     }
     {
         let _rpc_url = EnvVarGuard::set("OPENHUMAN_CORE_RPC_URL", "not a url");
         let _core_port = EnvVarGuard::set("OPENHUMAN_CORE_PORT", "4568");
-        let snapshot = openhuman_core::openhuman::connectivity::rpc::snapshot();
+        let snapshot = openhuman_core::openhuman::platform::connectivity::rpc::snapshot();
         assert_eq!(snapshot.listen_port, 4568);
     }
     {
         let _rpc_url = EnvVarGuard::unset("OPENHUMAN_CORE_RPC_URL");
         let _core_port = EnvVarGuard::set("OPENHUMAN_CORE_PORT", "not-a-port");
-        let snapshot = openhuman_core::openhuman::connectivity::rpc::snapshot();
+        let snapshot = openhuman_core::openhuman::platform::connectivity::rpc::snapshot();
         assert_eq!(snapshot.listen_port, 7788);
     }
 

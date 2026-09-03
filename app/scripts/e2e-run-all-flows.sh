@@ -8,8 +8,8 @@
 # OPTIONS:
 #   --suite=SUITE     Run only one suite category. Valid values:
 #                       auth, navigation, chat, skills, notifications,
-#                       webhooks, providers, payments, settings, system,
-#                       journeys, all  (default: all)
+#                       webhooks, providers, provider-web, payments, settings,
+#                       system, journeys, all  (default: all)
 #   --bail            Stop after the first spec failure (default: run all)
 #   --skip-preflight  Skip the pre-flight environment check
 #
@@ -57,7 +57,7 @@ for arg in "$@"; do
   esac
 done
 
-VALID_SUITES="auth navigation chat skills notifications webhooks providers connectors payments settings system journeys all"
+VALID_SUITES="auth navigation chat skills notifications webhooks providers provider-web connectors payments settings system journeys all"
 
 # Accept comma-separated suite lists, e.g. --suite=auth,navigation,system.
 # CI sharding passes one such list per matrix shard so a few parallel jobs
@@ -292,8 +292,8 @@ if should_run_suite "notifications"; then
   echo "## Running suite: notifications"
   run "test/e2e/specs/notifications.spec.ts"                  "notifications"             "notifications"
   run "test/e2e/specs/memory-roundtrip.spec.ts"               "memory-roundtrip"          "notifications"
+  run "test/e2e/specs/coding-session-memory.spec.ts"           "coding-session-memory"     "notifications"
   run "test/e2e/specs/cron-jobs-flow.spec.ts"                 "cron-jobs"                 "notifications"
-  run "test/e2e/specs/autocomplete-flow.spec.ts"              "autocomplete"              "notifications"
   _mini_summary "notifications"
 fi
 
@@ -326,17 +326,28 @@ if should_run_suite "providers"; then
   run "test/e2e/specs/telegram-channel-flow.spec.ts"          "telegram-channel"          "providers"
   run "test/e2e/specs/gmail-flow.spec.ts"                     "gmail"                     "providers"
   run "test/e2e/specs/accounts-provider-modal.spec.ts"        "accounts-providers"        "providers"
+  _mini_summary "providers"
+fi
+
+# Split browser-heavy provider flows out of the core provider shard. Telegram,
+# Gmail, and accounts already consume several minutes of Appium/CEF runtime on
+# Windows; keeping WhatsApp/conversations in the same shared session makes the
+# later specs prone to "session is either terminated or not started" teardown
+# failures before their own assertions run.
+if should_run_suite "provider-web"; then
+  echo ""
+  echo "## Running suite: provider-web"
   # slack-flow currently crashes the CEF session mid-spec on Linux (#1850-style
   # state issue); skip until investigated rather than nuke the rest of the
   # provider suite.
-  # run "test/e2e/specs/slack-flow.spec.ts"                   "slack"                     "providers"
-  run "test/e2e/specs/whatsapp-flow.spec.ts"                  "whatsapp"                  "providers"
+  # run "test/e2e/specs/slack-flow.spec.ts"                   "slack"                     "provider-web"
+  run "test/e2e/specs/whatsapp-flow.spec.ts"                  "whatsapp"                  "provider-web"
   # notion-flow.spec.ts was removed; skip to avoid "spec not found" failure.
-  # run "test/e2e/specs/notion-flow.spec.ts"                  "notion"                    "providers"
-  run "test/e2e/specs/conversations-web-channel-flow.spec.ts" "conversations"             "providers"
-  run "test/e2e/specs/composio-triggers-flow.spec.ts"         "composio-triggers"         "providers"
-  run "test/e2e/specs/connectivity-state-differentiation.spec.ts" "connectivity-state"   "providers"
-  _mini_summary "providers"
+  # run "test/e2e/specs/notion-flow.spec.ts"                  "notion"                    "provider-web"
+  run "test/e2e/specs/conversations-web-channel-flow.spec.ts" "conversations"             "provider-web"
+  run "test/e2e/specs/composio-triggers-flow.spec.ts"         "composio-triggers"         "provider-web"
+  run "test/e2e/specs/connectivity-state-differentiation.spec.ts" "connectivity-state"   "provider-web"
+  _mini_summary "provider-web"
 fi
 
 # ---------------------------------------------------------------------------
@@ -351,22 +362,15 @@ fi
 if should_run_suite "connectors"; then
   echo ""
   echo "## Running suite: connectors"
-  run "test/e2e/specs/connector-airtable.spec.ts"            "connector-airtable"        "connectors"
-  run "test/e2e/specs/connector-asana.spec.ts"               "connector-asana"           "connectors"
-  run "test/e2e/specs/connector-clickup.spec.ts"             "connector-clickup"         "connectors"
-  run "test/e2e/specs/connector-confluence.spec.ts"          "connector-confluence"      "connectors"
+  # Table-driven contract spec covering the 11 formerly byte-identical
+  # Composio connector flows (airtable/asana/clickup/confluence/gcal/gdrive/
+  # gsheets/notion/slack/todoist/youtube) — see connector-contract.ts.
+  run "test/e2e/specs/connector-composio-contract.spec.ts"   "connector-composio-contract" "connectors"
   run "test/e2e/specs/connector-discord-composio.spec.ts"    "connector-discord"         "connectors"
   run "test/e2e/specs/connector-github.spec.ts"              "connector-github"          "connectors"
   run "test/e2e/specs/connector-gmail-composio.spec.ts"      "connector-gmail-composio"  "connectors"
-  run "test/e2e/specs/connector-google-calendar.spec.ts"     "connector-gcal"            "connectors"
-  run "test/e2e/specs/connector-google-drive.spec.ts"        "connector-gdrive"          "connectors"
-  run "test/e2e/specs/connector-google-sheets.spec.ts"       "connector-gsheets"         "connectors"
   run "test/e2e/specs/connector-jira.spec.ts"                "connector-jira"            "connectors"
-  run "test/e2e/specs/connector-notion.spec.ts"              "connector-notion"          "connectors"
   run "test/e2e/specs/connector-session-guard.spec.ts"       "connector-session-guard"   "connectors"
-  run "test/e2e/specs/connector-slack-composio.spec.ts"      "connector-slack-composio"  "connectors"
-  run "test/e2e/specs/connector-todoist.spec.ts"             "connector-todoist"         "connectors"
-  run "test/e2e/specs/connector-youtube.spec.ts"             "connector-youtube"         "connectors"
   _mini_summary "connectors"
 fi
 
@@ -400,7 +404,7 @@ if should_run_suite "settings"; then
 fi
 
 # ---------------------------------------------------------------------------
-# System / AI / voice / screen / Tauri
+# System / AI / voice / Tauri
 # linux-cef-deb-runtime.spec.ts is Linux-only (tests /usr/bin path resolution
 # for .deb package installs) — skipped on macOS/Windows.
 # ---------------------------------------------------------------------------
@@ -409,7 +413,6 @@ if should_run_suite "system"; then
   echo "## Running suite: system"
   run "test/e2e/specs/local-model-runtime.spec.ts"            "local-model"               "system"
   run "test/e2e/specs/voice-mode.spec.ts"                     "voice-mode"                "system"
-  run "test/e2e/specs/screen-intelligence.spec.ts"            "screen-intelligence"       "system"
   run "test/e2e/specs/audio-toolkit-flow.spec.ts"             "audio-toolkit"             "system"
   run "test/e2e/specs/tauri-commands.spec.ts"                 "tauri-commands"            "system"
   # service-connectivity-flow tests the old sidecar service model removed in
@@ -452,7 +455,7 @@ fi
 
 echo ""
 echo "──────────────────────────────────────────────────────────────────"
-echo "  Launching single shared WDIO session for ${#_spec_paths[@]} spec(s)"
+echo "  Launching WDIO for ${#_spec_paths[@]} spec(s)"
 echo "──────────────────────────────────────────────────────────────────"
 
 if [[ $BAIL -eq 1 ]]; then
@@ -460,8 +463,31 @@ if [[ $BAIL -eq 1 ]]; then
 fi
 
 set +e
-bash "$APP_DIR/scripts/e2e-run-session.sh" "${_spec_paths[@]}"
-_WDIO_EXIT_CODE=$?
+if [[ "$(uname -s)" == "Linux" && "${E2E_USE_TAURI_DRIVER:-}" == "1" ]]; then
+  # tauri-driver creates a new WebDriver session for every spec, even when
+  # WDIO serializes its workers. After a few sequential sessions the driver
+  # can stop accepting POST /session, so give each Linux spec a clean driver
+  # and app lifecycle. A retry has to restart that lifecycle too: retrying
+  # within the same driver only repeats a hung POST /session request.
+  for spec in "${_spec_paths[@]}"; do
+    status=1
+    for attempt in 1 2; do
+      bash "$APP_DIR/scripts/e2e-run-session.sh" "$spec"
+      status=$?
+      [[ $status -eq 0 ]] && break
+      if [[ $attempt -eq 1 ]]; then
+        echo "[e2e-run-all-flows] retrying ${spec} with a fresh Linux driver/app lifecycle" >&2
+      fi
+    done
+    if [[ $status -ne 0 ]]; then
+      _WDIO_EXIT_CODE=$status
+      [[ $BAIL -eq 1 ]] && break
+    fi
+  done
+else
+  bash "$APP_DIR/scripts/e2e-run-session.sh" "${_spec_paths[@]}"
+  _WDIO_EXIT_CODE=$?
+fi
 set -e
 
 # finish() trap will print the summary and exit with _WDIO_EXIT_CODE.

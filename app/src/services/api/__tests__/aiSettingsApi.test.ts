@@ -10,14 +10,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   type AISettings,
+  classifyProviderVerificationFailure,
   clearCloudProviderKey,
   completeOpenAiCodexOAuth,
+  describeProviderVerificationFailure,
   flushCloudProviders,
   importOpenAiCodexCliAuth,
   listProviderModels,
   loadAISettings,
   loadLocalProviderSnapshot,
+  loadProviderAuthErrors,
   localProvider,
+  modelRegistryVision,
   OPENAI_CODEX_OAUTH_MISSING_AUTH_URL,
   OPENAI_CODEX_OAUTH_MISSING_CALLBACK_URL,
   parseProviderString,
@@ -28,6 +32,8 @@ import {
   setLocalRuntimeEnabled,
   startOpenAiCodexOAuth,
   testProviderModel,
+  upsertModelRegistryVision,
+  verifyCloudProviderConnection,
 } from '../aiSettingsApi';
 
 // ─── Mock declarations (must be hoisted before imports) ───────────────────────
@@ -83,6 +89,7 @@ function makeClientConfigResult(overrides: Record<string, unknown> = {}) {
       api_key_set: false,
       model_routes: [],
       cloud_providers: [],
+      model_registry: [],
       primary_cloud: null,
       reasoning_provider: null,
       agentic_provider: null,
@@ -308,6 +315,26 @@ describe('loadAISettings', () => {
     expect(settings.cloudProviders[0].has_api_key).toBe(false);
   });
 
+  it('parses per-tier credits_bypass into creditsBypass, defaulting to false (#3767)', async () => {
+    mockAuthListProviderCredentials.mockResolvedValue(makeAuthProfileResult([]));
+
+    // Absent in an older snapshot → both tiers conservative false.
+    mockOpenhumanGetClientConfig.mockResolvedValue(makeClientConfigResult({}));
+    expect((await loadAISettings()).creditsBypass).toEqual({ chat: false, reasoning: false });
+
+    // Per-tier: chat true, reasoning absent → chat true, reasoning false.
+    mockOpenhumanGetClientConfig.mockResolvedValue(
+      makeClientConfigResult({ credits_bypass: { chat: true } })
+    );
+    expect((await loadAISettings()).creditsBypass).toEqual({ chat: true, reasoning: false });
+
+    // Both present.
+    mockOpenhumanGetClientConfig.mockResolvedValue(
+      makeClientConfigResult({ credits_bypass: { chat: true, reasoning: true } })
+    );
+    expect((await loadAISettings()).creditsBypass).toEqual({ chat: true, reasoning: true });
+  });
+
   it('sets has_api_key=true when a matching provider:<slug> profile is stored', async () => {
     mockOpenhumanGetClientConfig.mockResolvedValue(
       makeClientConfigResult({
@@ -409,6 +436,29 @@ describe('loadAISettings', () => {
 
     // Should not throw; has_api_key should default to false.
     expect(settings.cloudProviders[0].has_api_key).toBe(false);
+  });
+
+  it('keeps local runtime endpoint providers so the AI panel can edit them', async () => {
+    mockOpenhumanGetClientConfig.mockResolvedValue(
+      makeClientConfigResult({
+        cloud_providers: [
+          {
+            id: 'p_ollama_1',
+            slug: 'ollama',
+            label: 'Ollama',
+            endpoint: 'http://127.0.0.1:11434/v1',
+            auth_style: 'none',
+          },
+        ],
+      })
+    );
+    mockAuthListProviderCredentials.mockResolvedValue(makeAuthProfileResult([]));
+
+    const settings = await loadAISettings();
+
+    expect(settings.cloudProviders).toHaveLength(1);
+    expect(settings.cloudProviders[0].slug).toBe('ollama');
+    expect(settings.cloudProviders[0].endpoint).toBe('http://127.0.0.1:11434/v1');
   });
 
   it('includes two cloud providers with correct labels and endpoints', async () => {
@@ -558,12 +608,15 @@ describe('saveAISettings', () => {
         reasoning: { kind: 'cloud', providerSlug: 'openai', model: 'gpt-4o' },
         agentic: { kind: 'openhuman' },
         coding: { kind: 'openhuman' },
+        vision: { kind: 'openhuman' },
         memory: { kind: 'openhuman' },
 
         heartbeat: { kind: 'openhuman' },
         learning: { kind: 'openhuman' },
         subconscious: { kind: 'openhuman' },
       },
+      modelRegistry: [],
+      creditsBypass: { chat: false, reasoning: false },
       ...overrides,
     };
   }
@@ -602,6 +655,32 @@ describe('saveAISettings', () => {
     expect(patch.cloud_providers![0]).not.toHaveProperty('has_api_key');
   });
 
+  it('preserves local runtime providers in the cloud_providers payload', async () => {
+    const prev = makeSettings({ cloudProviders: [] });
+    const next = makeSettings({
+      cloudProviders: [
+        {
+          id: 'p_ollama_1',
+          slug: 'ollama',
+          label: 'Ollama',
+          endpoint: 'http://127.0.0.1:11434/v1',
+          auth_style: 'none',
+          has_api_key: true,
+        },
+      ],
+    });
+
+    await saveAISettings(prev, next);
+
+    const patch = mockOpenhumanUpdateModelSettings.mock.calls[0][0];
+    expect(patch.cloud_providers).toHaveLength(1);
+    expect(patch.cloud_providers![0]).toMatchObject({
+      slug: 'ollama',
+      endpoint: 'http://127.0.0.1:11434/v1',
+      auth_style: 'none',
+    });
+  });
+
   it('preserves auth_style through save round-trip for anthropic', async () => {
     const anthropicProvider = {
       id: 'p_anthropic_1',
@@ -618,14 +697,20 @@ describe('saveAISettings', () => {
         reasoning: { kind: 'openhuman' },
         agentic: { kind: 'openhuman' },
         coding: { kind: 'openhuman' },
+        vision: { kind: 'openhuman' },
         memory: { kind: 'openhuman' },
 
         heartbeat: { kind: 'openhuman' },
         learning: { kind: 'openhuman' },
         subconscious: { kind: 'openhuman' },
       },
+      modelRegistry: [],
     };
-    const next: AISettings = { cloudProviders: [anthropicProvider], routing: { ...prev.routing } };
+    const next: AISettings = {
+      cloudProviders: [anthropicProvider],
+      routing: { ...prev.routing },
+      modelRegistry: [],
+    };
 
     await saveAISettings(prev, next);
 
@@ -639,6 +724,7 @@ describe('saveAISettings', () => {
       routing: {
         ...makeSettings().routing,
         coding: { kind: 'cloud', providerSlug: 'openai', model: 'gpt-4o-mini' },
+        vision: { kind: 'cloud', providerSlug: 'openai', model: 'gpt-4o-mini' },
       },
     });
 
@@ -647,6 +733,45 @@ describe('saveAISettings', () => {
     const patch = mockOpenhumanUpdateModelSettings.mock.calls[0][0];
     expect(patch.cloud_providers).toBeDefined();
     expect(patch.coding_provider).toBe('openai:gpt-4o-mini');
+    expect(patch.vision_provider).toBe('openai:gpt-4o-mini');
+  });
+
+  it('sends model_registry when the vision flag changes', async () => {
+    const prev = makeSettings({ modelRegistry: [] });
+    const next = makeSettings({
+      modelRegistry: [{ id: 'my-llava', provider: 'openai', cost_per_1m_output: 0, vision: true }],
+    });
+    await saveAISettings(prev, next);
+    const patch = mockOpenhumanUpdateModelSettings.mock.calls[0][0];
+    expect(patch.model_registry).toEqual([
+      {
+        id: 'my-llava',
+        provider: 'openai',
+        cost_per_1m_input: 0,
+        cost_per_1m_cached_input: 0,
+        cost_per_1m_output: 0,
+        context_window: 0,
+        vision: true,
+      },
+    ]);
+  });
+
+  it('omits model_registry when unchanged', async () => {
+    const registry = [{ id: 'my-llava', provider: 'openai', cost_per_1m_output: 0, vision: true }];
+    const prev = makeSettings({ modelRegistry: registry });
+    const next = makeSettings({
+      modelRegistry: [...registry],
+      routing: {
+        ...makeSettings().routing,
+        coding: { kind: 'cloud', providerSlug: 'openai', model: 'gpt-4o-mini' },
+        vision: { kind: 'cloud', providerSlug: 'openai', model: 'gpt-4o-mini' },
+      },
+    });
+    await saveAISettings(prev, next);
+    const patch = mockOpenhumanUpdateModelSettings.mock.calls[0][0];
+    expect(patch.model_registry).toBeUndefined();
+    expect(patch.coding_provider).toBe('openai:gpt-4o-mini');
+    expect(patch.vision_provider).toBe('openai:gpt-4o-mini');
   });
 });
 
@@ -811,6 +936,56 @@ describe('listProviderModels', () => {
   });
 });
 
+describe('loadProviderAuthErrors', () => {
+  beforeEach(() => {
+    mockCallCoreRpc.mockReset();
+    mockIsTauri.mockReturnValue(true);
+  });
+
+  it('dispatches openhuman.inference_provider_auth_errors and returns the errors', async () => {
+    mockCallCoreRpc.mockResolvedValue({
+      result: {
+        errors: [
+          {
+            provider: 'openrouter',
+            status: 401,
+            message:
+              'openrouter rejected the API key (HTTP 401). Update it in Connections → API keys → LLM.',
+            timestamp_ms: 1000,
+          },
+        ],
+      },
+    });
+
+    const errors = await loadProviderAuthErrors();
+
+    expect(mockCallCoreRpc).toHaveBeenCalledWith({
+      method: 'openhuman.inference_provider_auth_errors',
+      params: {},
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0].provider).toBe('openrouter');
+    expect(errors[0].status).toBe(401);
+  });
+
+  it('returns empty array when not running in Tauri', async () => {
+    mockIsTauri.mockReturnValue(false);
+
+    const errors = await loadProviderAuthErrors();
+
+    expect(errors).toEqual([]);
+    expect(mockCallCoreRpc).not.toHaveBeenCalled();
+  });
+
+  it('returns empty array when result has no errors field', async () => {
+    mockCallCoreRpc.mockResolvedValue({ result: {} });
+
+    const errors = await loadProviderAuthErrors();
+
+    expect(errors).toEqual([]);
+  });
+});
+
 describe('testProviderModel', () => {
   beforeEach(() => {
     mockCallCoreRpc.mockReset();
@@ -867,5 +1042,274 @@ describe('flushCloudProviders', () => {
     mockIsTauri.mockReturnValue(false);
     await flushCloudProviders([]);
     expect(mockOpenhumanUpdateModelSettings).not.toHaveBeenCalled();
+  });
+});
+
+describe('model registry vision helpers', () => {
+  const reg = [
+    { id: 'gpt-4o', provider: 'openai', cost_per_1m_output: 0, vision: true },
+    { id: 'text-only', provider: 'openai', cost_per_1m_output: 0, vision: false },
+  ];
+
+  it('modelRegistryVision matches by (provider, id)', () => {
+    expect(modelRegistryVision(reg, 'openai', 'gpt-4o')).toBe(true);
+    expect(modelRegistryVision(reg, 'openai', 'text-only')).toBe(false);
+    expect(modelRegistryVision(reg, 'openai', 'unlisted')).toBe(false);
+    expect(modelRegistryVision(reg, 'azure', 'gpt-4o')).toBe(false);
+  });
+
+  it('upsertModelRegistryVision adds, flips, and removes entries', () => {
+    const added = upsertModelRegistryVision([], 'openai', 'my-llava', true);
+    expect(added).toEqual([
+      {
+        id: 'my-llava',
+        provider: 'openai',
+        cost_per_1m_input: 0,
+        cost_per_1m_cached_input: 0,
+        cost_per_1m_output: 0,
+        context_window: 0,
+        vision: true,
+      },
+    ]);
+    // vision:false removes the entry (absence ⇒ no vision).
+    const removed = upsertModelRegistryVision(reg, 'openai', 'gpt-4o', false);
+    expect(removed.find(e => e.id === 'gpt-4o')).toBeUndefined();
+    expect(removed.find(e => e.id === 'text-only')).toBeDefined();
+    // Flipping an existing entry on stays idempotent on the key.
+    const flipped = upsertModelRegistryVision(reg, 'openai', 'text-only', true);
+    expect(flipped.filter(e => e.id === 'text-only')).toHaveLength(1);
+    expect(modelRegistryVision(flipped, 'openai', 'text-only')).toBe(true);
+  });
+});
+
+// ─── #5146 §2.4: connected-but-unusable providers ─────────────────────────────
+
+// The messages are rendered through `useT()` in the panel; these tests drive the
+// same code path with a translator that returns each key's English fallback, so
+// the assertions read as the user-visible copy while the i18n wiring is exercised.
+const tFallback = (_key: string, fallback?: string) => fallback ?? '';
+
+describe('describeProviderVerificationFailure', () => {
+  it('maps an auth rejection onto a key-checking remedy', () => {
+    const msg = describeProviderVerificationFailure(
+      'openai',
+      'HTTP 401 invalid_api_key',
+      tFallback
+    );
+    expect(msg).toContain('openai');
+    expect(msg).toContain('rejected it');
+    // Must not leave the user thinking the save itself failed.
+    expect(msg).toContain('saved');
+  });
+
+  it('maps an unknown model onto a model-id remedy, not an auth remedy', () => {
+    const msg = describeProviderVerificationFailure(
+      'openai',
+      'The model `gpt-4p` does not exist or you do not have access to it.',
+      tFallback
+    );
+    expect(msg).toContain('does not recognise the selected model');
+    expect(msg).not.toContain('rejected it');
+  });
+
+  it('maps quota and rate-limit failures onto a billing remedy', () => {
+    for (const raw of [
+      '429 Too Many Requests',
+      'insufficient_quota',
+      'billing hard limit reached',
+    ]) {
+      expect(describeProviderVerificationFailure('deepseek', raw, tFallback)).toContain(
+        'quota or billing reasons'
+      );
+    }
+  });
+
+  it('maps a bare 404 onto the /v1 base-url remedy', () => {
+    const msg = describeProviderVerificationFailure('custom', 'HTTP 404', tFallback);
+    expect(msg).toContain('/v1');
+    expect(msg).toContain('base URL');
+  });
+
+  it('maps a timeout onto an endpoint/network remedy', () => {
+    expect(describeProviderVerificationFailure('custom', 'request timed out', tFallback)).toContain(
+      'did not respond in time'
+    );
+  });
+
+  it('keeps an unrecognised provider error out of the user-visible copy', () => {
+    // A raw upstream string can echo request material (headers, key
+    // fragments) and this lands in a screenshot-able banner, so the fallback
+    // branch must stay generic. The raw text is still returned on
+    // `CloudProviderVerification.detail` and logged by the caller.
+    const msg = describeProviderVerificationFailure(
+      'custom',
+      'kaboom: sk-secret-tail leaked in provider text',
+      tFallback
+    );
+    expect(msg).not.toContain('kaboom');
+    expect(msg).not.toContain('sk-secret-tail');
+    expect(msg).toContain('custom');
+  });
+
+  it('reads cleanly when the error string is empty', () => {
+    const msg = describeProviderVerificationFailure('custom', '   ', tFallback);
+    expect(msg).toContain('custom');
+    expect(msg).not.toMatch(/:\s*$/);
+  });
+
+  it('classifies case-insensitively', () => {
+    expect(describeProviderVerificationFailure('openai', 'INVALID API KEY', tFallback)).toContain(
+      'rejected it'
+    );
+  });
+
+  it('renders through i18n rather than hard-coded copy', () => {
+    // The panel is non-English for most users; every branch must resolve a key
+    // so the locale files (not this module) own the wording.
+    const seen: string[] = [];
+    const t = (key: string, fallback?: string) => {
+      seen.push(key);
+      return fallback ?? '';
+    };
+
+    describeProviderVerificationFailure('openai', 'HTTP 401', t);
+    describeProviderVerificationFailure('openai', 'model_not_found', t);
+    describeProviderVerificationFailure('openai', 'insufficient_quota', t);
+    describeProviderVerificationFailure('openai', 'HTTP 404', t);
+    describeProviderVerificationFailure('openai', 'timed out', t);
+    describeProviderVerificationFailure('openai', 'something novel', t);
+
+    expect(seen).toEqual([
+      'settings.ai.providerTest.authRejected',
+      'settings.ai.providerTest.modelNotRecognized',
+      'settings.ai.providerTest.quotaOrBilling',
+      'settings.ai.providerTest.endpointNotFound',
+      'settings.ai.providerTest.timeout',
+      'settings.ai.providerTest.unknown',
+    ]);
+  });
+
+  it('interpolates the slug into the translated template', () => {
+    const msg = describeProviderVerificationFailure(
+      'deepseek',
+      'HTTP 401',
+      () => 'translated: {slug} refused'
+    );
+    expect(msg).toBe('translated: deepseek refused');
+  });
+});
+
+describe('classifyProviderVerificationFailure', () => {
+  it('maps each recognised shape onto its reason, defaulting to unknown', () => {
+    expect(classifyProviderVerificationFailure('HTTP 401 invalid_api_key')).toBe('auth');
+    // A 403 counts as a rejected credential only with credential wording…
+    expect(classifyProviderVerificationFailure('provider returned 403: forbidden')).toBe('auth');
+    expect(classifyProviderVerificationFailure('403: API key does not have permission')).toBe(
+      'auth'
+    );
+    // …but network-side 403/407 (proxy / WAF / gateway) must NOT delete the key
+    // (#5341): they classify as unknown even though they contain 403/authentication.
+    expect(classifyProviderVerificationFailure('403 Forbidden (via Cloudflare)')).toBe('unknown');
+    expect(classifyProviderVerificationFailure('407 Proxy Authentication Required')).toBe(
+      'unknown'
+    );
+    expect(classifyProviderVerificationFailure('502 Bad Gateway')).toBe('unknown');
+    // Bare digit runs like a request id must not trip the 401/403 match.
+    expect(classifyProviderVerificationFailure('request id 1403 failed')).toBe('unknown');
+    expect(classifyProviderVerificationFailure('unknown model')).toBe('model');
+    expect(classifyProviderVerificationFailure('429 rate limit')).toBe('quota');
+    expect(classifyProviderVerificationFailure('HTTP 404')).toBe('endpoint');
+    // The endpoint branch matches a bare 'not found'; these natural phrasings
+    // must still reach the model branch rather than sending the user to check
+    // their base URL (greptile #5254).
+    expect(classifyProviderVerificationFailure('model not found')).toBe('model');
+    expect(classifyProviderVerificationFailure('The model `x` was not found')).toBe('model');
+    expect(classifyProviderVerificationFailure('request timed out')).toBe('timeout');
+    expect(classifyProviderVerificationFailure('kaboom')).toBe('unknown');
+    expect(classifyProviderVerificationFailure('')).toBe('unknown');
+  });
+});
+
+describe('verifyCloudProviderConnection', () => {
+  beforeEach(() => {
+    mockCallCoreRpc.mockReset();
+    mockIsTauri.mockReturnValue(true);
+  });
+
+  it('reports ok when the provider actually answers a test prompt', async () => {
+    mockCallCoreRpc.mockResolvedValue({ result: { reply: 'pong' } });
+
+    const result = await verifyCloudProviderConnection('openai');
+
+    expect(result).toEqual({ ok: true, message: '', detail: '' });
+    expect(mockCallCoreRpc).toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'openhuman.inference_test_provider_model' })
+    );
+  });
+
+  it('defaults to the chat workload and sends a minimal prompt', async () => {
+    mockCallCoreRpc.mockResolvedValue({ result: { reply: 'pong' } });
+
+    await verifyCloudProviderConnection('openai');
+
+    expect(mockCallCoreRpc).toHaveBeenCalledWith(
+      expect.objectContaining({ params: { workload: 'chat', provider: 'openai', prompt: 'ping' } })
+    );
+  });
+
+  it('treats an empty reply as unusable — this is the connected-but-unusable case', async () => {
+    mockCallCoreRpc.mockResolvedValue({ result: { reply: '   ' } });
+
+    const result = await verifyCloudProviderConnection('openai');
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('empty response');
+  });
+
+  it('returns the classified failure instead of throwing, so the caller never loses the save', async () => {
+    mockCallCoreRpc.mockRejectedValue(new Error('HTTP 401 invalid_api_key'));
+
+    const result = await verifyCloudProviderConnection('openai');
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('rejected it');
+    // Raw provider text stays available for the details expander.
+    expect(result.detail).toContain('401');
+  });
+
+  it('handles a non-Error rejection without stringifying to [object Object]', async () => {
+    mockCallCoreRpc.mockRejectedValue('plain string failure');
+
+    const result = await verifyCloudProviderConnection('openai');
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBe('plain string failure');
+  });
+
+  it('forwards a model-qualified provider verbatim but names only the slug', async () => {
+    // The core only builds a configured cloud provider from `<slug>:<model>`, so
+    // the composite must reach the RPC untouched; the user-facing message must
+    // still say "openai", not "openai:gpt-4o".
+    mockCallCoreRpc.mockRejectedValue(new Error('HTTP 401 invalid_api_key'));
+
+    const result = await verifyCloudProviderConnection('openai:gpt-4o');
+
+    expect(mockCallCoreRpc).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: { workload: 'chat', provider: 'openai:gpt-4o', prompt: 'ping' },
+      })
+    );
+    expect(result.message).toContain("'openai'");
+    expect(result.message).not.toContain('gpt-4o');
+  });
+
+  it('renders its own messages through the supplied translator', async () => {
+    mockCallCoreRpc.mockResolvedValue({ result: { reply: '' } });
+
+    const result = await verifyCloudProviderConnection('openai:gpt-4o', 'chat', (key: string) =>
+      key === 'settings.ai.providerTest.emptyReply' ? 'translated empty {slug}' : 'wrong key'
+    );
+
+    expect(result.message).toBe('translated empty openai');
   });
 });

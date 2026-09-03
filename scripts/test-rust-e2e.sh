@@ -26,13 +26,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# The full set of `tests/*_e2e.rs` files. Each gets a `--test <name>` flag
-# in the single `cargo test` invocation so cargo compiles them in one
-# unit and only the test binaries that exist get run. Tests guarded by
-# `#[ignore]` stay skipped unless the caller passes `-- --ignored`.
+# The full set of `tests/*_e2e.rs` files. The default runner executes them
+# serially so CI does not link several large integration binaries at once.
+# Tests guarded by `#[ignore]` stay skipped unless the caller passes
+# `-- --ignored`.
 ALL_E2E_SUITES=(
+  agent_approval_memory_coverage_e2e
   agent_retrieval_e2e
-  autocomplete_memory_e2e
   calendar_grounding_e2e
   config_auth_app_state_connectivity_e2e
   composio_post_oauth_retry_e2e
@@ -47,15 +47,20 @@ ALL_E2E_SUITES=(
   live_routing_e2e
   mcp_registry_e2e
   mcp_setup_e2e
-  memory_artifacts_e2e
+  # Golden-workspace schema gates. These are the guard against a memory-store
+  # schema change stranding an existing user workspace, so they belong in every
+  # run of this suite — they were previously listed nowhere in .github/ or
+  # scripts/ and therefore never executed.
+  memory_golden_fixture_e2e
+  memory_golden_parity_e2e
   memory_graph_sync_e2e
   memory_roundtrip_e2e
   memory_sources_e2e
   memory_tree_summarizer_e2e
-  memory_tree_walk_e2e
+  memory_fast_retrieve_e2e
+  observability_wallet_expected_e2e
   ollama_embeddings_fallback_e2e
-  screen_intelligence_vision_e2e
-  subconscious_e2e
+  skill_registry_e2e
   worker_b_domain_e2e
   worker_c_modules_e2e
 )
@@ -125,22 +130,63 @@ echo "[rust-e2e] Mock backend healthy."
 export BACKEND_URL="$MOCK_API_URL"
 export VITE_BACKEND_URL="$MOCK_API_URL"
 
+# The agent-harness E2E surface drives very large async futures in debug builds
+# (the typed sub-agent runner + the full agentic brain turn exercised by
+# json_rpc_meet_agent_session_lifecycle). The default Rust test-thread stack
+# (2 MiB) overflows on that dispatch depth — a stack overflow in otherwise-correct
+# tests, not a logic failure. Mirror scripts/test-rust-with-mock.sh and give the
+# suite a larger stack unless the caller already pinned one explicitly.
+export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"
+
 cd "$REPO_ROOT"
 source "$HOME/.cargo/env" 2>/dev/null || true
-
-# Assemble the `--test <name>` flags so a single `cargo test` invocation
-# compiles + runs every suite. Cargo will fail fast if any --test binary
-# doesn't exist, which is the signal you want when a suite gets renamed.
-CARGO_FLAGS=()
-for suite in "${SUITES[@]}"; do
-  CARGO_FLAGS+=(--test "$suite")
-done
-
-echo "[rust-e2e] Running:"
-if [ "${#EXTRA_ARGS[@]}" -gt 0 ]; then
-  echo "[rust-e2e]   cargo test --manifest-path Cargo.toml ${CARGO_FLAGS[*]} -- ${EXTRA_ARGS[*]}"
-  cargo test --manifest-path Cargo.toml "${CARGO_FLAGS[@]}" -- "${EXTRA_ARGS[@]}"
-else
-  echo "[rust-e2e]   cargo test --manifest-path Cargo.toml ${CARGO_FLAGS[*]}"
-  cargo test --manifest-path Cargo.toml "${CARGO_FLAGS[@]}"
+RUSTC_BIN="$(command -v rustc)"
+CARGO_BIN="${CARGO_BIN:-$(dirname "$RUSTC_BIN")/cargo}"
+if [ ! -x "$CARGO_BIN" ]; then
+  CARGO_BIN="$(command -v cargo)"
 fi
+
+# This is the product E2E runner, not the slim contributor build. Several
+# suites below intentionally require product gates (for example `voice` for
+# `json_rpc_e2e` and `memory-git` for memory artifact coverage), so invoking
+# them with Cargo's default feature set makes the runner fail before a test can
+# execute. Keep this list in the same canonical source as `pnpm test:rust`.
+PRODUCT_FEATURES="$(bash "$REPO_ROOT/scripts/ci/product-features.sh")"
+
+echo "[rust-e2e] Running ${#SUITES[@]} suite(s) serially."
+
+run_json_rpc_e2e_suite() {
+  # JSON-RPC scenarios mutate process-global provider routes and runtime
+  # configuration. Run every case in a fresh test process so a provider set by
+  # one scenario cannot affect the routing assertions in another.
+  while IFS= read -r test_name; do
+    [ -n "$test_name" ] || continue
+    echo "[rust-e2e]   $CARGO_BIN test --manifest-path Cargo.toml --test json_rpc_e2e $test_name"
+    bash "$SCRIPT_DIR/ci-cancel-aware.sh" "$CARGO_BIN" test \
+      --manifest-path Cargo.toml --features "$PRODUCT_FEATURES" \
+      --test json_rpc_e2e "$test_name" -- \
+      --exact --test-threads=1 "${EXTRA_ARGS[@]}"
+  done < <(
+    "$CARGO_BIN" test --manifest-path Cargo.toml --features "$PRODUCT_FEATURES" \
+      --test json_rpc_e2e -- --list \
+      | sed -n 's/: test$//p'
+  )
+}
+
+for suite in "${SUITES[@]}"; do
+  if [ "$suite" = "json_rpc_e2e" ]; then
+    run_json_rpc_e2e_suite
+    continue
+  fi
+
+  if [ "${#EXTRA_ARGS[@]}" -gt 0 ]; then
+    echo "[rust-e2e]   $CARGO_BIN test --manifest-path Cargo.toml --test $suite -- ${EXTRA_ARGS[*]}"
+    bash "$SCRIPT_DIR/ci-cancel-aware.sh" "$CARGO_BIN" test \
+      --manifest-path Cargo.toml --features "$PRODUCT_FEATURES" \
+      --test "$suite" -- "${EXTRA_ARGS[@]}"
+  else
+    echo "[rust-e2e]   $CARGO_BIN test --manifest-path Cargo.toml --test $suite"
+    bash "$SCRIPT_DIR/ci-cancel-aware.sh" "$CARGO_BIN" test \
+      --manifest-path Cargo.toml --features "$PRODUCT_FEATURES" --test "$suite"
+  fi
+done

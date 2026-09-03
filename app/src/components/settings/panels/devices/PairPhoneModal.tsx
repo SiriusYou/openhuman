@@ -11,10 +11,12 @@
  */
 import createDebug from 'debug';
 import { QRCodeSVG } from 'qrcode.react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { useT } from '../../../../lib/i18n/I18nContext';
 import { callCoreRpc } from '../../../../services/coreRpcClient';
+import Button from '../../../ui/Button';
+import { ModalShell } from '../../../ui/ModalShell';
 
 const log = createDebug('app:devices-ui:pair-modal');
 
@@ -75,6 +77,7 @@ function buildPairUrl(session: CreatePairingResponse): string {
 
 const PairPhoneModal = ({ onClose, onPaired }: PairPhoneModalProps) => {
   const { t } = useT();
+  const titleId = useId();
   const [state, setState] = useState<ModalState>({ kind: 'loading' });
   const [showDetails, setShowDetails] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -182,73 +185,45 @@ const PairPhoneModal = ({ onClose, onPaired }: PairPhoneModalProps) => {
   // ---------------------------------------------------------------------------
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30">
-      <div className="bg-white rounded-2xl max-w-sm w-full border border-stone-200 shadow-large overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-stone-100">
-          <h3 className="text-base font-semibold text-stone-900">{t('devices.pairModal.title')}</h3>
-          <button
-            onClick={onClose}
-            className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-stone-100 transition-colors"
-            aria-label={t('common.close')}>
-            <svg
-              className="w-4 h-4 text-stone-500"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="p-5">
-          {state.kind === 'loading' && <LoadingBody />}
-          {state.kind === 'error' && (
-            <ErrorBody
-              message={state.message}
-              onRetry={() => {
-                void createSession();
-              }}
-            />
-          )}
-          {state.kind === 'qr' && !state.expired && (
-            <QrBody
-              session={state.session}
-              qrUrl={state.qrUrl}
-              showDetails={showDetails}
-              onToggleDetails={() => setShowDetails(v => !v)}
-            />
-          )}
-          {state.kind === 'qr' && state.expired && (
-            <ExpiredBody
-              onRegenerate={() => {
-                void createSession();
-              }}
-            />
-          )}
-          {state.kind === 'success' && (
-            <SuccessBody label={state.label} channelId={state.channelId} />
-          )}
-        </div>
-
-        {/* Footer */}
-        {(state.kind === 'qr' || state.kind === 'error') && (
-          <div className="px-5 pb-5">
-            <button
-              onClick={onClose}
-              className="w-full px-4 py-2 text-sm text-stone-600 hover:text-stone-800 transition-colors">
-              {t('common.cancel')}
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
+    <ModalShell
+      title={t('devices.pairModal.title')}
+      titleId={titleId}
+      onClose={onClose}
+      maxWidthClassName="max-w-sm"
+      contentClassName="p-5"
+      footer={
+        state.kind === 'qr' || state.kind === 'error' ? (
+          <Button type="button" variant="tertiary" size="md" onClick={onClose} className="w-full">
+            {t('common.cancel')}
+          </Button>
+        ) : undefined
+      }>
+      {state.kind === 'loading' && <LoadingBody />}
+      {state.kind === 'error' && (
+        <ErrorBody
+          message={state.message}
+          onRetry={() => {
+            void createSession();
+          }}
+        />
+      )}
+      {state.kind === 'qr' && !state.expired && (
+        <QrBody
+          session={state.session}
+          qrUrl={state.qrUrl}
+          showDetails={showDetails}
+          onToggleDetails={() => setShowDetails(v => !v)}
+        />
+      )}
+      {state.kind === 'qr' && state.expired && (
+        <ExpiredBody
+          onRegenerate={() => {
+            void createSession();
+          }}
+        />
+      )}
+      {state.kind === 'success' && <SuccessBody label={state.label} channelId={state.channelId} />}
+    </ModalShell>
   );
 };
 
@@ -275,7 +250,7 @@ function LoadingBody() {
           d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
         />
       </svg>
-      <p className="text-sm text-stone-500">{t('devices.pairModal.loading')}</p>
+      <p className="text-sm text-content-muted">{t('devices.pairModal.loading')}</p>
     </div>
   );
 }
@@ -297,51 +272,59 @@ function QrBody({
 
   return (
     <div className="flex flex-col items-center gap-4">
-      <p className="text-sm text-stone-600 text-center">{t('devices.pairModal.instructions')}</p>
+      <p className="text-sm text-content-secondary text-center">
+        {t('devices.pairModal.instructions')}
+      </p>
 
       {/* QR code */}
-      <div className="p-3 bg-white rounded-xl border border-stone-200 shadow-sm">
+      <div className="p-3 bg-surface rounded-xl border border-line shadow-xs">
         <QRCodeSVG value={qrUrl} size={200} level="M" bgColor="#ffffff" fgColor="#1c1917" />
       </div>
 
-      <p className="text-xs text-stone-400">
+      <p className="text-xs text-content-faint">
         {t(
           minutesLeft === 1 ? 'devices.pairModal.expiresIn' : 'devices.pairModal.expiresInPlural'
         ).replace('{count}', String(minutesLeft))}
       </p>
 
       {/* Details toggle */}
-      <button
+      <Button
+        type="button"
+        variant="tertiary"
+        size="xs"
         onClick={onToggleDetails}
-        className="text-xs text-primary-500 hover:text-primary-600 transition-colors">
+        className="text-primary-500 hover:text-primary-600">
         {showDetails ? t('devices.pairModal.hideDetails') : t('devices.pairModal.showDetails')}
-      </button>
+      </Button>
 
       {showDetails && (
         <div className="w-full space-y-2">
           <div>
-            <p className="text-xs font-medium text-stone-500 mb-1">
+            <p className="text-xs font-medium text-content-muted mb-1">
               {t('devices.pairModal.channelId')}
             </p>
-            <p className="text-xs font-mono text-stone-700 bg-stone-50 rounded px-2 py-1 break-all select-all">
+            <p className="text-xs font-mono text-content-secondary bg-surface-muted rounded px-2 py-1 break-all select-all">
               {session.channel_id}
             </p>
           </div>
           <div>
-            <p className="text-xs font-medium text-stone-500 mb-1">
+            <p className="text-xs font-medium text-content-muted mb-1">
               {t('devices.pairModal.pairingUrl')}
             </p>
             <div className="relative">
-              <p className="text-xs font-mono text-stone-700 bg-stone-50 rounded px-2 py-1 break-all select-all pr-16">
+              <p className="text-xs font-mono text-content-secondary bg-surface-muted rounded px-2 py-1 break-all select-all pr-16">
                 {qrUrl}
               </p>
-              <button
+              <Button
+                type="button"
+                variant="tertiary"
+                size="xs"
                 onClick={() => {
                   void navigator.clipboard.writeText(qrUrl);
                 }}
-                className="absolute top-1 right-1 text-xs text-primary-500 hover:text-primary-600 px-1 py-0.5 bg-white border border-stone-200 rounded">
+                className="absolute top-1 right-1 bg-surface border border-line dark:border-line-strong">
                 {t('devices.pairModal.copyUrl')}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -368,13 +351,13 @@ function ExpiredBody({ onRegenerate }: { onRegenerate: () => void }) {
           />
         </svg>
       </div>
-      <p className="text-sm font-medium text-stone-700">{t('devices.pairModal.expiredTitle')}</p>
-      <p className="text-xs text-stone-500 text-center">{t('devices.pairModal.expiredBody')}</p>
-      <button
-        onClick={onRegenerate}
-        className="px-4 py-2 text-sm font-medium text-white bg-primary-500 hover:bg-primary-600 transition-colors rounded-lg">
+      <p className="text-sm font-medium text-content-secondary">
+        {t('devices.pairModal.expiredTitle')}
+      </p>
+      <p className="text-xs text-content-muted text-center">{t('devices.pairModal.expiredBody')}</p>
+      <Button type="button" variant="primary" size="md" onClick={onRegenerate}>
         {t('devices.pairModal.generateNewCode')}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -393,13 +376,13 @@ function SuccessBody({ label, channelId }: { label: string; channelId: string })
         </svg>
       </div>
       <div className="text-center">
-        <p className="text-sm font-medium text-stone-800">{t('devices.pairModal.successTitle')}</p>
-        <p className="text-xs text-stone-500 mt-1">{label}</p>
-        <p className="text-xs font-mono text-stone-400 mt-0.5">
+        <p className="text-sm font-medium text-content">{t('devices.pairModal.successTitle')}</p>
+        <p className="text-xs text-content-muted mt-1">{label}</p>
+        <p className="text-xs font-mono text-content-faint mt-0.5">
           {channelId.slice(0, 8)}…{channelId.slice(-6)}
         </p>
       </div>
-      <p className="text-xs text-stone-400">{t('devices.pairModal.autoClose')}</p>
+      <p className="text-xs text-content-faint">{t('devices.pairModal.autoClose')}</p>
     </div>
   );
 }
@@ -422,13 +405,13 @@ function ErrorBody({ message, onRetry }: { message: string; onRetry: () => void 
           />
         </svg>
       </div>
-      <p className="text-sm font-medium text-stone-700">{t('devices.pairModal.errorTitle')}</p>
-      <p className="text-xs text-stone-500 text-center break-all">{message}</p>
-      <button
-        onClick={onRetry}
-        className="px-4 py-2 text-sm font-medium text-white bg-primary-500 hover:bg-primary-600 transition-colors rounded-lg">
+      <p className="text-sm font-medium text-content-secondary">
+        {t('devices.pairModal.errorTitle')}
+      </p>
+      <p className="text-xs text-content-muted text-center break-all">{message}</p>
+      <Button type="button" variant="primary" size="md" onClick={onRetry}>
         {t('common.retry')}
-      </button>
+      </Button>
     </div>
   );
 }

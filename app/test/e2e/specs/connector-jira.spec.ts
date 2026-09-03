@@ -23,7 +23,11 @@ import {
   waitForWebView,
   waitForWindowVisible,
 } from '../helpers/element-helpers';
-import { completeOnboardingIfVisible, navigateToSkills } from '../helpers/shared-flows';
+import {
+  completeOnboardingIfVisible,
+  navigateToSkills,
+  navigateViaHash,
+} from '../helpers/shared-flows';
 import {
   clearRequestLog,
   getRequestLog,
@@ -37,6 +41,22 @@ const LOG = '[ConnectorJiraE2E]';
 const CONNECTOR_NAME = 'Jira';
 const TOOLKIT_SLUG = 'jira';
 const AUTH_TOKEN = 'e2e-connector-jira-token';
+
+async function waitForJiraDisconnected(timeout = 15_000): Promise<void> {
+  await browser.waitUntil(
+    async () =>
+      browser.execute(() => {
+        const tile = document.querySelector<HTMLElement>(
+          '[data-testid="skill-install-composio-jira"]'
+        );
+        if (!tile) return false;
+        const label = tile.getAttribute('aria-label') ?? '';
+        const text = tile.textContent ?? '';
+        return !label.includes('Connected') && !text.includes('Connected');
+      }),
+    { timeout, interval: 300, timeoutMsg: 'Jira tile did not settle to disconnected state' }
+  );
+}
 
 describe('Jira Composio connector flow', () => {
   before(async function () {
@@ -70,11 +90,29 @@ describe('Jira Composio connector flow', () => {
 
   it('connect modal renders subdomain input field for Jira', async function () {
     this.timeout(60_000);
-    // Seed as idle (no active connection) so we see the connect flow
-    seedComposioConnection(TOOLKIT_SLUG, 'CONNECTING', 'c-jira-idle');
+    // Seed as idle (no active connection) so we see the connect flow. The prior
+    // test rendered Jira ACTIVE, which persisted into the durable client-side
+    // connection cache (localStorage `composio:connections`). That cache
+    // re-seeds the tile as connected on remount — before the live `[]` fetch
+    // lands — and ComposioConnectModal latches its phase once at mount, so the
+    // modal would open stuck in the `connected` phase (no subdomain form).
+    // Clear the durable cache so the tile mounts disconnected and the modal
+    // opens in `idle`.
     setMockBehavior('composioConnections', JSON.stringify([]));
+    // @ts-expect-error -- browser global is injected by WDIO at runtime, not typed in this env
+    await browser.execute(() => {
+      Object.keys(window.localStorage)
+        .filter(k => k.includes('composio:connections'))
+        .forEach(k => window.localStorage.removeItem(k));
+    });
+    // The preceding test already leaves us on Connections → Composio. Setting
+    // the same hash again does not remount the page, so it would keep the
+    // previous ACTIVE tile and never refetch the newly seeded empty list.
+    // Take a real route transition before returning to the connector surface.
+    await navigateViaHash('/chat');
     await navigateToSkills();
     await waitForText(CONNECTOR_NAME, 10_000);
+    await waitForJiraDisconnected(20_000);
     const modal = await openConnectorModal(CONNECTOR_NAME);
     expect(modal).toBeTruthy();
     // The Jira connect modal should render a subdomain input per toolkitRequiredFields.ts
@@ -85,10 +123,18 @@ describe('Jira Composio connector flow', () => {
         return (
           document.querySelector('[data-testid="composio-required-subdomain"]') !== null ||
           document.querySelector('input[placeholder*="subdomain"]') !== null ||
-          // fallback: any .atlassian.net suffix label
-          Array.from(document.querySelectorAll('*')).some(el =>
-            (el.textContent ?? '').includes('.atlassian.net')
-          )
+          // fallback: any visible Jira tenant URL label
+          Array.from(document.querySelectorAll('*')).some(el => {
+            const text = el.textContent ?? '';
+            const matches = text.match(/https?:\/\/[^\s"'<>]+/g) ?? [];
+            return matches.some(candidate => {
+              try {
+                return new URL(candidate).hostname.endsWith('.atlassian.net');
+              } catch {
+                return false;
+              }
+            });
+          })
         );
       })
       .catch(() => false);
@@ -132,7 +178,7 @@ describe('Jira Composio connector flow', () => {
     console.log(`${LOG} PASS: connected state persists`);
   });
 
-  it('composio_sync RPC routes to mock backend', async function () {
+  it('composio_sync does not tear down the session', async function () {
     this.timeout(30_000);
     clearRequestLog();
     await callOpenhumanRpc('openhuman.composio_sync', { toolkit: TOOLKIT_SLUG });
@@ -171,8 +217,9 @@ describe('Jira Composio connector flow', () => {
     seedComposioConnection(TOOLKIT_SLUG, 'EXPIRED', 'c-jira-expired');
     await navigateToSkills();
     await waitForText(CONNECTOR_NAME, 10_000);
-    const modal = await openConnectorModal(CONNECTOR_NAME);
-    if (modal) await assertModalPhase('expired', CONNECTOR_NAME);
+    const modal = await openConnectorModal(CONNECTOR_NAME, 15_000, 'Auth expired');
+    expect(modal).toBeTruthy();
+    await assertModalPhase('expired', CONNECTOR_NAME);
     await assertSessionNotNuked();
     console.log(`${LOG} PASS: expired auth does not log user out`);
   });

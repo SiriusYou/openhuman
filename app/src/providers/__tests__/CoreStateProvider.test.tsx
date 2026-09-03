@@ -4,7 +4,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as coreStateApi from '../../services/coreStateApi';
 import * as tauriCommands from '../../utils/tauriCommands';
+import { __resetForTests as resetConfigRecoveryNotice } from '../../lib/configRecoveryNotice';
 import { getCoreStateSnapshot, setCoreStateSnapshot } from '../../lib/coreState/store';
+import { store } from '../../store';
+import { notificationReceived } from '../../store/notificationSlice';
 import { setActiveUserId } from '../../store/userScopedStorage';
 import CoreStateProvider, {
   coreStatePollFailureDebugMessage,
@@ -37,12 +40,7 @@ function makeSnapshot(overrides: {
     chatOnboardingCompleted: false,
     analyticsEnabled: false,
     localState: {},
-    runtime: {
-      screenIntelligence: null as never,
-      localAi: null as never,
-      autocomplete: null as never,
-      service: null as never,
-    },
+    runtime: { localAi: null as never, service: null as never },
   };
 }
 
@@ -100,8 +98,7 @@ function resetCoreStateStore() {
       currentUser: null,
       onboardingCompleted: false,
       chatOnboardingCompleted: false,
-      analyticsEnabled: false,
-      meetAutoOrchestratorHandoff: false,
+      analyticsEnabled: true,
       localState: { encryptionKey: null, onboardingTasks: null, keyringConsent: null },
       keyringStatus: {
         available: true,
@@ -109,7 +106,7 @@ function resetCoreStateStore() {
         activeMode: 'os_keyring',
         backendName: 'os',
       },
-      runtime: { screenIntelligence: null, localAi: null, autocomplete: null, service: null },
+      runtime: { localAi: null, service: null },
     },
     teams: [],
     teamMembersById: {},
@@ -539,38 +536,6 @@ describe('CoreStateProvider — identity-change cache clearing', () => {
     expect(vi.mocked(tauriCommands.logout)).not.toHaveBeenCalled();
   });
 
-  it('setMeetAutoOrchestratorHandoff(true) calls update RPC + flips snapshot optimistically (#1299)', async () => {
-    fetchSnapshot.mockResolvedValue(makeSnapshot({ userId: 'u1', sessionToken: 'tok1' }));
-    listTeams.mockResolvedValue([]);
-    vi.mocked(tauriCommands.openhumanUpdateMeetSettings).mockReset();
-    vi.mocked(tauriCommands.openhumanUpdateMeetSettings).mockResolvedValue({
-      result: { config: {}, workspace_dir: '/tmp', config_path: '/tmp/cfg.toml' },
-      logs: [],
-    } as never);
-
-    let ctx: CoreStateContextValue | undefined;
-    render(
-      <CoreStateProvider>
-        <Consumer
-          captureCtx={next => {
-            ctx = next;
-          }}
-        />
-      </CoreStateProvider>
-    );
-
-    await waitFor(() => expect(screen.getByTestId('ready').textContent).toBe('ready'));
-    expect(ctx?.snapshot.meetAutoOrchestratorHandoff).toBe(false);
-
-    await act(async () => {
-      await ctx!.setMeetAutoOrchestratorHandoff(true);
-    });
-
-    expect(vi.mocked(tauriCommands.openhumanUpdateMeetSettings)).toHaveBeenCalledWith({
-      auto_orchestrator_handoff: true,
-    });
-  });
-
   it('dispatching core-rpc-auth-expired triggers clearSession (and debounces repeated fires within 10s)', async () => {
     fetchSnapshot.mockResolvedValue(makeSnapshot({ userId: 'u1', sessionToken: 'tok1' }));
     listTeams.mockResolvedValue([]);
@@ -887,38 +852,6 @@ describe('CoreStateProvider — identity-change cache clearing', () => {
 
     expect(vi.mocked(tauriCommands.storeSession)).toHaveBeenCalled();
   });
-
-  it('setMeetAutoOrchestratorHandoff swallows refresh errors after the RPC succeeds (#1299)', async () => {
-    fetchSnapshot.mockResolvedValueOnce(makeSnapshot({ userId: 'u1', sessionToken: 'tok1' }));
-    listTeams.mockResolvedValue([]);
-    vi.mocked(tauriCommands.openhumanUpdateMeetSettings).mockReset();
-    vi.mocked(tauriCommands.openhumanUpdateMeetSettings).mockResolvedValue({
-      result: { config: {}, workspace_dir: '/tmp', config_path: '/tmp/cfg.toml' },
-      logs: [],
-    } as never);
-
-    let ctx: CoreStateContextValue | undefined;
-    render(
-      <CoreStateProvider>
-        <Consumer
-          captureCtx={next => {
-            ctx = next;
-          }}
-        />
-      </CoreStateProvider>
-    );
-
-    await waitFor(() => expect(screen.getByTestId('ready').textContent).toBe('ready'));
-    fetchSnapshot.mockRejectedValueOnce(new Error('refresh failed'));
-
-    await act(async () => {
-      await expect(ctx!.setMeetAutoOrchestratorHandoff(false)).resolves.toBeUndefined();
-    });
-
-    expect(vi.mocked(tauriCommands.openhumanUpdateMeetSettings)).toHaveBeenCalledWith({
-      auto_orchestrator_handoff: false,
-    });
-  });
 });
 
 describe('coreStatePollFailureWarningMessage', () => {
@@ -945,6 +878,96 @@ describe('coreStatePollFailureWarningMessage', () => {
         expect(Number(attempt)).toBeLessThanOrEqual(Number(max));
       }
     }
+  });
+});
+
+describe('CoreStateProvider — config recovery notice (#5167)', () => {
+  const fetchSnapshot = vi.mocked(coreStateApi.fetchCoreAppSnapshot);
+  const listTeams = vi.mocked(coreStateApi.listTeams);
+  const getTeamMembers = vi.mocked(coreStateApi.getTeamMembers);
+  const getTeamInvites = vi.mocked(coreStateApi.getTeamInvites);
+
+  beforeEach(() => {
+    fetchSnapshot.mockReset();
+    listTeams.mockReset();
+    getTeamMembers.mockReset();
+    getTeamInvites.mockReset();
+    listTeams.mockResolvedValue([]);
+    getTeamMembers.mockResolvedValue([]);
+    getTeamInvites.mockResolvedValue([]);
+    resetCoreStateStore();
+    setActiveUserId(null);
+    // Clear the module-level one-shot guard and any prior notices so each test
+    // observes a clean slate.
+    resetConfigRecoveryNotice();
+    store.dispatch({ type: 'notifications/clearAll' });
+  });
+
+  function recoveryItems() {
+    return store.getState().notifications.items.filter(i => i.id === 'config-recovered');
+  }
+
+  it('forwards configRecovered → exactly one system recovery notice', async () => {
+    fetchSnapshot.mockResolvedValue({
+      ...makeSnapshot({ userId: 'u1', sessionToken: 'tok1' }),
+      configRecovered: true,
+    });
+
+    render(
+      <CoreStateProvider>
+        <Consumer />
+      </CoreStateProvider>
+    );
+
+    await waitFor(() => expect(recoveryItems()).toHaveLength(1));
+    const item = recoveryItems()[0];
+    expect(item.category).toBe('system');
+    expect(item.deepLink).toBe('/settings');
+    expect(item.read).toBe(false);
+  });
+
+  it('stays one-shot across repeated refreshes (single dispatch)', async () => {
+    fetchSnapshot.mockResolvedValue({
+      ...makeSnapshot({ userId: 'u1', sessionToken: 'tok1' }),
+      configRecovered: true,
+    });
+    const dispatchSpy = vi.spyOn(store, 'dispatch');
+
+    let ctx: CoreStateContextValue | undefined;
+    render(
+      <CoreStateProvider>
+        <Consumer
+          captureCtx={next => {
+            ctx = next;
+          }}
+        />
+      </CoreStateProvider>
+    );
+
+    await waitFor(() => expect(recoveryItems()).toHaveLength(1));
+    await act(async () => {
+      await ctx!.refresh();
+      await ctx!.refresh();
+    });
+
+    const recoveryDispatches = dispatchSpy.mock.calls.filter(
+      ([action]) => notificationReceived.match(action) && action.payload.id === 'config-recovered'
+    );
+    expect(recoveryDispatches).toHaveLength(1);
+    dispatchSpy.mockRestore();
+  });
+
+  it('does not dispatch when the snapshot omits configRecovered', async () => {
+    fetchSnapshot.mockResolvedValue(makeSnapshot({ userId: 'u1', sessionToken: 'tok1' }));
+
+    render(
+      <CoreStateProvider>
+        <Consumer />
+      </CoreStateProvider>
+    );
+
+    await waitFor(() => expect(screen.getByTestId('user').textContent).toBe('u1'));
+    expect(recoveryItems()).toHaveLength(0);
   });
 });
 

@@ -3,6 +3,7 @@ import debug from 'debug';
 import { socketService } from '../../services/socketService';
 import { store } from '../../store';
 import {
+  type NotificationAction,
   type NotificationCategory,
   type NotificationItem,
   notificationReceived,
@@ -39,6 +40,10 @@ interface CoreNotificationPayload {
   body: string;
   deep_link?: string | null;
   timestamp_ms: number;
+  // Optional action buttons (e.g. meeting auto-join prompt, issue #3507).
+  // The Rust core serializes these camelCase, so the shape already matches
+  // the Redux `NotificationAction` type — pass through verbatim.
+  actions?: NotificationAction[];
 }
 
 function windowIsFocused(): boolean {
@@ -121,7 +126,7 @@ export function startNativeNotificationsService(): void {
 
   // Core-originated notifications (cron completions, webhook failures,
   // sub-agent completions) bridged over socket.io from the Rust event
-  // bus. See src/openhuman/notifications/bus.rs.
+  // bus. See src/openhuman/desktop/notifications/bus.rs.
   coreNotificationListener = (...args: unknown[]) => {
     const p = (args[0] ?? {}) as CoreNotificationPayload;
     log('[socket] core_notification id=%s category=%s', p.id, p.category);
@@ -137,6 +142,7 @@ export function startNativeNotificationsService(): void {
         title: truncate(p.title, 120),
         body: truncate(p.body ?? '', 160),
         deepLink: p.deep_link ?? undefined,
+        actions: p.actions,
       },
       serverTs
     );
@@ -206,6 +212,7 @@ export function __handleCoreNotificationForTests(payload: CoreNotificationPayloa
       title: truncate(payload.title, 120),
       body: truncate(payload.body ?? '', 160),
       deepLink: payload.deep_link ?? undefined,
+      actions: payload.actions,
     },
     serverTs
   );

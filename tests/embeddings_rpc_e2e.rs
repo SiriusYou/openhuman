@@ -130,6 +130,16 @@ async fn mock_openai_embeddings(
     headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
 ) -> Json<Value> {
+    // Return exactly one embedding per input, like a real OpenAI-compatible
+    // server — the client rejects a count mismatch (`openai embed count
+    // mismatch`), and the save-time verification probe sends a single
+    // `"connection test"` input while the real embed sends two. Captured before
+    // `body` is moved into the request log below.
+    let input_len = match body.get("input") {
+        Some(Value::Array(items)) => items.len().max(1),
+        _ => 1,
+    };
+
     state
         .requests
         .lock()
@@ -145,12 +155,23 @@ async fn mock_openai_embeddings(
                 .and_then(|value| value.to_str().ok())
                 .map(ToOwned::to_owned),
         );
+
+    // Index 0 → [0.1,0.2,0.3], every other index → [0.4,0.5,0.6], so the
+    // two-input embed assertion (`vectors[1][2] ≈ 0.6`) still holds.
+    let data: Vec<Value> = (0..input_len)
+        .map(|i| {
+            let embedding = if i == 0 {
+                [0.1, 0.2, 0.3]
+            } else {
+                [0.4, 0.5, 0.6]
+            };
+            json!({ "object": "embedding", "index": i, "embedding": embedding })
+        })
+        .collect();
+
     Json(json!({
         "object": "list",
-        "data": [
-            { "object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3] },
-            { "object": "embedding", "index": 1, "embedding": [0.4, 0.5, 0.6] }
-        ],
+        "data": data,
         "model": "mock-embedding-model"
     }))
 }
@@ -216,12 +237,52 @@ fn assert_no_rpc_error<'a>(v: &'a Value, ctx: &str) -> &'a Value {
 
 /// Returns `(rpc_base, tempdir, guards)`. The `guards` tuple keeps all
 /// `EnvVarGuard` values alive for the duration of the test.
+/// Publish the module host policy this target's core never publishes itself.
+///
+/// `wipe_all` reaches the bound driver, and a module-backed driver refuses to
+/// load until a policy names the workspace it should open — production does
+/// that at `modules::boot` and `core::runtime::context`, and
+/// `tests/memory_roundtrip_e2e.rs` does it explicitly for the same reason. This
+/// target builds only the RPC router, so nothing here did, and the two
+/// dimension-change tests failed with "the module host policy was never
+/// published".
+///
+/// Deliberately *not* fixed by degrading `wipe_all` when no policy exists. It
+/// is a destructive call: answering success when the store was never reached
+/// would tell a caller their data is gone when it is not, which is a worse
+/// failure than the error. The harness is the outlier, so the harness moves.
+///
+/// One workspace for the whole binary, behind a `OnceLock`, because
+/// `set_modules_policy` is a process-global whose first call wins. Publishing
+/// per test would let whichever test ran first silently own the workspace for
+/// all of them — the per-test `HOME` tempdirs below still isolate config, but
+/// the module can only ever open one.
+fn ensure_modules_policy() {
+    static MODULES_POLICY: OnceLock<tempfile::TempDir> = OnceLock::new();
+    let root = MODULES_POLICY.get_or_init(|| tempdir().expect("modules policy tempdir"));
+    #[cfg(feature = "modules")]
+    {
+        let workspace = root.path().to_path_buf();
+        openhuman_core::openhuman::modules::memory::set_modules_policy(Arc::new(
+            openhuman_core::openhuman::config::Config {
+                workspace_dir: workspace.clone(),
+                action_dir: workspace.clone(),
+                config_path: workspace.join("config.toml"),
+                ..openhuman_core::openhuman::config::Config::default()
+            },
+        ));
+    }
+    let _ = root;
+}
+
 async fn setup_embeddings_test() -> (
     String,
     tempfile::TempDir,
     (EnvVarGuard, EnvVarGuard, EnvVarGuard, EnvVarGuard),
     tokio::task::JoinHandle<Result<(), std::io::Error>>,
 ) {
+    ensure_modules_policy();
+
     let tmp = tempdir().expect("tempdir");
     let home = tmp.path().to_path_buf();
     let openhuman_home = home.join(".openhuman");
@@ -271,6 +332,28 @@ async fn embeddings_get_settings_returns_catalog() {
     assert!(
         inner.get("dimensions").is_some(),
         "get_settings result missing 'dimensions': {inner}"
+    );
+
+    // `effective_provider` must survive serialization to the wire, not just
+    // exist on the handler's return value (#5402). The frontend budget warning
+    // gates on this field: if it silently stopped being emitted, the hook would
+    // fall back to `provider` — which is exactly the stale value that produced
+    // the false "memory has stopped growing" alarm for local-embeddings users.
+    let effective = inner
+        .get("effective_provider")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("get_settings result missing 'effective_provider': {inner}"));
+    assert!(
+        [
+            "ollama",
+            "custom",
+            "cloud",
+            "none",
+            "unconfigured",
+            "unknown"
+        ]
+        .contains(&effective),
+        "effective_provider must be one of the documented slugs, got {effective:?}"
     );
 
     // Provider catalog
@@ -558,11 +641,11 @@ async fn embeddings_embed_with_none_returns_empty_vectors() {
     let result = assert_no_rpc_error(&resp, "embeddings_embed none");
     let inner = result.get("result").unwrap_or(result);
 
-    // NoopEmbedding.embed() returns an empty vec — count and dimensions should both be 0.
+    // The inert TinyAgents adapter preserves input cardinality with empty vectors.
     assert_eq!(
         inner.get("count").and_then(Value::as_u64),
-        Some(0),
-        "noop provider should return count=0: {inner}"
+        Some(2),
+        "noop provider should preserve input count: {inner}"
     );
     assert_eq!(
         inner.get("dimensions").and_then(Value::as_u64),
@@ -573,10 +656,7 @@ async fn embeddings_embed_with_none_returns_empty_vectors() {
         .get("vectors")
         .and_then(Value::as_array)
         .expect("embed result must include 'vectors' array: {inner}");
-    assert!(
-        vectors.is_empty(),
-        "noop provider must return empty vectors array: {vectors:?}"
-    );
+    assert_eq!(vectors, &vec![json!([]), json!([])]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -645,13 +725,24 @@ async fn embeddings_embed_with_custom_openai_endpoint_round_trips_vectors_and_ap
     );
 
     let requests = mock_state.requests.lock().expect("mock requests lock");
-    assert_eq!(requests.len(), 1, "custom endpoint should be called once");
+    // Two hits: (0) the save-time connectivity probe update_settings now runs
+    // against custom endpoints (TAURI-RUST-5JR prevention), (1) the real embed.
     assert_eq!(
-        requests[0].get("model").and_then(Value::as_str),
-        Some("mock-embedding-model")
+        requests.len(),
+        2,
+        "expected one save-time probe + one embed call"
     );
     assert_eq!(
         requests[0].pointer("/input/0").and_then(Value::as_str),
+        Some("connection test"),
+        "first call must be the save-time validation probe"
+    );
+    assert_eq!(
+        requests[1].get("model").and_then(Value::as_str),
+        Some("mock-embedding-model")
+    );
+    assert_eq!(
+        requests[1].pointer("/input/0").and_then(Value::as_str),
         Some("first custom text")
     );
     drop(requests);
@@ -663,6 +754,88 @@ async fn embeddings_embed_with_custom_openai_endpoint_round_trips_vectors_and_ap
     assert_eq!(
         auth_headers.first().and_then(|value| value.as_deref()),
         Some("Bearer custom-embedding-key")
+    );
+
+    mock_join.abort();
+}
+
+/// A mock "OpenAI-compatible" host that has NO embeddings route — every POST to
+/// `/v1/embeddings` 404s, exactly like a chat-only provider (DeepSeek) does.
+async fn serve_mock_embeddings_no_api(
+) -> (String, tokio::task::JoinHandle<Result<(), std::io::Error>>) {
+    async fn not_found() -> (axum::http::StatusCode, &'static str) {
+        (axum::http::StatusCode::NOT_FOUND, "Not Found")
+    }
+    let router = Router::new().route("/v1/embeddings", post(not_found));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind no-api mock server");
+    let addr = listener.local_addr().expect("no-api mock local_addr");
+    let join = tokio::spawn(async move { axum::serve(listener, router).await });
+    (format!("http://{addr}"), join)
+}
+
+/// TAURI-RUST-5JR prevention: `update_settings` must probe a custom endpoint
+/// and REFUSE to persist one that has no embeddings API (404), returning
+/// `EMBEDDINGS_ENDPOINT_NO_API` and leaving the stored provider unchanged — so
+/// the 404-on-every-re-embed Sentry flood can never be configured.
+#[tokio::test(flavor = "multi_thread")]
+async fn embeddings_update_settings_rejects_endpoint_with_no_embeddings_api() {
+    let _lock = embeddings_e2e_env_lock();
+    let (rpc_base, _tmp, _guards, _join) = setup_embeddings_test().await;
+    let (mock_base, mock_join) = serve_mock_embeddings_no_api().await;
+
+    // Snapshot the provider before the rejected save.
+    let before = post_json_rpc(
+        &rpc_base,
+        80,
+        "openhuman.embeddings_get_settings",
+        json!({}),
+    )
+    .await;
+    let before_result = assert_no_rpc_error(&before, "get_settings before");
+    let before_inner = before_result.get("result").unwrap_or(before_result);
+    let before_provider = before_inner
+        .get("provider")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    let update = post_json_rpc(
+        &rpc_base,
+        81,
+        "openhuman.embeddings_update_settings",
+        json!({
+            "provider": "custom",
+            "custom_endpoint": mock_base,
+            "model": "mock-embedding-model",
+            "dimensions": 3,
+            "confirm_wipe": true
+        }),
+    )
+    .await;
+    let update_result = assert_no_rpc_error(&update, "update_settings no-api endpoint");
+    let update_inner = update_result.get("result").unwrap_or(update_result);
+    assert_eq!(
+        update_inner.get("error").and_then(Value::as_str),
+        Some("EMBEDDINGS_ENDPOINT_NO_API"),
+        "a no-embeddings endpoint must be rejected, not saved: {update_inner}"
+    );
+
+    // The stored provider must be unchanged — nothing was persisted.
+    let after = post_json_rpc(
+        &rpc_base,
+        82,
+        "openhuman.embeddings_get_settings",
+        json!({}),
+    )
+    .await;
+    let after_result = assert_no_rpc_error(&after, "get_settings after");
+    let after_inner = after_result.get("result").unwrap_or(after_result);
+    assert_eq!(
+        after_inner.get("provider").and_then(Value::as_str),
+        Some(before_provider.as_str()),
+        "provider must be unchanged after a rejected save: {after_inner}"
     );
 
     mock_join.abort();
@@ -708,4 +881,80 @@ async fn legacy_alias_inference_embed_resolves() {
         inner.get("vectors").is_some() || inner.get("count").is_some(),
         "legacy alias should resolve to embeddings_embed and return vector data: {inner}"
     );
+}
+
+/// #4056 / #5859: a Custom endpoint whose NATIVE vector width differs from the
+/// width the user guessed must still verify, and the width that gets persisted
+/// must be the endpoint's, not the guess.
+///
+/// This is the half of the change no existing test could observe.
+/// `embeddings_embed_with_custom_openai_endpoint_round_trips_vectors_and_api_key`
+/// configures `dimensions: 3` against a mock that returns 3-wide vectors, so
+/// "honoured the guess" and "discovered the native width" produce the same
+/// number and its `dimensions == 3` assertion cannot tell them apart. Here the
+/// two are deliberately different: the guess is the product default (1024) and
+/// the endpoint returns 3.
+///
+/// Before the probe was made dimension-agnostic, the save-time verification
+/// enforced the guessed width, so every reachable, valid endpoint whose native
+/// size was not the guess failed verification — the whole of #4056. After it,
+/// `final_probe_dims` adopts the returned length for any model outside the
+/// `text-embedding-3-*` family (`mock-embedding-model` is one), which is also
+/// what keeps the live embed path's length guard from rejecting later embeds.
+#[tokio::test(flavor = "multi_thread")]
+async fn embeddings_update_settings_adopts_custom_endpoint_native_dimension() {
+    let _lock = embeddings_e2e_env_lock();
+    let (rpc_base, _tmp, _guards, _join) = setup_embeddings_test().await;
+    let (mock_base, _mock_state, mock_join) = serve_mock_embeddings().await;
+
+    let update = post_json_rpc(
+        &rpc_base,
+        90,
+        "openhuman.embeddings_update_settings",
+        json!({
+            "provider": "custom",
+            "custom_endpoint": mock_base,
+            "model": "mock-embedding-model",
+            // The guess. The mock returns 3-wide vectors, so this is wrong on
+            // purpose — it is the product default a user would never edit.
+            "dimensions": 1024,
+            "confirm_wipe": true
+        }),
+    )
+    .await;
+    let update_result = assert_no_rpc_error(&update, "embeddings_update_settings native dims");
+    let update_inner = update_result.get("result").unwrap_or(update_result);
+
+    // 1. The save is NOT rejected. A mismatched guess used to fail verification.
+    assert_eq!(
+        update_inner.get("error").and_then(Value::as_str),
+        None,
+        "a reachable endpoint whose native width differs from the guess must \
+         still verify, not be refused: {update_inner}"
+    );
+    let expected_provider = format!("custom:{mock_base}");
+    assert_eq!(
+        update_inner.get("provider").and_then(Value::as_str),
+        Some(expected_provider.as_str()),
+        "the custom provider must be persisted: {update_inner}"
+    );
+
+    // 2. The width that survives is the endpoint's 3, not the guessed 1024.
+    let after = post_json_rpc(
+        &rpc_base,
+        91,
+        "openhuman.embeddings_get_settings",
+        json!({}),
+    )
+    .await;
+    let after_result = assert_no_rpc_error(&after, "get_settings after native-dim save");
+    let after_inner = after_result.get("result").unwrap_or(after_result);
+    assert_eq!(
+        after_inner.get("dimensions").and_then(Value::as_u64),
+        Some(3),
+        "the probe must adopt the endpoint's native vector width (3), not the \
+         guessed 1024: {after_inner}"
+    );
+
+    mock_join.abort();
 }

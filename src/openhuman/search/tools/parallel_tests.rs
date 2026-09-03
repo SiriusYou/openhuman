@@ -97,6 +97,35 @@ fn search_response_deserializes() {
     let resp: SearchResponse = serde_json::from_str(json).unwrap();
     assert_eq!(resp.results.len(), 1);
     assert_eq!(resp.results[0].title, "Example");
+    // Older backends omit the resolved provider entirely (#5136).
+    assert_eq!(resp.provider, None);
+}
+
+#[test]
+fn search_response_reads_resolved_provider() {
+    // The backend names the provider it routed the managed search to, so the
+    // UI attribution ("Searched with Exa") is never hardcoded (#5136).
+    let json = r#"{
+        "searchId": "s123",
+        "results": [],
+        "costUsd": 0.01,
+        "provider": "Exa"
+    }"#;
+    let resp: SearchResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(resp.provider.as_deref(), Some("Exa"));
+}
+
+#[test]
+fn search_response_reads_provider_aliases() {
+    // Tolerate the backend naming the field differently so a rename upstream
+    // does not silently drop attribution.
+    for field in ["resolvedProvider", "searchProvider"] {
+        let json = format!(
+            r#"{{ "searchId": "s123", "results": [], "costUsd": 0.01, "{field}": "Brave" }}"#
+        );
+        let resp: SearchResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(resp.provider.as_deref(), Some("Brave"), "field {field}");
+    }
 }
 
 // ── ParallelExtractTool ─────────────────────────────────────────
@@ -173,4 +202,84 @@ fn extract_response_with_full_content() {
         resp.results[0].full_content.as_deref(),
         Some("This is the full article content.")
     );
+}
+
+#[test]
+fn research_output_hides_internal_run_id() {
+    let resp = ResearchResponse {
+        run_id: Some("run_internal_123".into()),
+        status: Some("completed".into()),
+        result: Some(json!({ "summary": "useful answer" })),
+        cost_usd: 0.1234,
+    };
+    let output = format_research_response(ResearchResponse {
+        run_id: resp.run_id.clone(),
+        status: resp.status.clone(),
+        result: resp.result.clone(),
+        cost_usd: resp.cost_usd,
+    })
+    .unwrap();
+    let payload = research_payload(&resp, &output);
+
+    assert!(output.contains("Status: completed"));
+    assert!(output.contains("useful answer"));
+    assert!(output.contains("Cost: $0.1234"));
+    assert!(!output.contains("Run:"));
+    assert!(!output.contains("run_internal_123"));
+    assert!(payload.get("run_id").is_none());
+}
+
+#[test]
+fn enrich_output_hides_internal_run_id() {
+    let resp = EnrichResponse {
+        run_id: Some("run_internal_456".into()),
+        status: Some("completed".into()),
+        output: Some(json!({ "company": "OpenHuman" })),
+        cost_usd: 0.5678,
+    };
+    let output = format_enrich_response(EnrichResponse {
+        run_id: resp.run_id.clone(),
+        status: resp.status.clone(),
+        output: resp.output.clone(),
+        cost_usd: resp.cost_usd,
+    })
+    .unwrap();
+    let payload = enrich_payload(&resp, &output);
+
+    assert!(output.contains("Status: completed"));
+    assert!(output.contains("OpenHuman"));
+    assert!(output.contains("Cost: $0.5678"));
+    assert!(!output.contains("Run:"));
+    assert!(!output.contains("run_internal_456"));
+    assert!(payload.get("run_id").is_none());
+}
+
+#[test]
+fn research_incomplete_response_returns_actionable_error_without_run_id() {
+    let err = format_research_response(ResearchResponse {
+        run_id: Some("run_internal_789".into()),
+        status: Some("running".into()),
+        result: None,
+        cost_usd: 0.1111,
+    })
+    .unwrap_err();
+
+    assert!(err.contains("did not return a result"));
+    assert!(err.contains("higher timeout_seconds"));
+    assert!(!err.contains("run_internal_789"));
+}
+
+#[test]
+fn enrich_incomplete_response_returns_actionable_error_without_run_id() {
+    let err = format_enrich_response(EnrichResponse {
+        run_id: Some("run_internal_987".into()),
+        status: Some("running".into()),
+        output: None,
+        cost_usd: 0.2222,
+    })
+    .unwrap_err();
+
+    assert!(err.contains("did not return output"));
+    assert!(err.contains("higher timeout_seconds"));
+    assert!(!err.contains("run_internal_987"));
 }

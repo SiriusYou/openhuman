@@ -81,7 +81,7 @@ const MobileTabBar = () => {
 
   return (
     <nav
-      className="flex-shrink-0 flex justify-around items-stretch border-t border-neutral-800 bg-[#0f1117]/95 backdrop-blur-md"
+      className="shrink-0 flex justify-around items-stretch border-t border-neutral-800 bg-[#0f1117]/95 backdrop-blur-md"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
       aria-label={t('mobile.nav.ariaLabel')}>
       {tabs.map(tab => {
@@ -92,7 +92,7 @@ const MobileTabBar = () => {
             type="button"
             onClick={() => navigate(tab.path)}
             className={`flex flex-col items-center justify-center gap-1 flex-1 py-2 transition-colors ${
-              active ? 'text-white' : 'text-neutral-400'
+              active ? 'text-white' : 'text-content-faint'
             }`}
             aria-current={active ? 'page' : undefined}
             aria-label={tab.label}>

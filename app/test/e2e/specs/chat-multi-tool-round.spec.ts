@@ -16,6 +16,7 @@
  */
 import { waitForApp } from '../helpers/app-helpers';
 import {
+  chatMounted,
   clickByTitle,
   clickSend,
   getSelectedThreadId,
@@ -112,7 +113,7 @@ describe('Chat multi-tool round', () => {
   it('T2.1 — agent calls tool 1 (file_read); timeline shows it', async () => {
     console.log(`${LOG_PREFIX} T2.1: navigating to /chat, opening new thread`);
     await navigateViaHash('/chat');
-    await browser.waitUntil(async () => await textExists('Threads'), {
+    await browser.waitUntil(async () => await chatMounted(), {
       timeout: 15_000,
       timeoutMsg: 'Conversations panel did not mount',
     });
@@ -139,6 +140,7 @@ describe('Chat multi-tool round', () => {
 
     // Watch for file_read to appear in the timeline.
     let sawFileRead = false;
+    let sawFinal = false;
     const deadline = Date.now() + 45_000;
     while (Date.now() < deadline) {
       const snap = await getToolTimeline(threadId);
@@ -148,6 +150,7 @@ describe('Chat multi-tool round', () => {
         break;
       }
       if (await textExists(CANARY_FINAL)) {
+        sawFinal = true;
         console.log(`${LOG_PREFIX} T2.1: final answer arrived (tools may have already cycled)`);
         break;
       }
@@ -155,7 +158,7 @@ describe('Chat multi-tool round', () => {
     }
 
     const finalArrived = await textExists(CANARY_FINAL);
-    expect(sawFileRead || finalArrived).toBe(true);
+    expect(sawFileRead || sawFinal || finalArrived).toBe(true);
     console.log(`${LOG_PREFIX} T2.1: passed`);
   });
 

@@ -19,7 +19,7 @@
  * (Flatpak/Snap/portable). "Open anyway" and the config-dir override are the
  * escape hatches for that case; a false "not registered" never blocks the user.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
 import { useT } from '../../lib/i18n/I18nContext';
 import type { ToastNotification } from '../../types/intelligence';
@@ -29,7 +29,11 @@ import {
   resolveWorkspaceAbsolutePath,
   revealWorkspacePath,
 } from '../../utils/tauriCommands/workspacePaths';
+import Button from '../ui/Button';
+import { PopoverAnchor, PopoverClose, PopoverContent, PopoverRoot } from '../ui/Popover';
+import TextField from '../ui/TextField';
 import { MEMORY_CONTENT_WORKSPACE_PATH } from './memoryWorkspacePaths';
+import { resolveVaultHostMatch } from './vaultHostMatch';
 
 /** localStorage key for the optional Obsidian config-dir override. */
 const CONFIG_DIR_KEY = 'openhuman.obsidian.configDir';
@@ -57,6 +61,14 @@ export function ObsidianVaultSection({ contentRootAbs, onToast }: ObsidianVaultS
   const [configFound, setConfigFound] = useState<boolean | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [configDir, setConfigDir] = useState<string>(readConfigDirOverride);
+  // #4278: set to the core host OS when the vault lives on a different-OS core
+  // host, so local actions (Reveal / Open in Obsidian) are disabled + explained.
+  const [crossHostOs, setCrossHostOs] = useState<string | null>(null);
+  // Anchors the popover to the View Vault button. The outside-click guard
+  // (onPointerDownOutside below) uses this to recognize a re-click on the
+  // trigger as "inside" rather than "outside" — see the PopoverAnchor comment
+  // near the render for why a plain PopoverTrigger doesn't work here.
+  const anchorRef = useRef<HTMLButtonElement>(null);
 
   /**
    * Build + fire the `obsidian://` deep link.
@@ -145,10 +157,23 @@ export function ObsidianVaultSection({ contentRootAbs, onToast }: ObsidianVaultS
         const override = configDir.trim();
         const status = await memoryTreeObsidianVaultStatus(override || undefined);
         console.debug(
-          '[ui-flow][obsidian-vault] status registered=%s config_found=%s',
+          '[ui-flow][obsidian-vault] status registered=%s config_found=%s host_os=%s',
           status.registered,
-          status.config_found
+          status.config_found,
+          status.host_os
         );
+
+        // #4278: when the vault lives on a core host running a different OS, the
+        // path is not local — guide instead of firing a doomed deep link / reveal.
+        const match = await resolveVaultHostMatch(status.host_os);
+        if (!match.local) {
+          console.debug('[ui-flow][obsidian-vault] cross-host vault host_os=%s', match.hostOs);
+          setCrossHostOs(match.hostOs ?? status.host_os ?? '');
+          setConfigFound(status.config_found);
+          setExpanded(true);
+          return;
+        }
+        setCrossHostOs(null);
         setConfigFound(status.config_found);
 
         if (status.registered) {
@@ -186,126 +211,184 @@ export function ObsidianVaultSection({ contentRootAbs, onToast }: ObsidianVaultS
     handleViewVault();
   }, [configDir, handleViewVault]);
 
-  const helpText =
-    configFound === false
+  const helpText = crossHostOs
+    ? `${t('crossHostVault.title')} ${t('crossHostVault.message').replace('{os}', crossHostOs)}`
+    : configFound === false
       ? t('workspace.obsidianNotFoundHelp')
       : t('workspace.vaultNotRegisteredHelp');
 
+  // The guidance panel is a Radix Popover anchored to the button (out of
+  // normal flow) rather than an inline sibling. This component lives inside
+  // the horizontal MemoryControls toolbar; an in-flow `w-full`/wide panel
+  // would grow this flex item and force the whole toolbar to wrap/misalign
+  // (issue #4266). Taking the panel out of flow keeps the toolbar row stable
+  // regardless of the panel's visibility.
+  //
+  // `PopoverAnchor` (not `PopoverTrigger`) is deliberate: Radix's Trigger
+  // toggles the popover closed on a second click, which would contradict the
+  // on-screen "click View Vault again" copy above — a re-click on the button
+  // must always re-run `handleViewVault`'s check, never just dismiss. Driving
+  // `open`/`onOpenChange` ourselves keeps that behavior while still getting
+  // Radix's outside-click, Escape, focus-return and viewport-collision
+  // handling for free.
   return (
-    <div className="flex flex-col items-end gap-2" data-testid="obsidian-vault-section">
-      <button
-        type="button"
-        onClick={handleViewVault}
-        disabled={checking}
-        data-testid="memory-open-in-obsidian"
-        className="inline-flex items-center gap-2 rounded-lg
-                   bg-violet-500 px-4 py-2 text-sm font-semibold text-white
-                   shadow-sm transition-colors hover:bg-violet-600
-                   disabled:cursor-not-allowed disabled:opacity-50
-                   focus:outline-none focus:ring-2 focus:ring-violet-300"
-        title={`obsidian://open?path=${contentRootAbs}`}>
-        <ExternalLinkIcon />
-        {checking ? t('workspace.checkingVault') : t('workspace.viewVault')}
-      </button>
+    <div className="relative inline-flex" data-testid="obsidian-vault-section">
+      <PopoverRoot open={expanded} onOpenChange={setExpanded}>
+        <PopoverAnchor asChild>
+          <Button
+            ref={anchorRef}
+            variant="secondary"
+            size="sm"
+            onClick={handleViewVault}
+            disabled={checking}
+            data-testid="memory-open-in-obsidian"
+            title={`obsidian://open?path=${contentRootAbs}`}
+            leadingIcon={<ExternalLinkIcon />}>
+            {checking ? t('workspace.checkingVault') : t('workspace.viewVault')}
+          </Button>
+        </PopoverAnchor>
 
-      {expanded && (
-        <div
+        <PopoverContent
           data-testid="obsidian-vault-guidance"
-          className="w-full max-w-xl rounded-lg border border-violet-200 bg-violet-50 p-4
-                     text-sm dark:border-violet-500/30 dark:bg-violet-500/10">
-          <p className="text-neutral-700 dark:text-neutral-200">{helpText}</p>
+          align="end"
+          sideOffset={8}
+          onEscapeKeyDown={() => {
+            console.debug('[ui-flow][obsidian-vault] dismiss: escape');
+          }}
+          onPointerDownOutside={event => {
+            // A click back on the trigger button re-runs handleViewVault's
+            // check (see the anchor comment above) rather than dismissing —
+            // without this guard Radix would treat that click as "outside"
+            // and close the panel in the same tick handleViewVault reopens
+            // it, causing a flicker or a stuck-closed panel.
+            if (anchorRef.current && anchorRef.current.contains(event.target as Node)) {
+              event.preventDefault();
+              return;
+            }
+            console.debug('[ui-flow][obsidian-vault] dismiss: outside click');
+          }}
+          className="absolute right-0 top-full z-20 mt-2 w-xl max-w-[calc(100vw-2rem)]
+                     rounded-lg border border-primary-200 bg-primary-50 p-4 pr-10 text-sm shadow-xl
+                     dark:border-primary-500/30 dark:bg-primary-950">
+          <PopoverClose asChild>
+            <Button
+              variant="tertiary"
+              size="sm"
+              iconOnly
+              data-testid="obsidian-vault-close"
+              aria-label={t('common.close')}
+              className="absolute right-2 top-2 h-auto w-auto p-1 hover:bg-primary-100
+                         dark:hover:bg-primary-500/20">
+              <CloseIcon />
+            </Button>
+          </PopoverClose>
+          <p className="text-content-secondary">{helpText}</p>
 
           <code
-            className="mt-2 block break-all rounded bg-white/70 px-2 py-1 font-mono text-xs
-                       text-neutral-600 dark:bg-neutral-900/60 dark:text-neutral-300"
+            className="mt-2 block break-all rounded bg-surface/70 px-2 py-1 font-mono text-xs
+                       text-content-secondary dark:bg-surface/60"
             data-testid="obsidian-vault-path">
             {contentRootAbs}
           </code>
 
           <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={reveal}
-              data-testid="obsidian-reveal"
-              className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-semibold
-                         text-neutral-700 hover:bg-neutral-50 dark:border-neutral-600
-                         dark:bg-neutral-800 dark:text-neutral-200">
+              disabled={crossHostOs !== null}
+              data-testid="obsidian-reveal">
               {t('workspace.revealFolder')}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={openAnyway}
+              disabled={crossHostOs !== null}
               data-testid="obsidian-open-anyway"
-              className="rounded-md border border-violet-300 bg-white px-3 py-1.5 text-xs font-semibold
-                         text-violet-700 hover:bg-violet-50 dark:border-violet-500/40
-                         dark:bg-neutral-800 dark:text-violet-300">
+              className="border-primary-300 text-primary-700 hover:bg-primary-100 dark:border-primary-500/40
+                         dark:text-primary-300">
               {t('workspace.openAnyway')}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={installObsidian}
-              data-testid="obsidian-install"
-              className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-xs font-semibold
-                         text-neutral-700 hover:bg-neutral-50 dark:border-neutral-600
-                         dark:bg-neutral-800 dark:text-neutral-200">
+              data-testid="obsidian-install">
               {t('workspace.installObsidian')}
-            </button>
+            </Button>
           </div>
 
-          <button
-            type="button"
+          <Button
+            variant="tertiary"
+            size="sm"
             onClick={() => setShowAdvanced(v => !v)}
             data-testid="obsidian-advanced-toggle"
-            className="mt-3 text-xs font-medium text-violet-600 hover:underline dark:text-violet-300">
+            className="mt-3 h-auto p-0 font-medium text-primary-600 hover:underline hover:bg-transparent dark:text-primary-300">
             {t('workspace.obsidianAdvanced')}
-          </button>
+          </Button>
 
           {showAdvanced && (
             <div className="mt-2 space-y-1.5">
               <label
                 htmlFor="obsidian-config-dir"
-                className="block text-xs font-medium text-neutral-600 dark:text-neutral-300">
+                className="block text-xs font-medium text-content-secondary">
                 {t('workspace.obsidianConfigDirLabel')}
               </label>
               <div className="flex flex-wrap items-center gap-2">
-                <input
+                <TextField
                   id="obsidian-config-dir"
                   type="text"
+                  inputSize="sm"
+                  mono
                   value={configDir}
                   onChange={e => setConfigDir(e.target.value)}
                   placeholder={t('workspace.obsidianConfigDirPlaceholder')}
                   spellCheck={false}
                   data-testid="obsidian-config-dir-input"
-                  className="flex-1 rounded-md border border-neutral-300 bg-white px-2 py-1 font-mono text-xs
-                             text-neutral-800 focus:outline-none focus:ring-1 focus:ring-violet-300
-                             dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100"
+                  className="flex-1"
                 />
-                <button
-                  type="button"
+                <Button
+                  variant="primary"
+                  size="sm"
                   onClick={saveConfigDir}
                   disabled={checking}
-                  data-testid="obsidian-config-dir-save"
-                  className="rounded-md bg-violet-500 px-3 py-1 text-xs font-semibold text-white
-                             hover:bg-violet-600 disabled:opacity-50">
+                  data-testid="obsidian-config-dir-save">
                   {t('common.save')}
-                </button>
+                </Button>
               </div>
-              <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                {t('workspace.obsidianConfigDirHint')}
-              </p>
+              <p className="text-xs text-content-muted">{t('workspace.obsidianConfigDirHint')}</p>
             </div>
           )}
-        </div>
-      )}
+        </PopoverContent>
+      </PopoverRoot>
     </div>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true">
+      <path d="M18 6L6 18" />
+      <path d="M6 6l12 12" />
+    </svg>
   );
 }
 
 function ExternalLinkIcon() {
   return (
     <svg
-      width="16"
-      height="16"
+      width="14"
+      height="14"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
