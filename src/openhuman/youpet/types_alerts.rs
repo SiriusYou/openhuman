@@ -165,9 +165,36 @@ pub struct CoreWorkbenchAlert {
     pub context: Option<CoreWorkbenchAlertContext>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CoreWorkbenchAlertsResponse {
     pub items: Vec<CoreWorkbenchAlert>,
+}
+
+impl<'de> Deserialize<'de> for CoreWorkbenchAlertsResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawResponse {
+            items: Vec<Value>,
+        }
+
+        let raw = RawResponse::deserialize(deserializer)?;
+        let mut items = Vec::with_capacity(raw.items.len());
+        for item in raw.items {
+            let has_context = item
+                .as_object()
+                .is_some_and(|object| object.contains_key("context"));
+            if !has_context {
+                return Err(serde::de::Error::custom(
+                    "listed Core workbench alerts must include context (nullable)",
+                ));
+            }
+            items.push(serde_json::from_value(item).map_err(serde::de::Error::custom)?);
+        }
+        Ok(Self { items })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

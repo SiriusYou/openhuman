@@ -11,6 +11,11 @@ import {
   type CoreWorkbenchTraceWarning,
   createCoreWorkbenchClient,
 } from '../services/api/coreWorkbenchClient';
+import {
+  createVerifiedUserScopedStorage,
+  getActiveUserId,
+  type VerifiedUserScopedStorage,
+} from '../store/userScopedStorage';
 
 type StatusFilter = CoreAlertStatus | 'all';
 type SeverityFilter = CoreAlertSeverity | 'all';
@@ -43,9 +48,40 @@ const MAX_METADATA_SERIALIZED_LENGTH = 512;
 
 export const workbenchIdempotencyStorageKey = IDEMPOTENCY_STORAGE_KEY;
 
+export interface WorkbenchIntentStorageAdapter {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
+const defaultVerifiedStorage: VerifiedUserScopedStorage = createVerifiedUserScopedStorage();
+const defaultUserScopedAdapter: WorkbenchIntentStorageAdapter = {
+  getItem(key) {
+    return defaultVerifiedStorage.getItem(key);
+  },
+  setItem(key, value) {
+    defaultVerifiedStorage.setItem(key, value);
+  },
+  removeItem(key) {
+    defaultVerifiedStorage.removeItem(key);
+  },
+};
+
+let storageAdapter: WorkbenchIntentStorageAdapter = defaultUserScopedAdapter;
+
+export function setWorkbenchIntentStorageAdapter(adapter: WorkbenchIntentStorageAdapter | null) {
+  storageAdapter = adapter ?? defaultUserScopedAdapter;
+}
+
+export function resolveWorkbenchActiveUserScope(): string | null {
+  const id = getActiveUserId();
+  if (!id || !id.trim()) return null;
+  return id;
+}
+
 function readIdempotencyStore(): Record<string, string> {
   try {
-    const raw = window.localStorage.getItem(IDEMPOTENCY_STORAGE_KEY);
+    const raw = storageAdapter.getItem(IDEMPOTENCY_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
@@ -56,12 +92,18 @@ function readIdempotencyStore(): Record<string, string> {
       })
     );
   } catch {
-    return {};
+    throw new Error('idempotency_storage_read_failed');
   }
 }
 
 function writeIdempotencyStore(store: Record<string, string>) {
-  window.localStorage.setItem(IDEMPOTENCY_STORAGE_KEY, JSON.stringify(store));
+  const serialized = JSON.stringify(store);
+  try {
+    storageAdapter.setItem(IDEMPOTENCY_STORAGE_KEY, serialized);
+    return storageAdapter.getItem(IDEMPOTENCY_STORAGE_KEY) === serialized;
+  } catch {
+    return false;
+  }
 }
 
 function makeIdempotencyStorageId(alertId: string, action: AlertAction) {
@@ -74,19 +116,30 @@ function generateIdempotencyKey(alertId: string, action: AlertAction) {
 }
 
 function getOrCreateIdempotencyKey(alertId: string, action: AlertAction) {
-  const store = readIdempotencyStore();
+  if (!resolveWorkbenchActiveUserScope()) {
+    return { key: '', persisted: false };
+  }
+  let store: Record<string, string>;
+  try {
+    store = readIdempotencyStore();
+  } catch {
+    return { key: '', persisted: false };
+  }
   const id = makeIdempotencyStorageId(alertId, action);
-  if (store[id]) return store[id];
+  if (store[id]) return { key: store[id], persisted: true };
   const key = generateIdempotencyKey(alertId, action);
-  store[id] = key;
-  writeIdempotencyStore(store);
-  return key;
+  return { key, persisted: writeIdempotencyStore({ ...store, [id]: key }) };
 }
 
 function clearIdempotencyKey(alertId: string, action: AlertAction) {
-  const store = readIdempotencyStore();
+  let store: Record<string, string>;
+  try {
+    store = readIdempotencyStore();
+  } catch {
+    return false;
+  }
   delete store[makeIdempotencyStorageId(alertId, action)];
-  writeIdempotencyStore(store);
+  return writeIdempotencyStore(store);
 }
 
 function formatDate(value: string | null | undefined, noneLabel: string) {
@@ -795,7 +848,25 @@ const Workbench = () => {
   }, [loadAlerts]);
 
   const runAction = async (alert: CoreWorkbenchAlert, action: AlertAction) => {
-    const idempotencyKey = getOrCreateIdempotencyKey(alert.id, action);
+    if (!resolveWorkbenchActiveUserScope()) {
+      setActionError(
+        t(
+          'actionRequest.storageUnavailable',
+          'Local retry-key storage is unavailable. Decision blocked until storage works so retries stay idempotent.'
+        )
+      );
+      return;
+    }
+    const { key: idempotencyKey, persisted } = getOrCreateIdempotencyKey(alert.id, action);
+    if (!persisted || !idempotencyKey) {
+      setActionError(
+        t(
+          'actionRequest.storageUnavailable',
+          'Local retry-key storage is unavailable. Decision blocked until storage works so retries stay idempotent.'
+        )
+      );
+      return;
+    }
     setPendingActions(current => ({ ...current, [alert.id]: action }));
     setActionError(null);
     try {

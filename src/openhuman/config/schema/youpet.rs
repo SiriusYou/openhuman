@@ -18,7 +18,7 @@ pub struct YouPetConfig {
     pub workbench_actor_id: String,
     /// Core users.id UUID for the operator performing workbench actions.
     pub operator_user_id: Option<String>,
-    /// Default Core tenant UUID for ActionRequest list/get scope.
+    /// Default Core tenant UUID for ActionRequest list scope.
     pub tenant_id: Option<String>,
 }
 

@@ -86,8 +86,12 @@ export interface CoreWorkbenchAlert {
   created_at: string;
   acknowledged_at?: string | null;
   resolved_at?: string | null;
-  context?: CoreWorkbenchAlertContext | null;
+  context: CoreWorkbenchAlertContext | null;
 }
+
+export type CoreWorkbenchAlertActionResult = Omit<CoreWorkbenchAlert, 'context'> & {
+  context?: CoreWorkbenchAlertContext | null;
+};
 
 export interface CoreWorkbenchTraceActor {
   type: string;
@@ -166,8 +170,11 @@ export class CoreWorkbenchClient {
     return unwrapCoreResult(raw);
   }
 
-  async ackAlert(alertId: string, params: CoreAlertActionParams): Promise<CoreWorkbenchAlert> {
-    const raw = await callCoreRpc<CoreResult<CoreWorkbenchAlert>>({
+  async ackAlert(
+    alertId: string,
+    params: CoreAlertActionParams
+  ): Promise<CoreWorkbenchAlertActionResult> {
+    const raw = await callCoreRpc<CoreResult<CoreWorkbenchAlertActionResult>>({
       method: CORE_RPC_METHODS.youpetAckAlert,
       params: { alertId, note: params.note, idempotencyKey: params.idempotencyKey },
       timeoutMs: this.timeoutMs,
@@ -175,8 +182,11 @@ export class CoreWorkbenchClient {
     return unwrapCoreResult(raw);
   }
 
-  async resolveAlert(alertId: string, params: CoreAlertActionParams): Promise<CoreWorkbenchAlert> {
-    const raw = await callCoreRpc<CoreResult<CoreWorkbenchAlert>>({
+  async resolveAlert(
+    alertId: string,
+    params: CoreAlertActionParams
+  ): Promise<CoreWorkbenchAlertActionResult> {
+    const raw = await callCoreRpc<CoreResult<CoreWorkbenchAlertActionResult>>({
       method: CORE_RPC_METHODS.youpetResolveAlert,
       params: { alertId, resolution: params.resolution, idempotencyKey: params.idempotencyKey },
       timeoutMs: this.timeoutMs,
