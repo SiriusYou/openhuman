@@ -1,6 +1,6 @@
 //! Unit tests for YouPet workbench DTOs.
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::*;
 
@@ -117,6 +117,34 @@ fn alert_shape_accepts_optional_operational_context() {
     }))
     .unwrap();
     assert!(unsupported.context.is_none());
+}
+
+#[test]
+fn alert_list_requires_context_key_but_accepts_explicit_null() {
+    let alert = json!({
+        "id": "alert-1",
+        "alert_type": "missed_checkin",
+        "severity": "high",
+        "related_type": "task_instance",
+        "related_id": "task-1",
+        "status": "open",
+        "created_at": "2026-06-01T00:00:00Z"
+    });
+
+    let missing = serde_json::from_value::<CoreWorkbenchAlertsResponse>(json!({
+        "items": [alert.clone()]
+    }))
+    .unwrap_err();
+    assert!(missing.to_string().contains("must include context"));
+
+    let mut with_null = alert;
+    with_null
+        .as_object_mut()
+        .expect("alert object")
+        .insert("context".to_string(), Value::Null);
+    let response: CoreWorkbenchAlertsResponse =
+        serde_json::from_value(json!({ "items": [with_null] })).unwrap();
+    assert!(response.items[0].context.is_none());
 }
 
 #[test]

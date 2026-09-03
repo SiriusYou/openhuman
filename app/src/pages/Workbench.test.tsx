@@ -1,8 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import Workbench, { workbenchIdempotencyStorageKey } from './Workbench';
+import { setActiveUserId } from '../store/userScopedStorage';
+import Workbench, {
+  setWorkbenchIntentStorageAdapter,
+  workbenchIdempotencyStorageKey,
+} from './Workbench';
 
 const mockClient = vi.hoisted(() => ({
   listAlerts: vi.fn(),
@@ -10,6 +14,8 @@ const mockClient = vi.hoisted(() => ({
   resolveAlert: vi.fn(),
   getAlertTrace: vi.fn(),
 }));
+
+const ACTIVE_USER = 'workbench-user-a';
 
 vi.mock('../services/api/coreWorkbenchClient', () => ({
   createCoreWorkbenchClient: () => mockClient,
@@ -141,8 +147,12 @@ const baseTrace = {
 };
 
 function storedIdempotencyKeys() {
-  const raw = window.localStorage.getItem(workbenchIdempotencyStorageKey);
+  const raw = window.localStorage.getItem(physicalStorageKey());
   return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+}
+
+function physicalStorageKey(userId = ACTIVE_USER) {
+  return `${userId}:${workbenchIdempotencyStorageKey}`;
 }
 
 function deferred<T>() {
@@ -161,7 +171,14 @@ describe('Workbench', () => {
     mockClient.ackAlert.mockReset();
     mockClient.resolveAlert.mockReset();
     mockClient.getAlertTrace.mockReset();
+    setWorkbenchIntentStorageAdapter(null);
+    setActiveUserId(ACTIVE_USER);
     window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    setWorkbenchIntentStorageAdapter(null);
+    setActiveUserId(null);
   });
 
   it('renders alerts with operational context', async () => {
@@ -235,6 +252,72 @@ describe('Workbench', () => {
 
     expect(mockClient.ackAlert.mock.calls[1]?.[1]?.idempotencyKey).toBe(firstKey);
     expect(storedIdempotencyKeys()['ack:alert-1']).toBe(firstKey);
+  });
+
+  it('fails closed when there is no active user for scoped retry-key storage', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    setActiveUserId(null);
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
+
+    expect(mockClient.ackAlert).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(
+        'Local retry-key storage is unavailable. Decision blocked until storage works so retries stay idempotent.'
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('fails closed when retry-key persistence cannot verify durable storage', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    setWorkbenchIntentStorageAdapter({
+      getItem: () => null,
+      setItem: () => undefined,
+      removeItem: () => undefined,
+    });
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
+
+    expect(mockClient.ackAlert).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(
+        'Local retry-key storage is unavailable. Decision blocked until storage works so retries stay idempotent.'
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('does not share retry keys across active users', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.ackAlert.mockRejectedValue(new Error('temporary failure'));
+    const user = userEvent.setup();
+
+    const firstRender = render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
+    await waitFor(() => expect(mockClient.ackAlert).toHaveBeenCalledTimes(1));
+    const firstKey = mockClient.ackAlert.mock.calls[0]?.[1]?.idempotencyKey as string;
+    expect(window.localStorage.getItem(physicalStorageKey(ACTIVE_USER))).toContain(firstKey);
+
+    firstRender.unmount();
+    setActiveUserId('workbench-user-b');
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
+    await waitFor(() => expect(mockClient.ackAlert).toHaveBeenCalledTimes(2));
+
+    const secondKey = mockClient.ackAlert.mock.calls[1]?.[1]?.idempotencyKey as string;
+    expect(secondKey).not.toBe(firstKey);
+    expect(window.localStorage.getItem(physicalStorageKey('workbench-user-b'))).toContain(
+      secondKey
+    );
+    expect(window.localStorage.getItem(physicalStorageKey(ACTIVE_USER))).toContain(firstKey);
   });
 
   it('clears action keys only after success and refreshes visible alert state', async () => {
