@@ -146,6 +146,7 @@ describe('useRegistryInspection', () => {
     });
 
     const { result } = renderHook(() => useRegistryInspection({ client }));
+    let setTabPromise: Promise<void> | undefined;
 
     await waitFor(() =>
       expect(result.current.state.tabs.agents.collections.agents.items).toEqual([agentSummary])
@@ -190,8 +191,8 @@ describe('useRegistryInspection', () => {
     expect(window.location.search).toBe('?tab=agents&kind=agent&key=agent.alpha&version=7');
     expect(client.getAgentVersion).toHaveBeenCalledTimes(1);
 
-    await act(async () => {
-      await result.current.setTab('tools');
+    act(() => {
+      setTabPromise = result.current.setTab('tools');
     });
 
     expect(window.location.search).toBe('?tab=tools');
@@ -311,8 +312,8 @@ describe('useRegistryInspection', () => {
       })
     );
 
-    await act(async () => {
-      await result.current.setTab('tools');
+    act(() => {
+      void result.current.setTab('tools');
     });
 
     await waitFor(() => expect(result.current.state.tabs.tools.summaryState).toBe('fresh'));
@@ -349,6 +350,98 @@ describe('useRegistryInspection', () => {
     expect(client.listToolEnablements).toHaveBeenCalledTimes(1);
   });
 
+  it('deep-links a tool enablement detail with exactly one exact-version request on mount', async () => {
+    const client = makeClient();
+    window.history.replaceState(
+      {},
+      '',
+      '/registries?tab=tools&kind=tool-enablement&key=tool.alpha&version=5'
+    );
+    vi.mocked(client.listToolDefinitions).mockResolvedValue({
+      items: [toolDefinitionSummary],
+      nextCursor: null,
+    });
+    vi.mocked(client.listToolEnablements).mockResolvedValue({ items: [toolEnablement] });
+    vi.mocked(client.getToolEnablementVersion).mockResolvedValue(toolEnablement);
+
+    const { result } = renderHook(() => useRegistryInspection({ client }));
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.tools.detail).toEqual({
+        kind: 'loaded',
+        detail: { kind: 'tool-enablement', key: 'tool.alpha', version: 5 },
+        record: toolEnablement,
+      })
+    );
+
+    expect(client.getToolEnablementVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry one tools collection while its sibling collection is still loading', async () => {
+    const client = makeClient();
+    const pendingEnablements = deferred<UnpagedRegistryCollection<ToolRegistryToolEnablement>>();
+    vi.mocked(client.listAgents).mockResolvedValue({ items: [], nextCursor: null });
+    vi.mocked(client.listToolDefinitions)
+      .mockRejectedValueOnce(
+        new CoreRpcError('transport down', 'unknown', undefined, {
+          kind: 'YouPetCoreTransport',
+        })
+      )
+      .mockResolvedValueOnce({
+        items: [{ ...toolDefinitionSummary, version: 4 }],
+        nextCursor: null,
+      });
+    vi.mocked(client.listToolEnablements).mockReturnValueOnce(pendingEnablements.promise);
+
+    const { result } = renderHook(() => useRegistryInspection({ client }));
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.agents.collections.agents.observation).toEqual({
+        kind: 'empty',
+        observedAt: '2026-09-01T12:00:00.000Z',
+      })
+    );
+
+    act(() => {
+      void result.current.setTab('tools');
+    });
+
+    await waitFor(() =>
+      expect(result.current.state.tabs.tools.collections.toolDefinitions.observation).toMatchObject(
+        {
+          kind: 'blocked',
+          error: { kind: 'YouPetCoreTransport' },
+        }
+      )
+    );
+    expect(result.current.state.tabs.tools.collections.toolEnablements.observation).toEqual({
+      kind: 'loading',
+      generation: 1,
+    });
+
+    act(() => {
+      void result.current.retryCollection('toolDefinitions');
+    });
+
+    expect(result.current.state.tabs.tools.generation).toBe(1);
+    expect(client.listToolDefinitions).toHaveBeenCalledTimes(1);
+
+    pendingEnablements.resolve({ items: [toolEnablement] });
+    await waitFor(() =>
+      expect(result.current.state.tabs.tools.collections.toolEnablements.items).toEqual([
+        toolEnablement,
+      ])
+    );
+    expect(result.current.state.tabs.tools.collections.toolEnablements.observation).toEqual({
+      kind: 'loaded',
+      observedAt: '2026-09-01T12:00:00.000Z',
+      stale: false,
+    });
+    await act(async () => {
+      await setTabPromise;
+    });
+  });
+
   it('treats response-shape failures as blocked instead of preserving stale collection data', async () => {
     const client = makeClient();
     vi.mocked(client.listAgents).mockResolvedValue({ items: [], nextCursor: null });
@@ -380,8 +473,8 @@ describe('useRegistryInspection', () => {
       ])
     );
 
-    await act(async () => {
-      await result.current.retryCollection('toolDefinitions');
+    act(() => {
+      void result.current.retryCollection('toolDefinitions');
     });
 
     await waitFor(() =>
