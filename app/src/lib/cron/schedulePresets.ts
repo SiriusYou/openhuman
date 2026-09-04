@@ -1,7 +1,7 @@
 /**
  * Shared schedule presets for cron-based scheduling UI.
  *
- * Both DevWorkflowPanel and SkillsRunnerBody previously defined their own
+ * Both DevWorkflowPanel and WorkflowRunnerBody previously defined their own
  * local SCHEDULE_PRESETS arrays with identical expressions. This module
  * consolidates them into a single authoritative source.
  *
@@ -10,7 +10,7 @@
  * provides the canonical cron expressions, their shared labels, and a lookup set.
  */
 
-export interface SchedulePreset {
+interface SchedulePreset {
   /** i18n key from the shared cron namespace (e.g. 'settings.cron.schedule.every30min'). */
   labelKey: string;
   /** 5-field cron expression. */

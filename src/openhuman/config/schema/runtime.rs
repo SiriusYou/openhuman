@@ -35,6 +35,19 @@ pub struct DockerRuntimeConfig {
     pub allowed_workspace_roots: Vec<String>,
 }
 
+/// `[shell]` — behaviour of the shell-family tools (`shell`, `node_exec`,
+/// `npm_exec`, monitor) when they spawn child processes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct ShellConfig {
+    /// On Windows, suppress the console window that briefly flashes for every
+    /// child process the shell tool spawns by passing `CREATE_NO_WINDOW`
+    /// (`0x08000000`) in the process creation flags. No-op on macOS/Linux.
+    /// Defaults to `false` for backward compatibility.
+    #[serde(default)]
+    pub hide_window: bool,
+}
+
 fn default_true() -> bool {
     defaults::default_true()
 }
@@ -175,3 +188,7 @@ impl Default for SchedulerConfig {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_shell_config_tests_tests.rs"]
+mod shell_config_tests;

@@ -56,17 +56,15 @@ export const UnsubscribeApprovalCard: React.FC<Props> = ({ payload }) => {
   if (payload.action !== 'unsubscribe' || payload.status !== 'pending_approval') return null;
 
   return (
-    <div className="border border-gray-200 dark:border-gray-800 rounded-lg p-4 my-2 bg-gray-50 dark:bg-gray-900">
+    <div className="border border-line rounded-lg p-4 my-2 bg-surface-muted">
       <div className="flex items-start gap-3">
         <div className="text-xl">📧</div>
         <div className="flex-1">
-          <h4 className="font-semibold text-sm text-gray-900 dark:text-gray-100">
+          <h4 className="font-semibold text-sm text-content">
             {t('chat.unsubscribeApproval.title')}
           </h4>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-            {payload.metadata.message}
-          </p>
-          <div className="text-xs text-gray-500 mt-2 font-mono break-all bg-gray-100 dark:bg-gray-800 p-2 rounded">
+          <p className="text-sm text-content-secondary mt-1">{payload.metadata.message}</p>
+          <div className="text-xs text-content-muted mt-2 font-mono break-all bg-surface-subtle p-2 rounded">
             {payload.metadata.unsubscribe_link}
           </div>
 
@@ -78,12 +76,22 @@ export const UnsubscribeApprovalCard: React.FC<Props> = ({ payload }) => {
 
           {status === 'pending' && (
             <div className="flex gap-2 mt-4">
-              <Button variant="primary" size="sm" onClick={handleApprove} disabled={isProcessing}>
+              <Button
+                variant="primary"
+                size="sm"
+                data-analytics-id="chat-unsubscribe-approve"
+                onClick={handleApprove}
+                disabled={isProcessing}>
                 {isProcessing
                   ? t('chat.unsubscribeApproval.processing')
                   : t('chat.unsubscribeApproval.approve')}
               </Button>
-              <Button variant="secondary" size="sm" onClick={handleDeny} disabled={isProcessing}>
+              <Button
+                variant="secondary"
+                size="sm"
+                data-analytics-id="chat-unsubscribe-deny"
+                onClick={handleDeny}
+                disabled={isProcessing}>
                 {t('chat.unsubscribeApproval.deny')}
               </Button>
             </div>

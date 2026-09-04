@@ -26,6 +26,7 @@ fn native_dispatcher_roundtrip() {
             id: "tc1".into(),
             name: "file_read".into(),
             arguments: "{\"path\":\"a.txt\"}".into(),
+            extra_content: None,
         }],
         usage: None,
         reasoning_content: None,
@@ -268,13 +269,15 @@ fn assistant_tool_calls(id: &str) -> ConversationMessage {
             id: id.into(),
             name: "shell".into(),
             arguments: "{}".into(),
+            extra_content: None,
         }],
         reasoning_content: None,
+        extra_metadata: None,
     }
 }
 
 fn tool_results(id: &str) -> ConversationMessage {
-    use crate::openhuman::inference::provider::ToolResultMessage;
+    use crate::openhuman::agent::messages::ToolResultMessage;
     ConversationMessage::ToolResults(vec![ToolResultMessage {
         tool_call_id: id.into(),
         content: "ok".into(),
@@ -282,13 +285,13 @@ fn tool_results(id: &str) -> ConversationMessage {
 }
 
 fn user_chat(text: &str) -> ConversationMessage {
-    ConversationMessage::Chat(crate::openhuman::inference::provider::ChatMessage::user(
-        text,
-    ))
+    ConversationMessage::Chat(crate::openhuman::agent::messages::ChatMessage::user(text))
 }
 
 fn assistant_chat(text: &str) -> ConversationMessage {
-    ConversationMessage::Chat(crate::openhuman::inference::provider::ChatMessage::assistant(text))
+    ConversationMessage::Chat(crate::openhuman::agent::messages::ChatMessage::assistant(
+        text,
+    ))
 }
 
 #[test]
@@ -397,9 +400,11 @@ fn assistant_tool_calls_multi(ids: &[&str]) -> ConversationMessage {
                 id: (*id).into(),
                 name: "shell".into(),
                 arguments: "{}".into(),
+                extra_content: None,
             })
             .collect(),
         reasoning_content: None,
+        extra_metadata: None,
     }
 }
 
@@ -413,8 +418,10 @@ fn native_dispatcher_serializes_reasoning_content_for_tool_call_turns() {
                 id: "tc-1".into(),
                 name: "shell".into(),
                 arguments: "{}".into(),
+                extra_content: None,
             }],
             reasoning_content: Some("chain-of-thought replay blob".into()),
+            extra_metadata: None,
         },
         tool_results("tc-1"),
     ];
@@ -451,7 +458,7 @@ fn native_dispatcher_omits_reasoning_content_when_absent() {
 }
 
 fn tool_results_multi(ids: &[&str]) -> ConversationMessage {
-    use crate::openhuman::inference::provider::ToolResultMessage;
+    use crate::openhuman::agent::messages::ToolResultMessage;
     ConversationMessage::ToolResults(
         ids.iter()
             .map(|id| ToolResultMessage {
@@ -541,4 +548,29 @@ fn to_provider_messages_drops_pair_with_extra_unsolicited_results() {
         vec!["user", "assistant"],
         "extra unsolicited tool_call_ids must invalidate the pair, kept: {roles:?}"
     );
+}
+
+// `ChatMessage.role` is a free-form `String` in the durable transcript record,
+// but `to_dialect_message`/`from_dialect_message` route it through the
+// crate's closed `DialectRole` (system/user/assistant/tool) — the same four
+// roles every dispatcher already spoke before this seam existed. A role
+// outside that vocabulary (nothing in this codebase produces one today; see
+// the doc comment on `to_dialect_message`) is treated as a `user` turn on the
+// way out, matching how every provider already treats an unrecognized role.
+// This pins that intentional behaviour so it does not silently drift.
+#[test]
+fn to_provider_messages_treats_unrecognized_role_as_user() {
+    let dispatcher = XmlToolDispatcher;
+    let mut developer_message = crate::openhuman::agent::messages::ChatMessage::user("hi");
+    developer_message.role = "developer".to_string();
+    let history = vec![ConversationMessage::Chat(developer_message)];
+
+    let out = dispatcher.to_provider_messages(&history);
+
+    assert_eq!(out.len(), 1);
+    assert_eq!(
+        out[0].role, "user",
+        "an unrecognized role must fall back to `user`, not be dropped or panic"
+    );
+    assert_eq!(out[0].content, "hi");
 }

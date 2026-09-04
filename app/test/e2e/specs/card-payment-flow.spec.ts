@@ -18,7 +18,10 @@ import { clearRequestLog, startMockServer, stopMockServer } from '../mock-server
 const LOG_PREFIX = '[PaymentFlow]';
 
 describe('Card Payment Flow', () => {
-  before(async () => {
+  before(async function () {
+    // resetApp bring-up can run ~25-30s and race the default 30s Mocha hook
+    // budget; raise it.
+    this.timeout(90_000);
     await startMockServer();
     await waitForApp();
     await resetApp('e2e-card-payment-token');
@@ -73,7 +76,7 @@ describe('Card Payment Flow', () => {
       expect(onSettings).toBe(true);
       console.log(`${LOG_PREFIX} 5.3 — back-to-settings navigation works`);
     } else {
-      // Fallback: use PageBackButton's generic back arrow
+      // Fallback: return through the settings navigation helper.
       await navigateToSettings();
       const onSettings = await textExists('Settings');
       expect(onSettings).toBe(true);

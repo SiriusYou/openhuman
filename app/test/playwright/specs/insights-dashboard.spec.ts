@@ -1,18 +1,23 @@
 import { expect, test } from '@playwright/test';
 
-import { bootAuthenticatedPage, waitForAppReady } from '../helpers/core-rpc';
+import {
+  bootAuthenticatedPage,
+  dismissWalkthroughIfPresent,
+  waitForAppReady,
+} from '../helpers/core-rpc';
 
 test.describe('Insights Dashboard', () => {
   test('renders the memory workspace and actions toolbar', async ({ page }) => {
-    await bootAuthenticatedPage(page, 'pw-insights-user', '/intelligence');
+    // Memory's dashboard is the first-class Brain graph surface now.
+    await bootAuthenticatedPage(page, 'pw-insights-user', '/brain?tab=graph');
     await waitForAppReady(page);
-
-    // The Intelligence page now defaults to the "Agent Tasks" tab (#2998), so
-    // select the Memory tab before asserting its workspace renders.
-    await page.getByRole('tab', { name: 'Memory', exact: true }).click();
-
-    await expect(page.getByRole('heading', { name: 'Memory', exact: true })).toBeVisible();
-    await expect(page.locator('[data-testid="memory-workspace"]')).toBeVisible();
+    await dismissWalkthroughIfPresent(page);
+    await expect(page.getByText('Graph', { exact: true }).first()).toBeVisible({ timeout: 15_000 });
     await expect(page.locator('[data-testid="memory-actions"]')).toBeVisible();
+    await expect(
+      page.locator(
+        '[data-testid="memory-graph-svg"], [data-testid="memory-graph-empty"], [data-testid="memory-graph-canvas"][data-render-ready="true"] canvas'
+      )
+    ).toBeVisible({ timeout: 60_000 });
   });
 });

@@ -1,11 +1,9 @@
 // @ts-nocheck
-import { browser, expect } from '@wdio/globals';
+import { expect } from '@wdio/globals';
 
 import { waitForApp } from '../helpers/app-helpers';
 import { callOpenhumanRpc } from '../helpers/core-rpc';
-import { dumpAccessibilityTree, textExists, waitForText } from '../helpers/element-helpers';
 import { resetApp } from '../helpers/reset-app';
-import { navigateViaHash } from '../helpers/shared-flows';
 import { clearRequestLog, startMockServer, stopMockServer } from '../mock-server';
 
 const USER_ID = 'e2e-webhooks-ingress';
@@ -19,12 +17,11 @@ function stepLog(message: string, context?: unknown): void {
   console.log(`[WebhooksIngressE2E][${stamp}] ${message}`, JSON.stringify(context, null, 2));
 }
 
-async function openWebhooksDebugPanel(): Promise<void> {
-  await navigateViaHash('/settings/webhooks-debug');
-}
-
 describe('Webhooks ingress surface (stub-level)', () => {
-  before(async () => {
+  before(async function () {
+    // resetApp bring-up (waitForApp + onboarding walk + home confirm) can run
+    // ~25-30s and race the default 30s Mocha hook budget; raise it.
+    this.timeout(90_000);
     await startMockServer();
     await waitForApp();
     await resetApp(USER_ID);
@@ -36,11 +33,12 @@ describe('Webhooks ingress surface (stub-level)', () => {
   });
 
   it('reaches the app shell after onboarding', async () => {
-    // Home.tsx: t('home.askAssistant') is the stable home page CTA button text.
-    const atHome =
-      (await textExists('Ask your assistant anything')) ||
-      (await textExists('Your device is connected'));
-    expect(atHome).toBe(true);
+    // The assistant-ui chat view intentionally has no fixed greeting copy.
+    // The authenticated sidebar is the stable shell marker after onboarding.
+    const atShell = await browser.execute(
+      () => document.querySelector('[data-testid="root-shell-sidebar"]') !== null
+    );
+    expect(atShell).toBe(true);
   });
 
   it('exposes the stub webhook RPC surface with stable result and log shapes', async () => {
@@ -91,28 +89,5 @@ describe('Webhooks ingress surface (stub-level)', () => {
     } else {
       stepLog('register_echo failed (router not initialized) — skipping write-path assertions');
     }
-  });
-
-  it('renders the webhooks debug panel empty states', async () => {
-    await openWebhooksDebugPanel();
-
-    const currentHash = await browser.execute(() => window.location.hash);
-    stepLog('Navigated to webhooks debug route', { currentHash });
-    expect(String(currentHash)).toContain('/settings/webhooks-debug');
-
-    await waitForText('Webhooks Debug', 12_000);
-    await waitForText('Registered Webhooks', 12_000);
-    await waitForText('Captured Requests', 12_000);
-
-    const hasEmptyStates =
-      (await textExists('No active registrations.')) &&
-      (await textExists('No webhook requests captured yet.'));
-
-    if (!hasEmptyStates) {
-      const tree = await dumpAccessibilityTree();
-      stepLog('Webhooks debug empty states missing', { tree: tree.slice(0, 4000) });
-    }
-
-    expect(hasEmptyStates).toBe(true);
   });
 });

@@ -4,53 +4,53 @@ import { useT } from '../../../lib/i18n/I18nContext';
 import {
   type AutonomyLevel,
   isTauri,
+  openhumanGetAgentSettings,
   openhumanGetAutonomySettings,
+  openhumanUpdateAgentSettings,
   openhumanUpdateAutonomySettings,
   type TrustedAccess,
   type TrustedRoot,
 } from '../../../utils/tauriCommands';
-import SettingsHeader from '../components/SettingsHeader';
+import { Alert, AlertDescription } from '../../ui';
+import Button from '../../ui/Button';
+import {
+  SettingsBadge,
+  SettingsEmptyState,
+  SettingsListItem,
+  SettingsNumberField,
+  SettingsRow,
+  SettingsSection,
+  SettingsSelect,
+  SettingsStatusLine,
+  SettingsSwitch,
+  SettingsTextField,
+} from '../controls';
 import { useSettingsNavigation } from '../hooks/useSettingsNavigation';
+import SettingsPanel from '../layout/SettingsPanel';
+import AutonomyRateLimitSection from './AutonomyPanel';
 
 // Installs are always *available* but never silent: every `install_tool` call
-// is routed through the approval gate, so the user is asked to Approve/Deny each
-// install in chat. There is therefore no per-user "disable installs" knob here —
-// the consent is captured per-install by the gate, not by a static config flag.
+// is routed through the approval gate, so the user is asked to Approve/Deny
+// each install in chat. There is therefore no per-user "disable installs" knob
+// here — the consent is captured per-install by the gate, not by a static
+// config flag.
 const ALLOW_TOOL_INSTALL = true;
-
-interface PresetOption {
-  id: AutonomyLevel;
-  title: string;
-  description: string;
-}
 
 const AgentAccessPanel = () => {
   const { t } = useT();
-  const { navigateBack, navigateToSettings, breadcrumbs } = useSettingsNavigation();
+  const { navigateToSettings } = useSettingsNavigation();
 
-  // Tier presets — built inside the component so titles/descriptions resolve
-  // through `t()` (i18n). Order matters: it's the display order.
-  const presets: PresetOption[] = [
-    {
-      id: 'readonly',
-      title: t('settings.agentAccess.tier.readonly.title'),
-      description: t('settings.agentAccess.tier.readonly.desc'),
-    },
-    {
-      id: 'supervised',
-      title: t('settings.agentAccess.tier.supervised.title'),
-      description: t('settings.agentAccess.tier.supervised.desc'),
-    },
-    {
-      id: 'full',
-      title: t('settings.agentAccess.tier.full.title'),
-      description: t('settings.agentAccess.tier.full.desc'),
-    },
-  ];
-
+  // Load `level` so we can carry it through when writing other fields, but
+  // the tier-selection UI lives in PermissionsPanel. Never render tier radios
+  // here — that would create two sources of truth.
   const [level, setLevel] = useState<AutonomyLevel>('supervised');
   const [workspaceOnly, setWorkspaceOnly] = useState(false);
   const [requireTaskPlanApproval, setRequireTaskPlanApproval] = useState(true);
+  // Blanket "auto-approve everything" bypass — off by default. Hard security
+  // blocks (credential dirs, workspace-internal paths) and the
+  // subconscious-tainted / unlabelled-origin denials in the approval gate
+  // are unaffected by this setting; see `settings.agentAccess.autoApproveAll.desc`.
+  const [autoApproveAll, setAutoApproveAll] = useState(false);
   const [trustedRoots, setTrustedRoots] = useState<TrustedRoot[]>([]);
   // "Always allow" allowlist — populated by the in-chat "Always allow" button;
   // shown here read-only with a Remove action (the re-protect path).
@@ -58,6 +58,18 @@ const AgentAccessPanel = () => {
 
   const [newRootPath, setNewRootPath] = useState('');
   const [newRootAccess, setNewRootAccess] = useState<TrustedAccess>('read');
+
+  // Action timeout (the tool/action wall-clock limit, issue #3100). Held as the
+  // raw input string so the field can be edited freely; validated on save.
+  const [timeoutInput, setTimeoutInput] = useState('');
+  const [timeoutEnvOverride, setTimeoutEnvOverride] = useState(false);
+  const [timeoutMin, setTimeoutMin] = useState(1);
+  const [timeoutMax, setTimeoutMax] = useState(3600);
+  // Last persisted value, kept so blur/Enter can no-op when nothing changed.
+  const [savedTimeoutSecs, setSavedTimeoutSecs] = useState<number | null>(null);
+  const [timeoutError, setTimeoutError] = useState<string | null>(null);
+  const [timeoutSavedNote, setTimeoutSavedNote] = useState<string | null>(null);
+  const timeoutSeqRef = useRef(0);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -75,16 +87,29 @@ const AgentAccessPanel = () => {
         return;
       }
       try {
-        const resp = await openhumanGetAutonomySettings();
+        const autonomyResp = await openhumanGetAutonomySettings();
         if (cancelled) return;
-        setLevel(resp.result.level);
-        setWorkspaceOnly(resp.result.workspace_only);
-        setRequireTaskPlanApproval(resp.result.require_task_plan_approval ?? true);
-        setTrustedRoots(resp.result.trusted_roots ?? []);
-        setAutoApprove(resp.result.auto_approve ?? []);
+        setLevel(autonomyResp.result.level);
+        setWorkspaceOnly(autonomyResp.result.workspace_only);
+        setRequireTaskPlanApproval(autonomyResp.result.require_task_plan_approval ?? true);
+        setAutoApproveAll(autonomyResp.result.auto_approve_all ?? false);
+        setTrustedRoots(autonomyResp.result.trusted_roots ?? []);
+        setAutoApprove(autonomyResp.result.auto_approve ?? []);
       } catch (e) {
         if (!cancelled)
           setError(e instanceof Error ? e.message : t('settings.agentAccess.loadError'));
+      }
+      try {
+        const agentResp = await openhumanGetAgentSettings();
+        if (cancelled) return;
+        setTimeoutInput(String(agentResp.result.agent_timeout_secs));
+        setSavedTimeoutSecs(agentResp.result.agent_timeout_secs);
+        setTimeoutEnvOverride(agentResp.result.env_override);
+        setTimeoutMin(agentResp.result.min_timeout_secs);
+        setTimeoutMax(agentResp.result.max_timeout_secs);
+      } catch {
+        // Non-fatal: autonomy controls still render; timeout section
+        // stays at defaults and the user can try saving manually.
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -97,19 +122,33 @@ const AgentAccessPanel = () => {
   }, []);
 
   // Auto-apply: every change persists immediately (no separate Save button).
-  // `allow_tool_install` is fixed; tier, workspace_only and granted folders
-  // vary. Pass explicit `next` values (setState is async).
-  const persist = async (next: {
-    level: AutonomyLevel;
-    workspaceOnly: boolean;
-    requireTaskPlanApproval: boolean;
-    trustedRoots: TrustedRoot[];
-    // Only sent when the allowlist itself is being changed. Omitting it leaves
-    // the server's `auto_approve` untouched (partial patch) — important so a
-    // tier/folder change here can't clobber a tool the user just added via the
-    // in-chat "Always allow" button.
-    autoApprove?: string[];
-  }) => {
+  // `allow_tool_install` is fixed; workspace_only, trusted_roots vary.
+  // `level` is carried through from state (its UI lives in PermissionsPanel).
+  // Pass explicit `next` values (setState is async).
+  //
+  // `onError` lets a caller revert its own optimistic `setState` if the RPC
+  // fails — otherwise a
+  // failed save leaves the switch showing the new value locally while the
+  // server-side field silently kept its old one.
+  const persist = async (
+    next: {
+      workspaceOnly: boolean;
+      requireTaskPlanApproval: boolean;
+      trustedRoots: TrustedRoot[];
+      // Only sent when the allowlist itself is being changed. Omitting it leaves
+      // the server's `auto_approve` untouched (partial patch) — important so a
+      // tier/folder change can't clobber a tool the user just added via the
+      // in-chat "Always allow" button.
+      autoApprove?: string[];
+      // Same partial-patch reasoning as `autoApprove` above: only
+      // `toggleAutoApproveAll` sets this. Every other caller must omit it so
+      // an unrelated autosave (folders, task-plan-approval, workspace
+      // confinement) can never rewrite `auto_approve_all` back to this
+      // panel's possibly-stale local value.
+      autoApproveAll?: boolean;
+    },
+    onError?: () => void
+  ) => {
     const seq = ++persistSeqRef.current;
     if (!isTauri()) return;
     setError(null);
@@ -117,12 +156,13 @@ const AgentAccessPanel = () => {
     setIsSaving(true);
     try {
       await openhumanUpdateAutonomySettings({
-        level: next.level,
+        level,
         workspace_only: next.workspaceOnly,
         trusted_roots: next.trustedRoots,
         allow_tool_install: ALLOW_TOOL_INSTALL,
         require_task_plan_approval: next.requireTaskPlanApproval,
         ...(next.autoApprove !== undefined ? { auto_approve: next.autoApprove } : {}),
+        ...(next.autoApproveAll !== undefined ? { auto_approve_all: next.autoApproveAll } : {}),
       });
       // Only the most recent persist may write UI state back.
       if (persistSeqRef.current === seq) {
@@ -131,6 +171,7 @@ const AgentAccessPanel = () => {
     } catch (e) {
       if (persistSeqRef.current === seq) {
         setError(e instanceof Error ? e.message : t('settings.agentAccess.saveError'));
+        onError?.();
       }
     } finally {
       if (persistSeqRef.current === seq) {
@@ -139,19 +180,29 @@ const AgentAccessPanel = () => {
     }
   };
 
-  const selectTier = (next: AutonomyLevel) => {
-    setLevel(next);
-    void persist({ level: next, workspaceOnly, requireTaskPlanApproval, trustedRoots });
-  };
-
   const toggleWorkspaceOnly = (next: boolean) => {
+    const prev = workspaceOnly;
     setWorkspaceOnly(next);
-    void persist({ level, workspaceOnly: next, requireTaskPlanApproval, trustedRoots });
+    void persist({ workspaceOnly: next, requireTaskPlanApproval, trustedRoots }, () =>
+      setWorkspaceOnly(prev)
+    );
   };
 
   const toggleTaskPlanApproval = (next: boolean) => {
+    const prev = requireTaskPlanApproval;
     setRequireTaskPlanApproval(next);
-    void persist({ level, workspaceOnly, requireTaskPlanApproval: next, trustedRoots });
+    void persist({ workspaceOnly, requireTaskPlanApproval: next, trustedRoots }, () =>
+      setRequireTaskPlanApproval(prev)
+    );
+  };
+
+  const toggleAutoApproveAll = (next: boolean) => {
+    const prev = autoApproveAll;
+    setAutoApproveAll(next);
+    void persist(
+      { workspaceOnly, requireTaskPlanApproval, trustedRoots, autoApproveAll: next },
+      () => setAutoApproveAll(prev)
+    );
   };
 
   const addRoot = () => {
@@ -165,270 +216,298 @@ const AgentAccessPanel = () => {
     setTrustedRoots(nextRoots);
     setNewRootPath('');
     setNewRootAccess('read');
-    void persist({ level, workspaceOnly, requireTaskPlanApproval, trustedRoots: nextRoots });
+    // `autoApproveAll` intentionally omitted: this save is about the folder
+    // grant, not the auto-approve-all toggle, and the partial-patch RPC
+    // leaves omitted fields untouched server-side (see `persist` above).
+    void persist({ workspaceOnly, requireTaskPlanApproval, trustedRoots: nextRoots });
   };
 
   const removeRoot = (path: string) => {
     const nextRoots = trustedRoots.filter(r => r.path !== path);
     setTrustedRoots(nextRoots);
-    void persist({ level, workspaceOnly, requireTaskPlanApproval, trustedRoots: nextRoots });
+    // `autoApproveAll` intentionally omitted — see `addRoot` above.
+    void persist({ workspaceOnly, requireTaskPlanApproval, trustedRoots: nextRoots });
   };
 
   const removeAutoApprove = (tool: string) => {
     const nextList = autoApprove.filter(name => name !== tool);
     setAutoApprove(nextList);
-    void persist({
-      level,
-      workspaceOnly,
-      requireTaskPlanApproval,
-      trustedRoots,
-      autoApprove: nextList,
-    });
+    // `autoApproveAll` intentionally omitted — see `addRoot` above.
+    void persist({ workspaceOnly, requireTaskPlanApproval, trustedRoots, autoApprove: nextList });
+  };
+
+  // Persist the action timeout on blur / Enter. Validates the integer range
+  // client-side (the core re-validates) and no-ops when unchanged. Separate
+  // from the autonomy `persist` path so a timeout edit can't clobber the
+  // autonomy block and vice-versa.
+  const commitTimeout = async () => {
+    if (!isTauri()) return;
+    const trimmed = timeoutInput.trim();
+    const parsed = Number(trimmed);
+    if (!Number.isInteger(parsed) || parsed < timeoutMin || parsed > timeoutMax) {
+      setTimeoutError(`${t('settings.agentAccess.timeout.invalid')} (${timeoutMin}–${timeoutMax})`);
+      setTimeoutSavedNote(null);
+      return;
+    }
+    if (savedTimeoutSecs !== null && parsed === savedTimeoutSecs) {
+      // Normalize the field (e.g. strip whitespace / leading zeros) but skip the RPC.
+      setTimeoutInput(String(parsed));
+      setTimeoutError(null);
+      return;
+    }
+    const seq = ++timeoutSeqRef.current;
+    const draftAtCommit = timeoutInput;
+    setTimeoutError(null);
+    setTimeoutSavedNote(null);
+    try {
+      await openhumanUpdateAgentSettings({ agent_timeout_secs: parsed });
+      if (timeoutSeqRef.current === seq) {
+        setSavedTimeoutSecs(parsed);
+        // Only snap the field value back if the user hasn't typed further.
+        if (timeoutInput === draftAtCommit) {
+          setTimeoutInput(String(parsed));
+        }
+        setTimeoutSavedNote(t('settings.agentAccess.saved'));
+      }
+    } catch (e) {
+      if (timeoutSeqRef.current === seq) {
+        setTimeoutError(e instanceof Error ? e.message : t('settings.agentAccess.saveError'));
+      }
+    }
   };
 
   return (
-    <div>
-      <SettingsHeader
-        title={t('settings.agentAccess.title')}
-        showBackButton
-        onBack={navigateBack}
-        breadcrumbs={breadcrumbs}
-      />
+    <SettingsPanel description={t('settings.agentAccess.menuDesc')}>
+      {/* Desktop-only notice */}
+      {!isTauri() && (
+        <p className="text-sm text-coral-600 dark:text-coral-300">
+          {t('settings.agentAccess.desktopOnly')}
+        </p>
+      )}
 
-      <div className="p-4 space-y-6">
-        {!isTauri() && (
-          <p className="text-sm text-coral-600 dark:text-coral-300">
-            {t('settings.agentAccess.desktopOnly')}
-          </p>
-        )}
-
-        {isLoading ? (
-          <p className="text-sm text-stone-600 dark:text-neutral-400">
-            {t('settings.agentAccess.loading')}
-          </p>
-        ) : (
-          <>
-            <section className="space-y-2">
-              <h2 className="text-sm font-semibold text-stone-900 dark:text-neutral-100">
-                {t('settings.agentAccess.accessMode')}
-              </h2>
-              <div className="grid gap-2">
-                {presets.map(p => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => selectTier(p.id)}
-                    className={`text-left rounded-lg border p-3 transition ${
-                      level === p.id
-                        ? 'border-primary-500 bg-primary-50 dark:bg-primary-500/10'
-                        : 'border-stone-200 dark:border-neutral-800 hover:border-primary-300 dark:hover:border-primary-500'
-                    }`}>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`inline-block w-3 h-3 rounded-full border ${
-                          level === p.id
-                            ? 'bg-primary-500 border-primary-500'
-                            : 'border-stone-300 dark:border-neutral-700'
-                        }`}
-                      />
-                      <span className="font-medium text-stone-900 dark:text-neutral-100">
-                        {p.title}
-                      </span>
-                      {p.id === 'supervised' && (
-                        <span className="text-xs text-stone-600 dark:text-neutral-400">
-                          {t('settings.agentAccess.defaultTag')}
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-1 text-xs text-stone-600 dark:text-neutral-400">
-                      {p.description}
-                    </p>
-                  </button>
-                ))}
-                {level === 'full' && (
-                  <p className="rounded border border-coral/40 bg-coral/5 dark:bg-coral/10 p-2 text-xs text-coral-600 dark:text-coral-300">
-                    {t('settings.agentAccess.fullWarning')}
-                  </p>
-                )}
-              </div>
-            </section>
-
-            {/* Workspace confinement — orthogonal to the tier; applies in all modes. */}
-            <section className="space-y-1">
-              <label className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 cursor-pointer"
-                  checked={workspaceOnly}
-                  onChange={e => toggleWorkspaceOnly(e.target.checked)}
+      {isLoading ? (
+        <p className="text-sm text-content-muted">{t('settings.agentAccess.loading')}</p>
+      ) : (
+        <>
+          {/* Auto-approve everything — blanket bypass of the approval
+              prompt. Security-sensitive: kept at the very top of the panel
+              with a persistent warning, visible regardless of toggle state,
+              so the user reads it before flipping the switch. */}
+          <SettingsSection>
+            <SettingsRow
+              htmlFor="switch-auto-approve-all"
+              label={t('settings.agentAccess.autoApproveAll.label')}
+              control={
+                <SettingsSwitch
+                  id="switch-auto-approve-all"
+                  checked={autoApproveAll}
+                  onCheckedChange={toggleAutoApproveAll}
+                  aria-label={t('settings.agentAccess.autoApproveAll.label')}
                 />
-                <span>
-                  <span className="text-sm font-medium text-stone-900 dark:text-neutral-100">
-                    {t('settings.agentAccess.confine.label')}
-                  </span>
-                  <span className="block text-xs text-stone-600 dark:text-neutral-400">
-                    {t('settings.agentAccess.confine.desc')}
-                  </span>
-                </span>
-              </label>
-            </section>
-
-            <section className="space-y-1">
-              <label className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 cursor-pointer"
-                  checked={requireTaskPlanApproval}
-                  onChange={e => toggleTaskPlanApproval(e.target.checked)}
-                />
-                <span>
-                  <span className="text-sm font-medium text-stone-900 dark:text-neutral-100">
-                    {t('settings.agentAccess.requireTaskPlanApproval.label')}
-                  </span>
-                  <span className="block text-xs text-stone-600 dark:text-neutral-400">
-                    {t('settings.agentAccess.requireTaskPlanApproval.desc')}
-                  </span>
-                </span>
-              </label>
-            </section>
-
-            {/* Granted folders (trusted roots) — extra read/write reach. */}
-            <section className="space-y-2">
-              <h2 className="text-sm font-semibold text-stone-900 dark:text-neutral-100">
-                {t('settings.agentAccess.grantedFolders')}
-              </h2>
-              <p className="text-xs text-stone-600 dark:text-neutral-400">
-                {t('settings.agentAccess.grantedDesc')}
-              </p>
-              {trustedRoots.length === 0 ? (
-                <p className="text-xs text-stone-600 dark:text-neutral-400">
-                  {t('settings.agentAccess.noneGranted')}
-                </p>
-              ) : (
-                <ul className="space-y-1">
-                  {trustedRoots.map(r => (
-                    <li
-                      key={r.path}
-                      className="flex items-center justify-between rounded border border-stone-200 dark:border-neutral-800 px-2 py-1">
-                      <span className="font-mono text-xs text-stone-900 dark:text-neutral-100 truncate">
-                        {r.path}
-                      </span>
-                      <span className="flex items-center gap-2">
-                        <span className="text-xs text-stone-600 dark:text-neutral-400">
-                          {r.access === 'readwrite'
-                            ? t('settings.agentAccess.readWrite')
-                            : t('settings.agentAccess.readOnly')}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => removeRoot(r.path)}
-                          className="text-xs text-coral-600 dark:text-coral-300 hover:underline">
-                          {t('settings.agentAccess.remove')}
-                        </button>
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={newRootPath}
-                  onChange={e => setNewRootPath(e.target.value)}
-                  placeholder={t('settings.agentAccess.pathPlaceholder')}
-                  aria-label={t('settings.agentAccess.pathPlaceholder')}
-                  className="flex-1 rounded border border-stone-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-stone-900 dark:text-neutral-100 px-2 py-1 text-xs font-mono"
-                />
-                <select
-                  value={newRootAccess}
-                  onChange={e => setNewRootAccess(e.target.value as TrustedAccess)}
-                  aria-label={t('settings.agentAccess.accessLevelLabel')}
-                  className="rounded border border-stone-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-stone-900 dark:text-neutral-100 px-2 py-1 text-xs">
-                  <option value="read">{t('settings.agentAccess.readOnly')}</option>
-                  <option value="readwrite">{t('settings.agentAccess.readWrite')}</option>
-                </select>
-                <button
-                  type="button"
-                  onClick={addRoot}
-                  className="rounded bg-primary-500 px-3 py-1 text-xs text-white hover:bg-primary-600">
-                  {t('settings.agentAccess.add')}
-                </button>
-              </div>
-            </section>
-
-            {/* "Always allow" allowlist — tools the user chose to stop being
-                prompted for, via the in-chat approval card. Read-only here with
-                a Remove action to re-enable prompting for a tool. */}
-            <section className="space-y-2">
-              <h2 className="text-sm font-semibold text-stone-900 dark:text-neutral-100">
-                {t('settings.agentAccess.alwaysAllow')}
-              </h2>
-              <p className="text-xs text-stone-600 dark:text-neutral-400">
-                {t('settings.agentAccess.alwaysAllowDesc')}
-              </p>
-              {autoApprove.length === 0 ? (
-                <p className="text-xs text-stone-600 dark:text-neutral-400">
-                  {t('settings.agentAccess.alwaysAllowNone')}
-                </p>
-              ) : (
-                <ul className="space-y-1">
-                  {autoApprove.map(tool => (
-                    <li
-                      key={tool}
-                      className="flex items-center justify-between rounded border border-stone-200 dark:border-neutral-800 px-2 py-1">
-                      <span className="font-mono text-xs text-stone-900 dark:text-neutral-100 truncate">
-                        {tool}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => removeAutoApprove(tool)}
-                        className="text-xs text-coral-600 dark:text-coral-300 hover:underline">
-                        {t('settings.agentAccess.remove')}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            {/* Approval history — read-only audit trail of past decisions,
-                backed by the gate's durable decided-rows store. */}
-            <section className="space-y-2">
-              <h2 className="text-sm font-semibold text-ink">
-                {t('settings.agentAccess.approvalHistory')}
-              </h2>
-              <p className="text-xs text-ink-soft">
-                {t('settings.agentAccess.approvalHistoryDesc')}
-              </p>
-              <button
-                type="button"
-                onClick={() => navigateToSettings('approval-history')}
-                data-testid="agent-access-approval-history-link"
-                className="rounded border border-line px-3 py-1 text-xs text-ink hover:border-primary-300">
-                {t('settings.agentAccess.viewApprovalHistory')}
-              </button>
-            </section>
-
-            {/* Auto-save status — changes persist on selection; no manual save. */}
-            <div className="min-h-[1.25rem] text-sm" aria-live="polite">
-              {error ? (
-                <span className="text-coral-600 dark:text-coral-300">{error}</span>
-              ) : isSaving ? (
-                <span className="text-stone-600 dark:text-neutral-400">
-                  {t('settings.agentAccess.saving')}
-                </span>
-              ) : savedNote ? (
-                <span className="text-sage-700 dark:text-sage-300">✓ {savedNote}</span>
-              ) : (
-                <span className="text-stone-600 dark:text-neutral-400">
-                  {t('settings.agentAccess.changesApply')}
-                </span>
-              )}
+              }
+            />
+            <div className="px-4 pb-3 -mt-1">
+              {/* Persistent, visible regardless of toggle state — not a
+                  response to a user action, so it must not interrupt with an
+                  assertive announcement on every visit. */}
+              <Alert
+                variant="warning"
+                density="compact"
+                role={undefined}
+                data-testid="auto-approve-all-warning">
+                <AlertDescription>{t('settings.agentAccess.autoApproveAll.desc')}</AlertDescription>
+              </Alert>
             </div>
-          </>
-        )}
-      </div>
-    </div>
+          </SettingsSection>
+
+          {/* Workspace confinement + task plan approval */}
+          <SettingsSection>
+            <SettingsRow
+              htmlFor="switch-workspace-only"
+              label={t('settings.agentAccess.confine.label')}
+              description={t('settings.agentAccess.confine.desc')}
+              control={
+                <SettingsSwitch
+                  id="switch-workspace-only"
+                  checked={workspaceOnly}
+                  onCheckedChange={toggleWorkspaceOnly}
+                  aria-label={t('settings.agentAccess.confine.label')}
+                />
+              }
+            />
+            <SettingsRow
+              htmlFor="switch-task-plan-approval"
+              label={t('settings.agentAccess.requireTaskPlanApproval.label')}
+              description={t('settings.agentAccess.requireTaskPlanApproval.desc')}
+              control={
+                <SettingsSwitch
+                  id="switch-task-plan-approval"
+                  checked={requireTaskPlanApproval}
+                  onCheckedChange={toggleTaskPlanApproval}
+                  aria-label={t('settings.agentAccess.requireTaskPlanApproval.label')}
+                />
+              }
+            />
+          </SettingsSection>
+
+          {/* Action timeout */}
+          <SettingsSection
+            title={t('settings.agentAccess.timeout.label')}
+            description={t('settings.agentAccess.timeout.desc')}>
+            <SettingsRow
+              stacked
+              control={
+                <div className="space-y-2">
+                  <SettingsNumberField
+                    id="timeout-input"
+                    value={timeoutInput}
+                    onChange={setTimeoutInput}
+                    onCommit={() => void commitTimeout()}
+                    unit={t('settings.agentAccess.timeout.unit')}
+                    min={timeoutMin}
+                    max={timeoutMax}
+                    disabled={timeoutEnvOverride}
+                    invalid={!!timeoutError}
+                    aria-label={t('settings.agentAccess.timeout.label')}
+                  />
+                  {timeoutEnvOverride && (
+                    // Reflects a resolved config value, not a user action —
+                    // opt out of the assertive default for the same reason
+                    // as the auto-approve-all warning above.
+                    <Alert variant="warning" density="compact" role={undefined}>
+                      <AlertDescription>
+                        {t('settings.agentAccess.timeout.envOverride')}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                  <SettingsStatusLine
+                    saving={false}
+                    savedNote={timeoutSavedNote}
+                    error={timeoutError}
+                    savingLabel={t('settings.agentAccess.saving')}
+                  />
+                </div>
+              }
+            />
+          </SettingsSection>
+
+          {/* Granted folders (trusted roots) */}
+          <SettingsSection
+            title={t('settings.agentAccess.grantedFolders')}
+            description={t('settings.agentAccess.grantedDesc')}>
+            {trustedRoots.length === 0 ? (
+              <SettingsEmptyState label={t('settings.agentAccess.noneGranted')} />
+            ) : (
+              <ul>
+                {trustedRoots.map(r => (
+                  <SettingsListItem
+                    key={r.path}
+                    label={r.path}
+                    mono
+                    badge={
+                      r.access === 'readwrite' ? (
+                        <SettingsBadge variant="success">
+                          {t('settings.agentAccess.readWrite')}
+                        </SettingsBadge>
+                      ) : (
+                        <SettingsBadge variant="neutral">
+                          {t('settings.agentAccess.readOnly')}
+                        </SettingsBadge>
+                      )
+                    }
+                    onRemove={() => removeRoot(r.path)}
+                    removeLabel={t('settings.agentAccess.remove')}
+                  />
+                ))}
+              </ul>
+            )}
+            {/* Add-folder row */}
+            <div className="flex items-center gap-2 px-4 py-3 border-t border-line-subtle">
+              <SettingsTextField
+                mono
+                className="flex-1"
+                value={newRootPath}
+                onChange={e => setNewRootPath(e.target.value)}
+                placeholder={t('settings.agentAccess.pathPlaceholder')}
+                aria-label={t('settings.agentAccess.pathPlaceholder')}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addRoot();
+                  }
+                }}
+                inputSize="sm"
+              />
+              <SettingsSelect
+                value={newRootAccess}
+                onChange={e => setNewRootAccess(e.target.value as TrustedAccess)}
+                aria-label={t('settings.agentAccess.accessLevelLabel')}
+                inputSize="sm"
+                className="w-32">
+                <option value="read">{t('settings.agentAccess.readOnly')}</option>
+                <option value="readwrite">{t('settings.agentAccess.readWrite')}</option>
+              </SettingsSelect>
+              <Button
+                type="button"
+                variant="primary"
+                size="xs"
+                onClick={addRoot}
+                disabled={!newRootPath.trim()}>
+                {t('settings.agentAccess.add')}
+              </Button>
+            </div>
+          </SettingsSection>
+
+          {/* Always-allowed tools */}
+          <SettingsSection
+            title={t('settings.agentAccess.alwaysAllow')}
+            description={t('settings.agentAccess.alwaysAllowDesc')}>
+            {autoApprove.length === 0 ? (
+              <SettingsEmptyState label={t('settings.agentAccess.alwaysAllowNone')} />
+            ) : (
+              <ul>
+                {autoApprove.map(tool => (
+                  <SettingsListItem
+                    key={tool}
+                    label={tool}
+                    mono
+                    onRemove={() => removeAutoApprove(tool)}
+                    removeLabel={t('settings.agentAccess.remove')}
+                  />
+                ))}
+              </ul>
+            )}
+          </SettingsSection>
+
+          {/* Action rate limit (formerly the standalone /settings/autonomy page) */}
+          <AutonomyRateLimitSection />
+
+          {/* Approval history */}
+          <SettingsSection
+            title={t('settings.agentAccess.approvalHistory')}
+            description={t('settings.agentAccess.approvalHistoryDesc')}>
+            <div className="px-4 py-3">
+              <Button
+                type="button"
+                variant="secondary"
+                size="xs"
+                onClick={() => navigateToSettings('approval-history')}
+                data-testid="agent-access-approval-history-link">
+                {t('settings.agentAccess.viewApprovalHistory')}
+              </Button>
+            </div>
+          </SettingsSection>
+
+          {/* Auto-save status */}
+          <SettingsStatusLine
+            saving={isSaving}
+            savedNote={savedNote}
+            error={error}
+            savingLabel={t('settings.agentAccess.saving')}
+          />
+        </>
+      )}
+    </SettingsPanel>
   );
 };
 

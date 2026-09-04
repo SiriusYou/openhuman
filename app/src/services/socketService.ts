@@ -3,25 +3,34 @@ import { type Socket } from 'socket.io-client';
 
 import { getCoreStateSnapshot } from '../lib/coreState/store';
 import { SocketIOMCPTransportImpl } from '../lib/mcp';
+import { ingestRuntimeErrorSignal } from '../lib/userErrors/report';
 import { store } from '../store';
 import { upsertChannelConnection } from '../store/channelConnectionsSlice';
-import { type CompanionStateChangedEvent, setCompanionState } from '../store/companionSlice';
 import { setBackend } from '../store/connectivitySlice';
 import { resetForUser, setSocketIdForUser, setStatusForUser } from '../store/socketSlice';
 import type { ChannelAuthMode, ChannelConnectionStatus, ChannelType } from '../types/channels';
+import type { UserErrorScope } from '../types/userError';
 import { IS_DEV } from '../utils/config';
 import { createSafeLogData, sanitizeError } from '../utils/sanitize';
 import { getCoreRpcToken, getCoreRpcUrl } from './coreRpcClient';
 import { createCoreSocket } from './coreSocket';
 
 // Socket service logger using debug package
-// Enable logging by setting DEBUG=socket* in environment or localStorage
+// To change these namespaces at runtime, set `localStorage.debug` — NOT the
+// DEBUG env var. Under jsdom (and in the browser) the `debug` package resolves
+// to its `browser` build, which reads `localStorage.debug` and ignores
+// `process.env.DEBUG` entirely, so `DEBUG=socket* pnpm test` silently does
+// nothing. The previous comment here claimed otherwise and cost real time.
 const socketLog = debug('socket');
 const socketWarn = debug('socket:warn');
 const socketError = debug('socket:error');
 
-// Enable socket logging in development by default
-if (IS_DEV) {
+// Enable socket logging in development by default — but never under test.
+// `IS_DEV` is truthy in vitest, so without the MODE guard this force-enable
+// floods every test file that imports this service (measured: 412 lines /
+// 46KB of `flow:approval_request` listener churn in a single run), inflating
+// runtime enough to push suites past the runner's foreground timeout.
+if (IS_DEV && import.meta.env.MODE !== 'test') {
   debug.enable('socket*');
 }
 
@@ -91,35 +100,6 @@ function normalizeChannelConnectionUpdatePayload(
     capabilities: Array.isArray(capabilities)
       ? capabilities.filter((item): item is string => typeof item === 'string')
       : undefined,
-  };
-}
-
-const COMPANION_STATES: ReadonlySet<string> = new Set([
-  'idle',
-  'listening',
-  'thinking',
-  'speaking',
-  'pointing',
-  'error',
-]);
-
-export function parseCompanionStateChangedEvent(value: unknown): CompanionStateChangedEvent | null {
-  if (!value || typeof value !== 'object') return null;
-  const obj = value as Record<string, unknown>;
-  if (typeof obj.session_id !== 'string') return null;
-  if (typeof obj.state !== 'string' || !COMPANION_STATES.has(obj.state)) return null;
-
-  const previous =
-    typeof obj.previous_state === 'string' && COMPANION_STATES.has(obj.previous_state)
-      ? (obj.previous_state as CompanionStateChangedEvent['previous_state'])
-      : 'idle';
-  const message = typeof obj.message === 'string' ? obj.message : undefined;
-
-  return {
-    session_id: obj.session_id,
-    state: obj.state as CompanionStateChangedEvent['state'],
-    previous_state: previous,
-    message,
   };
 }
 
@@ -258,10 +238,16 @@ class SocketService {
       // room and a per-thread room (see socketio.rs `emit_web_channel_event`);
       // because a reconnect produces a NEW client_id, the new socket must
       // re-subscribe to the thread room to keep receiving the stream.
+      // With parallel inference several threads may be streaming at once, so
+      // re-subscribe to every active thread room (plus the selected thread) —
+      // not just a single "active" thread — to keep all in-flight streams alive.
       const threadState = store.getState().thread;
-      const activeThreadId = threadState?.selectedThreadId ?? threadState?.activeThreadId;
-      if (activeThreadId) {
-        this.socket?.emit('thread:subscribe', { thread_id: activeThreadId });
+      const roomThreadIds = new Set<string>(Object.keys(threadState?.activeThreadIds ?? {}));
+      if (threadState?.selectedThreadId) {
+        roomThreadIds.add(threadState.selectedThreadId);
+      }
+      for (const threadId of roomThreadIds) {
+        this.socket?.emit('thread:subscribe', { thread_id: threadId });
       }
     });
 
@@ -364,6 +350,27 @@ class SocketService {
     this.socket.on('mcp_setup:secret_requested', handleSecretRequested);
     this.socket.on('mcp_setup_secret_requested', handleSecretRequested);
 
+    this.socket.on('memory:sync_stage', (data: unknown) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('openhuman:memory-sync-stage', { detail: data }));
+      }
+    });
+    this.socket.on('memory:tree_progress', (data: unknown) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('openhuman:memory-tree-progress', { detail: data }));
+      }
+    });
+    this.socket.on('memory:tree_completed', (data: unknown) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('openhuman:memory-tree-completed', { detail: data }));
+      }
+    });
+    this.socket.on('memory:build_progress', (data: unknown) => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('openhuman:memory-build-progress', { detail: data }));
+      }
+    });
+
     this.socket.on('channel:managed-dm-verified', data => {
       const obj = data as Record<string, unknown> | null;
       if (!obj || typeof obj !== 'object') return;
@@ -383,16 +390,36 @@ class SocketService {
       );
     });
 
-    // Companion state change events — dispatch into the companion Redux slice
-    // so settings panel and other UI can react to session lifecycle.
-    this.socket.on('companion:state_changed', (data: unknown) => {
-      const event = parseCompanionStateChangedEvent(data);
-      if (!event) {
-        socketWarn('companion:state_changed dropped — invalid payload shape');
+    // Permanent user-config / billing failures surfaced from background jobs
+    // (e.g. cron) — core broadcasts these to the "system" room as a
+    // metadata-only `user_error` event carrying a stable kind token in
+    // `error_type` (never a raw provider body). Routed through the same
+    // classifier the chat runtime uses so the UserErrorCenter renders them
+    // durably with a deep-link action, even though no chat thread is active.
+    // Producer: core cron scheduler `publish_cron_user_error` (#4165 /
+    // TAURI-RUST-HCK follow-up).
+    this.socket.on('user_error', (data: unknown) => {
+      const obj = data as Record<string, unknown> | null;
+      if (!obj) {
+        socketWarn('user_error dropped — empty payload');
         return;
       }
-      socketLog('companion:state_changed → %s', event.state);
-      store.dispatch(setCompanionState(event));
+      const errorType = typeof obj.error_type === 'string' ? obj.error_type : undefined;
+      const provider = typeof obj.error_provider === 'string' ? obj.error_provider : undefined;
+      const sourceDomain = typeof obj.error_source === 'string' ? obj.error_source : 'cron';
+      socketLog('user_error kind=%s source=%s', errorType ?? 'none', sourceDomain);
+      // Scope groups the entry in the panel and is part of its dedupe identity,
+      // so it must follow the producing domain. It was pinned to `cron` while
+      // the scheduler was the only producer; the memory embedder health gate
+      // (#5354) is the second. Unknown domains keep the historical `cron`
+      // default rather than widening the scope union from wire data.
+      const scope: UserErrorScope = sourceDomain === 'memory' ? 'memory' : 'cron';
+      // Metadata-only ingest: forward the stable kind token + scope ONLY, never
+      // a raw `message` body. The cron producer already omits it, but we drop
+      // any `obj.message` here too so a future/buggy broadcast can't leak raw
+      // provider text into the UI — classify() keys on `errorType` for this
+      // path. Locks the no-leak contract FE-side (CodeRabbit #4169).
+      ingestRuntimeErrorSignal(store.dispatch, { errorType, scope, sourceDomain, provider });
     });
 
     this.socket.connect();

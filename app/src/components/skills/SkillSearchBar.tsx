@@ -1,4 +1,5 @@
 import { useT } from '../../lib/i18n/I18nContext';
+import { Button, TextField } from '../ui';
 
 interface SkillSearchBarProps {
   value: string;
@@ -6,18 +7,14 @@ interface SkillSearchBarProps {
   placeholder?: string;
 }
 
-export default function SkillSearchBar({
-  value,
-  onChange,
-  placeholder,
-}: SkillSearchBarProps) {
+export default function SkillSearchBar({ value, onChange, placeholder }: SkillSearchBarProps) {
   const { t } = useT();
   const effectivePlaceholder = placeholder ?? t('skills.search.placeholder');
   return (
     <div className="relative">
-      <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+      <div className="pointer-events-none absolute inset-y-0 left-3 z-10 flex items-center">
         <svg
-          className="h-4 w-4 text-stone-400 dark:text-neutral-500"
+          className="h-4 w-4 text-content-faint"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24">
@@ -29,18 +26,21 @@ export default function SkillSearchBar({
           />
         </svg>
       </div>
-      <input
+      <TextField
         type="text"
         value={value}
         onChange={e => onChange(e.target.value)}
         placeholder={effectivePlaceholder}
-        className="w-full rounded-xl border border-stone-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 py-2 pl-9 pr-9 text-sm text-stone-900 dark:text-neutral-100 placeholder-stone-400 focus:border-primary-300 focus:outline-none focus:ring-1 focus:ring-primary-200"
+        className="rounded-xl pl-9 pr-9"
       />
       {value && (
-        <button
-          type="button"
+        <Button
+          iconOnly
+          variant="tertiary"
+          size="sm"
           onClick={() => onChange('')}
-          className="absolute inset-y-0 right-3 flex items-center text-stone-400 dark:text-neutral-500 hover:text-stone-600 dark:text-neutral-300">
+          aria-label={t('common.clear')}
+          className="absolute inset-y-0 right-1 h-auto w-8 text-content-faint hover:text-content-secondary dark:text-content-secondary">
           <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path
               strokeLinecap="round"
@@ -49,7 +49,7 @@ export default function SkillSearchBar({
               d="M6 18L18 6M6 6l12 12"
             />
           </svg>
-        </button>
+        </Button>
       )}
     </div>
   );

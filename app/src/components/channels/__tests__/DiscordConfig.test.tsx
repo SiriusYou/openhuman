@@ -1,10 +1,12 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { FALLBACK_DEFINITIONS } from '../../../lib/channels/definitions';
 import { channelConnectionsApi } from '../../../services/api/channelConnectionsApi';
+import { callCoreRpc } from '../../../services/coreRpcClient';
 import { upsertChannelConnection } from '../../../store/channelConnectionsSlice';
 import { createTestStore, renderWithProviders } from '../../../test/test-utils';
+import { openUrl } from '../../../utils/openUrl';
 import DiscordConfig from '../DiscordConfig';
 
 const coreStateMock = vi.hoisted(() => vi.fn(() => ({ snapshot: { sessionToken: 'jwt-abc' } })));
@@ -55,12 +57,63 @@ describe('DiscordConfig', () => {
     renderWithProviders(<DiscordConfig definition={discordDef} />);
     expect(screen.getByPlaceholderText(/Your Discord bot token/)).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/restrict to a specific server/)).toBeInTheDocument();
+    // Issue #3763: the allowlist must be settable in the connect UI.
+    expect(screen.getByPlaceholderText(/Discord user IDs, or \* for everyone/)).toBeInTheDocument();
   });
 
   it('shows Connect buttons for each auth mode', () => {
     renderWithProviders(<DiscordConfig definition={discordDef} />);
     const connectButtons = screen.getAllByText('Connect');
     expect(connectButtons.length).toBe(3);
+  });
+
+  // #3794 review (Codex P2): clearing the allowlist must reach the backend as an
+  // explicit empty value so it means "allow everyone", instead of being omitted
+  // and silently reusing the previously-saved list on reconnect.
+  it('submits an explicit empty allowed_users when the field is cleared', async () => {
+    vi.mocked(channelConnectionsApi.connectChannel).mockResolvedValue({
+      status: 'connected',
+      restart_required: true,
+    });
+    renderWithProviders(<DiscordConfig definition={discordDef} />);
+
+    fireEvent.change(screen.getByPlaceholderText(/Your Discord bot token/), {
+      target: { value: 'bot-token-xyz' },
+    });
+    const allowlist = screen.getByPlaceholderText(/Discord user IDs, or \* for everyone/);
+    fireEvent.change(allowlist, { target: { value: '111,222' } });
+    fireEvent.change(allowlist, { target: { value: '' } }); // user clears it
+
+    // bot_token is the first auth mode, so its Connect button is index 0.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Connect' })[0]);
+
+    await waitFor(() => {
+      expect(channelConnectionsApi.connectChannel).toHaveBeenCalledWith('discord', {
+        authMode: 'bot_token',
+        credentials: { bot_token: 'bot-token-xyz', allowed_users: '' },
+      });
+    });
+  });
+
+  it('omits allowed_users entirely when the field is never touched', async () => {
+    vi.mocked(channelConnectionsApi.connectChannel).mockResolvedValue({
+      status: 'connected',
+      restart_required: true,
+    });
+    renderWithProviders(<DiscordConfig definition={discordDef} />);
+
+    fireEvent.change(screen.getByPlaceholderText(/Your Discord bot token/), {
+      target: { value: 'bot-token-xyz' },
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Connect' })[0]);
+
+    await waitFor(() => {
+      expect(channelConnectionsApi.connectChannel).toHaveBeenCalledWith('discord', {
+        authMode: 'bot_token',
+        credentials: { bot_token: 'bot-token-xyz' },
+      });
+    });
   });
 
   it('passes clearMemory when disconnecting a connected bot token account', async () => {
@@ -119,6 +172,58 @@ describe('DiscordConfig', () => {
     });
   });
 
+  // Regression: #5161 / Sentry TAURI-REACT-39 — "Cannot read properties of null
+  // (reading 'checked')". Both memory checkboxes (the managed_dm branch and the
+  // all-other-modes branch) used to read `event.currentTarget.checked` inside
+  // the functional setState updater. React nulls `currentTarget` once the
+  // handler returns and only evaluates an updater eagerly while the fiber has no
+  // pending work, so a second toggle in the same batch ran its updater later
+  // against a nulled `currentTarget` and threw. One case per render branch.
+  for (const { label, authMode, capabilities } of [
+    { label: 'bot token', authMode: 'bot_token' as const, capabilities: ['read', 'write'] },
+    { label: 'managed DM', authMode: 'managed_dm' as const, capabilities: ['dm'] },
+  ]) {
+    it(`toggles the ${label} memory checkbox when React defers the state updater (#5161)`, async () => {
+      const store = createTestStore();
+      store.dispatch(
+        upsertChannelConnection({
+          channel: 'discord',
+          authMode,
+          patch: { status: 'connected', capabilities },
+        })
+      );
+      vi.mocked(channelConnectionsApi.disconnectChannel).mockResolvedValue(undefined);
+
+      renderWithProviders(<DiscordConfig definition={discordDef} />, { store });
+
+      const checkbox = screen.getByLabelText(/also delete memory/i) as HTMLInputElement;
+
+      // Three toggles in ONE batch: the first takes React's eager-state path,
+      // the rest defer their updater to render time — the window where
+      // `event.currentTarget` is already null.
+      act(() => {
+        fireEvent.click(checkbox);
+        fireEvent.click(checkbox);
+        fireEvent.click(checkbox);
+      });
+
+      // Odd number of toggles ⇒ still checked, proving the deferred updates
+      // applied rather than being swallowed.
+      expect(checkbox.checked).toBe(true);
+
+      const disconnectButton = screen
+        .getAllByRole('button', { name: 'Disconnect' })
+        .find(button => !button.hasAttribute('disabled'));
+      fireEvent.click(disconnectButton!);
+
+      await waitFor(() => {
+        expect(channelConnectionsApi.disconnectChannel).toHaveBeenCalledWith('discord', authMode, {
+          clearMemory: true,
+        });
+      });
+    });
+  }
+
   it('hides managed channel auth modes for local users', () => {
     coreStateMock.mockReturnValue({ snapshot: { sessionToken: 'header.payload.local' } });
 
@@ -130,5 +235,49 @@ describe('DiscordConfig', () => {
     expect(screen.queryByText('OAuth Sign-in')).not.toBeInTheDocument();
     expect(screen.queryByText('Login with OpenHuman')).not.toBeInTheDocument();
     expect(screen.getAllByText('Bot Token').length).toBeGreaterThanOrEqual(1);
+  });
+
+  // #4299: an OAuth init failure (oauth_connect throws, or returns no URL) must
+  // surface as an error instead of leaving the badge pinned at `connecting`.
+  it('surfaces an error when oauth_connect throws', async () => {
+    const store = createTestStore();
+    vi.mocked(channelConnectionsApi.connectChannel).mockResolvedValue({
+      status: 'pending_auth',
+      auth_action: 'discord_oauth',
+      restart_required: false,
+    });
+    vi.mocked(callCoreRpc).mockRejectedValue(new Error('rpc boom'));
+
+    renderWithProviders(<DiscordConfig definition={discordDef} />, { store });
+
+    // Auth modes render in definition order: bot_token (0), oauth (1).
+    fireEvent.click(screen.getAllByRole('button', { name: 'Connect' })[1]);
+
+    await waitFor(() => {
+      const oauth = store.getState().channelConnections.connections.discord.oauth;
+      expect(oauth?.status).toBe('error');
+      expect(oauth?.lastError).toMatch(/Couldn't start Discord sign-in/);
+    });
+  });
+
+  it('surfaces an error when oauth_connect returns no oauthUrl', async () => {
+    const store = createTestStore();
+    vi.mocked(channelConnectionsApi.connectChannel).mockResolvedValue({
+      status: 'pending_auth',
+      auth_action: 'discord_oauth',
+      restart_required: false,
+    });
+    vi.mocked(callCoreRpc).mockResolvedValue({ result: {} });
+
+    renderWithProviders(<DiscordConfig definition={discordDef} />, { store });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Connect' })[1]);
+
+    await waitFor(() => {
+      const oauth = store.getState().channelConnections.connections.discord.oauth;
+      expect(oauth?.status).toBe('error');
+      expect(oauth?.lastError).toMatch(/Couldn't start Discord sign-in/);
+    });
+    expect(openUrl).not.toHaveBeenCalled();
   });
 });

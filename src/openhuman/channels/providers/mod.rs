@@ -1,4 +1,4 @@
-//! External channel backends (Telegram, Signal, WhatsApp, Slack, Matrix, …).
+//! External channel backends (Telegram, Signal, WhatsApp, Slack, …).
 
 pub mod dingtalk;
 pub mod discord;
@@ -7,18 +7,11 @@ pub mod imessage;
 pub mod irc;
 pub mod lark;
 pub mod linq;
-#[cfg(feature = "channel-matrix")]
-pub mod matrix;
 pub mod mattermost;
-#[cfg(not(any(test, debug_assertions)))]
-mod presentation;
-#[cfg(any(test, debug_assertions))]
-pub mod presentation;
 pub mod qq;
 pub mod signal;
 pub mod slack;
 pub mod telegram;
-pub mod web;
 pub mod whatsapp;
 #[cfg(feature = "whatsapp-web")]
 pub mod whatsapp_web;

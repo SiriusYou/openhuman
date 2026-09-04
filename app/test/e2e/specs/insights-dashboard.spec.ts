@@ -14,10 +14,10 @@ import { startMockServer, stopMockServer } from '../mock-server';
  * Insights dashboard smoke spec (features 11.1.3 analyze trigger,
  * 11.2.1 memory view, 11.2.2 source filtering, 11.2.3 search).
  *
- * Goal: prove the /intelligence route mounts, the Memory tab renders, the
- * source filter chips are present, and the search input accepts a query
- * without throwing. Backend wiring (real memory population) is asserted in
- * `memory-roundtrip.spec.ts` — this spec focuses on the dashboard surface.
+ * Goal: prove the Brain memory graph route mounts, its graph surface renders,
+ * and the memory actions toolbar is available. Backend wiring (real memory
+ * population) is asserted in `memory-roundtrip.spec.ts`; this spec focuses on
+ * the dashboard surface.
  *
  * Mac2 skipped — Intelligence sidebar mapping not yet exposed to Appium
  * helpers.
@@ -56,25 +56,34 @@ describe('Insights dashboard smoke', () => {
     await stopMockServer();
   });
 
-  it('mounts the /intelligence route and renders the Memory tab', async () => {
-    stepLog('navigating to /intelligence');
-    await navigateViaHash('/intelligence');
+  it('mounts Brain and renders the Graph tab', async () => {
+    stepLog('navigating to /brain?tab=graph');
+    await navigateViaHash('/brain?tab=graph');
 
-    // Tabs / page chrome — Memory is the canonical first view.
-    await waitForText('Memory', 15_000);
-    expect(await textExists('Memory')).toBe(true);
+    await waitForText('Graph', 15_000);
+    expect(await textExists('Graph')).toBe(true);
   });
 
-  it('renders the memory workspace container (11.2.3)', async () => {
-    // The Memory tab now renders MemoryWorkspace (IntelligenceMemoryTab was
-    // removed). Assert the root workspace container is present.
-    stepLog('checking for memory-workspace testid');
-    const deadline = Date.now() + 10_000;
+  it('renders the memory graph surface (11.2.3)', async () => {
+    stepLog('checking for memory graph testid');
+    // The canvas is the graph surface. Its `data-render-ready` marker is
+    // intentionally emitted only after Pixi's force simulation cools; a
+    // throttled WebDriver renderer can leave that simulation running after
+    // the visible canvas has mounted. Requiring the marker here turned this
+    // route-mount smoke test into a timing assertion while the actual graph
+    // (including its nodes) was already rendered.
+    const deadline = Date.now() + 30_000;
     let present = false;
     while (Date.now() < deadline) {
-      present = (await browser.execute(
-        () => document.querySelector('[data-testid="memory-workspace"]') !== null
-      )) as boolean;
+      present = (await browser.execute(() => {
+        if (
+          document.querySelector('[data-testid="memory-graph-svg"]') !== null ||
+          document.querySelector('[data-testid="memory-graph-empty"]') !== null
+        ) {
+          return true;
+        }
+        return document.querySelector('[data-testid="memory-graph-canvas"] canvas') !== null;
+      })) as boolean;
       if (present) break;
       await browser.pause(500);
     }
@@ -82,8 +91,8 @@ describe('Insights dashboard smoke', () => {
   });
 
   it('renders the memory actions toolbar (11.2.2)', async () => {
-    // The memory actions bar (wipe / reset / build / obsidian buttons) should
-    // be mounted inside the workspace — confirms the tab content fully rendered.
+    // The memory actions bar (wipe / reset / refresh / build buttons) should
+    // be mounted above the graph, confirming the tab content fully rendered.
     const actionsPresent = await browser.execute(
       () => document.querySelector('[data-testid="memory-actions"]') !== null
     );

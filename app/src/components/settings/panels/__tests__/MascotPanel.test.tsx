@@ -1,5 +1,5 @@
 import { configureStore } from '@reduxjs/toolkit';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { Provider } from 'react-redux';
 import { MemoryRouter } from 'react-router-dom';
 import { REHYDRATE } from 'redux-persist';
@@ -9,19 +9,33 @@ import mascotReducer, {
   DEFAULT_MASCOT_COLOR,
   setCustomMascotGifUrl,
   setMascotColor,
+  setMascotVoiceId,
+  setSecondaryMascotId,
   setSelectedMascotId,
 } from '../../../../store/mascotSlice';
 import MascotPanel from '../MascotPanel';
 
-const { mockNavigateBack, fetchMascotListMock, getCachedMascotDetailMock } = vi.hoisted(() => ({
-  mockNavigateBack: vi.fn(),
-  fetchMascotListMock: vi.fn(),
-  getCachedMascotDetailMock: vi.fn(),
+const { mockNavigateBack, useMascotManifestMock, mockSynthesizeSpeech, mockFileToDataUri } =
+  vi.hoisted(() => ({
+    mockNavigateBack: vi.fn(),
+    useMascotManifestMock: vi.fn(),
+    mockSynthesizeSpeech: vi.fn(),
+    mockFileToDataUri: vi.fn(),
+  }));
+
+vi.mock('../../../../features/human/Mascot/manifest/useMascotManifest', () => ({
+  useMascotManifest: () => useMascotManifestMock(),
 }));
 
-vi.mock('../../../../services/mascotService', () => ({
-  fetchMascotList: (...args: unknown[]) => fetchMascotListMock(...args),
-  getCachedMascotDetail: (...args: unknown[]) => getCachedMascotDetailMock(...args),
+// Keep the real MIME/size guards (`isAllowedMimeType`, the byte cap); only the
+// FileReader-backed data-URL read is stubbed so the upload path is assertable.
+vi.mock('../../../../lib/attachments', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../../../lib/attachments')>();
+  return { ...actual, fileToDataUri: (...args: unknown[]) => mockFileToDataUri(...args) };
+});
+
+vi.mock('../../../../features/human/voice/ttsClient', () => ({
+  synthesizeSpeech: (...args: unknown[]) => mockSynthesizeSpeech(...args),
 }));
 
 vi.mock('../../../../features/human/Mascot', async importOriginal => {
@@ -29,17 +43,59 @@ vi.mock('../../../../features/human/Mascot', async importOriginal => {
   return {
     ...actual,
     RiveMascot: () => <div data-testid="rive-mascot-preview" />,
+    ManifestRiveMascot: ({ entry }: { entry: { id: string } }) => (
+      <div data-testid={`manifest-mascot-preview-${entry.id}`} />
+    ),
     CustomGifMascot: ({ src }: { src: string }) => (
       <img data-testid="custom-gif-mascot" src={src} alt="" />
     ),
   };
 });
 
-vi.mock('../../../../features/human/Mascot/backend/BackendMascot', () => ({
-  BackendMascot: ({ mascot }: { mascot: { id: string } }) => (
-    <div data-testid={`backend-mascot-preview-${mascot.id}`} />
-  ),
-}));
+// Build a minimal manifest entry for the picker list / preview.
+function manifestEntry(id: string, name: string, status: 'ready' | 'draft' = 'ready') {
+  return {
+    id,
+    name,
+    description: '',
+    status,
+    tags: [],
+    stateEngine: {
+      idlePoseCycle: ['idle', 'dancing'],
+      states: { idle: 'idle', thinking: 'thinking' },
+      visemeCodes: ['sil', 'PP', 'aa'],
+    },
+    files: [
+      { path: `${id}.riv`, bytes: 1, role: 'runtime', sha256: id, url: `https://x/${id}.riv` },
+    ],
+  };
+}
+
+function manifestResult(
+  mascots: ReturnType<typeof manifestEntry>[],
+  overrides: Partial<{
+    manifest: unknown;
+    entry: unknown;
+    loading: boolean;
+    error: Error | null;
+  }> = {}
+) {
+  const manifest =
+    'manifest' in overrides
+      ? overrides.manifest
+      : {
+          schemaVersion: 1,
+          generatedAt: '',
+          mascots,
+          source: { repository: '', branch: '', commit: '' },
+        };
+  return {
+    manifest,
+    entry: 'entry' in overrides ? overrides.entry : (mascots[0] ?? null),
+    loading: overrides.loading ?? false,
+    error: overrides.error ?? null,
+  };
+}
 
 vi.mock('../../hooks/useSettingsNavigation', () => ({
   useSettingsNavigation: () => ({
@@ -68,8 +124,8 @@ function renderPanel(store = buildStore()) {
 describe('MascotPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    fetchMascotListMock.mockResolvedValue([]);
-    getCachedMascotDetailMock.mockResolvedValue(null);
+    useMascotManifestMock.mockReturnValue(manifestResult([]));
+    mockSynthesizeSpeech.mockResolvedValue(new Uint8Array(0));
   });
 
   it('renders a radio swatch for each supported color', () => {
@@ -160,78 +216,65 @@ describe('MascotPanel — mascotSlice rehydrate guard', () => {
     expect(screen.getByRole('radio', { name: 'Yellow' })).toHaveAttribute('aria-checked', 'false');
   });
 
-  describe('backend mascot library', () => {
-    const summary = {
-      id: 'yellow',
-      name: 'Yellow',
-      version: '1.0.0',
-      description: '',
-      states: [{ id: 'idle', label: 'Idle', description: '' }],
-      hasVisemes: true,
-    };
-    const detail = {
-      id: 'yellow',
-      name: 'Yellow',
-      version: '1.0.0',
-      description: '',
-      viewBox: '0 0 1 1',
-      defaultState: 'idle',
-      variables: [],
-      states: [{ id: 'idle', label: 'Idle', description: '', svg: '<svg/>' }],
-      visemes: [],
-    };
+  describe('mascot manifest library', () => {
+    const yellow = manifestEntry('yellow', 'Yellow');
+    const toshi = manifestEntry('toshi', 'Toshi', 'draft');
 
-    it('renders the picker entries returned by the API', async () => {
-      fetchMascotListMock.mockResolvedValueOnce([summary]);
+    it('renders the picker entries from the manifest', () => {
+      useMascotManifestMock.mockReturnValue(manifestResult([yellow, toshi]));
       renderPanel();
-      expect(await screen.findByTestId('backend-mascot-yellow')).toBeInTheDocument();
+      expect(screen.getByTestId('manifest-mascot-yellow')).toBeInTheDocument();
+      expect(screen.getByTestId('manifest-mascot-toshi')).toBeInTheDocument();
+      // Draft status badge surfaces for non-ready mascots.
+      expect(screen.getByText('Draft')).toBeInTheDocument();
       // Default-row (local) sentinel
       expect(screen.getByText(/Local OpenHuman/)).toBeInTheDocument();
     });
 
-    it('shows a friendly empty state when the library is empty', async () => {
-      fetchMascotListMock.mockResolvedValueOnce([]);
+    it('shows a friendly empty state when the library is empty', () => {
+      useMascotManifestMock.mockReturnValue(
+        manifestResult([], {
+          manifest: {
+            schemaVersion: 1,
+            generatedAt: '',
+            mascots: [],
+            source: { repository: '', branch: '', commit: '' },
+          },
+        })
+      );
       renderPanel();
-      expect(
-        await screen.findByText(/No OpenHuman characters are available yet/i)
-      ).toBeInTheDocument();
+      expect(screen.getByText(/No OpenHuman characters are available yet/i)).toBeInTheDocument();
     });
 
-    it('shows an error when the library endpoint rejects', async () => {
-      fetchMascotListMock.mockRejectedValueOnce(new Error('offline'));
+    it('shows an error when the manifest fails to load', () => {
+      useMascotManifestMock.mockReturnValue(
+        manifestResult([], { manifest: null, entry: null, error: new Error('offline') })
+      );
       renderPanel();
-      expect(
-        await screen.findByText(/OpenHuman library unavailable: offline/i)
-      ).toBeInTheDocument();
+      expect(screen.getByText(/OpenHuman library unavailable: offline/i)).toBeInTheDocument();
     });
 
-    it('dispatches setSelectedMascotId when a backend mascot is picked', async () => {
-      fetchMascotListMock.mockResolvedValueOnce([summary]);
-      getCachedMascotDetailMock.mockResolvedValueOnce(detail);
+    it('dispatches setSelectedMascotId when a mascot is picked', () => {
+      useMascotManifestMock.mockReturnValue(manifestResult([yellow]));
       const { store } = renderPanel();
-      const row = await screen.findByTestId('backend-mascot-yellow');
-      fireEvent.click(row);
+      fireEvent.click(screen.getByTestId('manifest-mascot-yellow'));
       expect(store.getState().mascot.selectedMascotId).toBe('yellow');
     });
 
-    it('loads + previews the active backend mascot detail', async () => {
+    it('previews the active manifest mascot', () => {
       const store = buildStore();
       store.dispatch(setSelectedMascotId('yellow'));
-      fetchMascotListMock.mockResolvedValueOnce([summary]);
-      getCachedMascotDetailMock.mockResolvedValueOnce(detail);
+      useMascotManifestMock.mockReturnValue(manifestResult([yellow], { entry: yellow }));
       renderPanel(store);
-      expect(await screen.findByTestId('backend-mascot-preview-yellow')).toBeInTheDocument();
-      expect(getCachedMascotDetailMock).toHaveBeenCalledWith('yellow');
+      expect(screen.getByTestId('manifest-mascot-preview-yellow')).toBeInTheDocument();
     });
 
-    it('clearing the selection returns to the local default', async () => {
+    it('clearing the selection returns to the local default', () => {
       const store = buildStore();
       store.dispatch(setSelectedMascotId('yellow'));
-      fetchMascotListMock.mockResolvedValueOnce([summary]);
-      getCachedMascotDetailMock.mockResolvedValueOnce(detail);
+      useMascotManifestMock.mockReturnValue(manifestResult([yellow], { entry: yellow }));
       renderPanel(store);
-      const localRow = await screen.findByText(/Local OpenHuman/);
-      fireEvent.click(localRow);
+      fireEvent.click(screen.getByText(/Local OpenHuman/));
       expect(store.getState().mascot.selectedMascotId).toBeNull();
     });
 
@@ -249,7 +292,21 @@ describe('MascotPanel — mascotSlice rehydrate guard', () => {
       );
     });
 
-    it('rejects non-GIF avatar sources in the panel', () => {
+    it('accepts a PNG avatar URL in the panel (issue #5360)', () => {
+      const { store } = renderPanel();
+      fireEvent.change(screen.getByTestId('mascot-custom-gif-input'), {
+        target: { value: 'https://example.com/avatar.png' },
+      });
+      fireEvent.click(screen.getByTestId('mascot-custom-gif-save'));
+
+      expect(store.getState().mascot.customMascotGifUrl).toBe('https://example.com/avatar.png');
+      expect(screen.getByTestId('custom-gif-mascot')).toHaveAttribute(
+        'src',
+        'https://example.com/avatar.png'
+      );
+    });
+
+    it('rejects unsafe avatar sources in the panel', () => {
       const { store } = renderPanel();
       fireEvent.change(screen.getByTestId('mascot-custom-gif-input'), {
         target: { value: 'https://example.com/avatar.svg' },
@@ -257,18 +314,260 @@ describe('MascotPanel — mascotSlice rehydrate guard', () => {
       fireEvent.click(screen.getByTestId('mascot-custom-gif-save'));
 
       expect(store.getState().mascot.customMascotGifUrl).toBeNull();
-      expect(screen.getByTestId('mascot-custom-gif-error')).toHaveTextContent('HTTPS .gif');
+      expect(screen.getByTestId('mascot-custom-gif-error')).toHaveTextContent(/image URL/i);
     });
 
-    it('selecting a backend mascot clears the custom GIF avatar', async () => {
+    it('uploads a local image file as a data-URL avatar (issue #5360)', async () => {
+      mockFileToDataUri.mockResolvedValue('data:image/png;base64,AAAA');
+      const { store } = renderPanel();
+      const file = new File(['x'], 'avatar.png', { type: 'image/png' });
+      fireEvent.change(screen.getByTestId('mascot-custom-image-input'), {
+        target: { files: [file] },
+      });
+
+      const preview = await screen.findByTestId('custom-gif-mascot');
+      expect(store.getState().mascot.customMascotGifUrl).toBe('data:image/png;base64,AAAA');
+      expect(preview).toHaveAttribute('src', 'data:image/png;base64,AAAA');
+      expect(mockFileToDataUri).toHaveBeenCalledTimes(1);
+    });
+
+    it('uploads a BMP file as a data-URL avatar (issue #5360)', async () => {
+      mockFileToDataUri.mockResolvedValue('data:image/bmp;base64,AAAA');
+      const { store } = renderPanel();
+      const file = new File(['x'], 'avatar.bmp', { type: 'image/bmp' });
+      fireEvent.change(screen.getByTestId('mascot-custom-image-input'), {
+        target: { files: [file] },
+      });
+
+      const preview = await screen.findByTestId('custom-gif-mascot');
+      expect(store.getState().mascot.customMascotGifUrl).toBe('data:image/bmp;base64,AAAA');
+      expect(preview).toHaveAttribute('src', 'data:image/bmp;base64,AAAA');
+    });
+
+    it('discards an upload superseded by Reset while the file was still reading', async () => {
+      // Hold the read open so Reset lands between the pick and the resolve —
+      // the slower read must not resurrect the avatar the user just cleared.
+      let resolveRead: (uri: string) => void = () => {};
+      mockFileToDataUri.mockReturnValue(
+        new Promise<string>(resolve => {
+          resolveRead = resolve;
+        })
+      );
+      const store = buildStore();
+      store.dispatch(setCustomMascotGifUrl('https://example.com/old.gif'));
+      renderPanel(store);
+
+      const file = new File(['x'], 'avatar.png', { type: 'image/png' });
+      fireEvent.change(screen.getByTestId('mascot-custom-image-input'), {
+        target: { files: [file] },
+      });
+      fireEvent.click(screen.getByTestId('mascot-custom-gif-reset'));
+      expect(store.getState().mascot.customMascotGifUrl).toBeNull();
+
+      await act(async () => {
+        resolveRead('data:image/png;base64,AAAA');
+      });
+
+      expect(store.getState().mascot.customMascotGifUrl).toBeNull();
+    });
+
+    it('rejects an oversize upload without reading it', async () => {
+      const { store } = renderPanel();
+      const big = new File(['x'], 'big.png', { type: 'image/png' });
+      // 1.5 MB cap + 1 byte — override size rather than allocating the bytes.
+      Object.defineProperty(big, 'size', { value: 1.5 * 1024 * 1024 + 1 });
+      fireEvent.change(screen.getByTestId('mascot-custom-image-input'), {
+        target: { files: [big] },
+      });
+
+      await screen.findByTestId('mascot-custom-gif-error');
+      expect(store.getState().mascot.customMascotGifUrl).toBeNull();
+      expect(mockFileToDataUri).not.toHaveBeenCalled();
+    });
+
+    it('rejects an upload with an unsupported type without reading it', async () => {
+      const { store } = renderPanel();
+      const svg = new File(['<svg/>'], 'a.svg', { type: 'image/svg+xml' });
+      fireEvent.change(screen.getByTestId('mascot-custom-image-input'), {
+        target: { files: [svg] },
+      });
+
+      await screen.findByTestId('mascot-custom-gif-error');
+      expect(store.getState().mascot.customMascotGifUrl).toBeNull();
+      expect(mockFileToDataUri).not.toHaveBeenCalled();
+    });
+
+    it('keeps the URL box blank for an uploaded data-URL avatar on mount (issue #5360)', () => {
+      const store = buildStore();
+      store.dispatch(setCustomMascotGifUrl('data:image/png;base64,AAAA'));
+      renderPanel(store);
+
+      // The ~2 MB base64 is not dumped into the URL box, but the avatar previews.
+      expect(screen.getByTestId('mascot-custom-gif-input')).toHaveValue('');
+      expect(screen.getByTestId('custom-gif-mascot')).toHaveAttribute(
+        'src',
+        'data:image/png;base64,AAAA'
+      );
+      // Empty box means "no URL change", so Save stays disabled (no accidental
+      // clear); Reset is the way to drop an uploaded avatar.
+      expect(screen.getByTestId('mascot-custom-gif-save')).toBeDisabled();
+      fireEvent.click(screen.getByTestId('mascot-custom-gif-reset'));
+      expect(store.getState().mascot.customMascotGifUrl).toBeNull();
+    });
+
+    it('selecting a mascot clears the custom GIF avatar', () => {
       const store = buildStore();
       store.dispatch(setCustomMascotGifUrl('https://example.com/avatar.gif'));
-      fetchMascotListMock.mockResolvedValueOnce([summary]);
+      useMascotManifestMock.mockReturnValue(manifestResult([yellow]));
       renderPanel(store);
-      fireEvent.click(await screen.findByTestId('backend-mascot-yellow'));
+      fireEvent.click(screen.getByTestId('manifest-mascot-yellow'));
 
       expect(store.getState().mascot.selectedMascotId).toBe('yellow');
       expect(store.getState().mascot.customMascotGifUrl).toBeNull();
     });
+  });
+});
+
+// ── Voice picker: save-paste button disabled state (line 525) ────────────────
+describe('MascotPanel — voice picker custom voice input (line 525)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useMascotManifestMock.mockReturnValue(manifestResult([]));
+    mockSynthesizeSpeech.mockResolvedValue(new Uint8Array(0));
+  });
+
+  it('shows save-paste button when a non-curated (custom) voice id is stored', () => {
+    // A non-curated voice id triggers isCustomVoice=true automatically
+    // without needing to select __custom__ in the picker.
+    const store = buildStore();
+    store.dispatch(setMascotVoiceId('custom-voice-id-xyz'));
+    renderPanel(store);
+
+    // The custom voice input section is visible
+    const saveBtn = screen.getByTestId('mascot-voice-save-paste');
+    expect(saveBtn).toBeInTheDocument();
+  });
+
+  it('save-paste button is disabled when draft matches stored voice id (line 525)', () => {
+    const store = buildStore();
+    store.dispatch(setMascotVoiceId('custom-voice-id-xyz'));
+    renderPanel(store);
+
+    // Draft defaults to storedVoiceId — so draft === storedVoiceId → disabled
+    const saveBtn = screen.getByTestId('mascot-voice-save-paste');
+    expect(saveBtn).toBeDisabled();
+  });
+
+  it('save-paste button is enabled when draft differs from stored voice id (line 525)', () => {
+    const store = buildStore();
+    store.dispatch(setMascotVoiceId('custom-voice-id-xyz'));
+    renderPanel(store);
+
+    const input = screen.getByTestId('mascot-voice-input');
+    fireEvent.change(input, { target: { value: 'different-voice-id' } });
+
+    const saveBtn = screen.getByTestId('mascot-voice-save-paste');
+    expect(saveBtn).not.toBeDisabled();
+  });
+
+  it('clicking save-paste button dispatches new voice id to store', () => {
+    const store = buildStore();
+    store.dispatch(setMascotVoiceId('custom-voice-id-xyz'));
+    renderPanel(store);
+
+    const input = screen.getByTestId('mascot-voice-input');
+    fireEvent.change(input, { target: { value: 'new-voice-id' } });
+
+    const saveBtn = screen.getByTestId('mascot-voice-save-paste');
+    fireEvent.click(saveBtn);
+
+    expect(store.getState().mascot.voiceId).toBe('new-voice-id');
+  });
+});
+
+// ── Dual mascots + per-mascot voice (issue #4277) ────────────────────────────
+describe('MascotPanel — meeting duo (second mascot)', () => {
+  const yellow = manifestEntry('yellow', 'Yellow');
+  const toshi = manifestEntry('toshi', 'Toshi');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useMascotManifestMock.mockReturnValue(manifestResult([yellow, toshi]));
+    mockSynthesizeSpeech.mockResolvedValue(new Uint8Array(0));
+  });
+
+  it('dispatches setSecondaryMascotId when a second mascot is picked', () => {
+    const { store } = renderPanel();
+    fireEvent.change(screen.getByTestId('mascot-secondary-select'), { target: { value: 'toshi' } });
+    expect(store.getState().mascot.secondaryMascotId).toBe('toshi');
+  });
+
+  it('clears the second mascot when None is selected', () => {
+    const store = buildStore();
+    store.dispatch(setSecondaryMascotId('toshi'));
+    renderPanel(store);
+    fireEvent.change(screen.getByTestId('mascot-secondary-select'), {
+      target: { value: '__none__' },
+    });
+    expect(store.getState().mascot.secondaryMascotId).toBeNull();
+  });
+
+  it('disables the primary mascot as a second-mascot option', () => {
+    const store = buildStore();
+    store.dispatch(setSelectedMascotId('yellow'));
+    renderPanel(store);
+    const primaryOption = screen
+      .getByTestId('mascot-secondary-select')
+      .querySelector('option[value="yellow"]') as HTMLOptionElement | null;
+    expect(primaryOption).not.toBeNull();
+    expect(primaryOption).toBeDisabled();
+  });
+
+  it('hides the duo picker when a custom GIF avatar is set', () => {
+    const store = buildStore();
+    store.dispatch(setCustomMascotGifUrl('https://example.com/avatar.gif'));
+    renderPanel(store);
+    expect(screen.queryByTestId('mascot-secondary-select')).not.toBeInTheDocument();
+  });
+
+  it('dispatches setMascotVoice for the second mascot when its voice changes', () => {
+    const store = buildStore();
+    store.dispatch(setSelectedMascotId('yellow'));
+    store.dispatch(setSecondaryMascotId('toshi'));
+    renderPanel(store);
+
+    // The secondary voice row renders once a distinct duo mascot is set.
+    const select = screen.getByTestId('mascot-voice-secondary-select');
+    fireEvent.change(select, { target: { value: 'pNInz6obpgDQGcFmaJgB' } });
+
+    expect(store.getState().mascot.mascotVoices.toshi).toBe('pNInz6obpgDQGcFmaJgB');
+  });
+
+  it('dispatches setMascotVoice for the primary mascot when its voice changes', () => {
+    const store = buildStore();
+    store.dispatch(setSelectedMascotId('yellow'));
+    store.dispatch(setSecondaryMascotId('toshi'));
+    renderPanel(store);
+
+    const select = screen.getByTestId('mascot-voice-primary-select');
+    fireEvent.change(select, { target: { value: 'pNInz6obpgDQGcFmaJgB' } });
+
+    expect(store.getState().mascot.mascotVoices.yellow).toBe('pNInz6obpgDQGcFmaJgB');
+  });
+
+  it('clears a per-mascot voice via the row reset button', () => {
+    const store = buildStore();
+    store.dispatch(setSelectedMascotId('yellow'));
+    store.dispatch(setSecondaryMascotId('toshi'));
+    renderPanel(store);
+
+    // Seed an override, then reset it.
+    fireEvent.change(screen.getByTestId('mascot-voice-secondary-select'), {
+      target: { value: 'pNInz6obpgDQGcFmaJgB' },
+    });
+    expect(store.getState().mascot.mascotVoices.toshi).toBe('pNInz6obpgDQGcFmaJgB');
+
+    fireEvent.click(screen.getByTestId('mascot-voice-secondary-reset'));
+    expect(store.getState().mascot.mascotVoices.toshi).toBeUndefined();
   });
 });

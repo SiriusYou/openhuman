@@ -7,6 +7,7 @@ import {
   ACK_FACE_HOLD_MS,
   pickConversationAckFace,
   pickViseme,
+  pickVisemeCode,
   TTS_MAX_PLAYBACK_MS,
   useHumanMascot,
 } from './useHumanMascot';
@@ -47,12 +48,20 @@ const proceduralVisemesMock = vi.fn(
   }
 );
 
-vi.mock('./voice/ttsClient', () => ({
-  synthesizeSpeech: vi.fn(),
-  visemesFromAlignment: (alignment: { char: string; start_ms: number; end_ms: number }[]) =>
-    alignment.map(a => ({ viseme: 'aa', start_ms: a.start_ms, end_ms: a.end_ms })),
-  proceduralVisemes: (text: string, durationMs: number) => proceduralVisemesMock(text, durationMs),
-}));
+vi.mock('./voice/ttsClient', async importOriginal => {
+  // Keep the real pure helpers (normalizeVisemeTimeline, hasUsableStarts, …) so
+  // startTtsPlayback doesn't blow up on undefined imports; only stub the network
+  // call and the two frame builders the tests want to control.
+  const actual = await importOriginal<typeof import('./voice/ttsClient')>();
+  return {
+    ...actual,
+    synthesizeSpeech: vi.fn(),
+    visemesFromAlignment: (alignment: { char: string; start_ms: number; end_ms: number }[]) =>
+      alignment.map(a => ({ viseme: 'aa', start_ms: a.start_ms, end_ms: a.end_ms })),
+    proceduralVisemes: (text: string, durationMs: number) =>
+      proceduralVisemesMock(text, durationMs),
+  };
+});
 
 class FakeAudioStoppedError extends Error {
   readonly stopped = true;
@@ -72,6 +81,8 @@ vi.mock('./voice/audioPlayer', () => ({
       return;
     throw err;
   },
+  isAudioStopped: (err: unknown) =>
+    typeof err === 'object' && err !== null && (err as { stopped?: unknown }).stopped === true,
 }));
 
 function makeFakePlayback(durationMs = 100) {
@@ -96,6 +107,12 @@ function makeFakePlayback(durationMs = 100) {
     finishNaturally: () => {
       stopped = true;
       resolveEnded();
+    },
+    // Reject `ended` with a real (non-stop) decoder/playback fault — distinct
+    // from the stop sentinel `stop()` raises.
+    failWith: (err: Error) => {
+      stopped = true;
+      rejectEnded(err);
     },
     durationMs,
   };
@@ -136,6 +153,54 @@ describe('pickViseme', () => {
   it('falls back to E for unmapped consonants', () => {
     expect(pickViseme('z')).toBe(VISEMES.E);
     expect(pickViseme('')).toBe(VISEMES.E);
+  });
+});
+
+describe('pickVisemeCode', () => {
+  it('maps vowels to Oculus 15-set codes', () => {
+    expect(pickVisemeCode('a')).toBe('aa');
+    expect(pickVisemeCode('e')).toBe('E');
+    expect(pickVisemeCode('i')).toBe('I');
+    expect(pickVisemeCode('o')).toBe('O');
+    expect(pickVisemeCode('u')).toBe('U');
+  });
+
+  it('maps labials to PP', () => {
+    expect(pickVisemeCode('m')).toBe('PP');
+    expect(pickVisemeCode('b')).toBe('PP');
+    expect(pickVisemeCode('p')).toBe('PP');
+  });
+
+  it('maps fricatives to FF', () => {
+    expect(pickVisemeCode('f')).toBe('FF');
+    expect(pickVisemeCode('v')).toBe('FF');
+  });
+
+  it('maps sibilants to SS', () => {
+    expect(pickVisemeCode('s')).toBe('SS');
+    expect(pickVisemeCode('z')).toBe('SS');
+  });
+
+  it('maps other consonants to their Oculus codes', () => {
+    expect(pickVisemeCode('n')).toBe('nn');
+    expect(pickVisemeCode('t')).toBe('DD');
+    expect(pickVisemeCode('k')).toBe('kk');
+    expect(pickVisemeCode('r')).toBe('RR');
+  });
+
+  it('uses the trailing letter of multi-char deltas', () => {
+    expect(pickVisemeCode('hello')).toBe('O');
+    expect(pickVisemeCode('world')).toBe('DD');
+  });
+
+  it('ignores punctuation when picking the trailing letter', () => {
+    expect(pickVisemeCode('Hi!')).toBe('I');
+  });
+
+  it('falls back to E for unmapped consonants and empty input', () => {
+    expect(pickVisemeCode('x')).toBe('E');
+    expect(pickVisemeCode('')).toBe('E');
+    expect(pickVisemeCode('...')).toBe('E');
   });
 });
 
@@ -257,24 +322,57 @@ describe('useHumanMascot state machine', () => {
     expect(result.current.face).toBe('thinking');
   });
 
-  it('moves to confused on tool_call', () => {
+  it('maps tool_call to activity face when tool has a visual association', () => {
     const { result } = renderHook(() => useHumanMascot());
     act(() => {
       capturedListeners?.onInferenceStart?.(fakeEvent({}));
       capturedListeners?.onToolCall?.(
-        fakeEvent({ tool_name: 'search', skill_id: 's', args: {}, round: 1 })
+        fakeEvent({ tool_name: 'file_write', skill_id: 's', args: {}, round: 1 })
       );
     });
-    expect(result.current.face).toBe('confused');
+    expect(result.current.face).toBe('writing');
   });
 
-  it('moves to confused on iteration_start beyond round 1', () => {
+  it('falls back to thinking on tool_call for unmapped tools', () => {
+    const { result } = renderHook(() => useHumanMascot());
+    act(() => {
+      capturedListeners?.onInferenceStart?.(fakeEvent({}));
+      capturedListeners?.onToolCall?.(
+        fakeEvent({ tool_name: 'custom_tool', skill_id: 's', args: {}, round: 1 })
+      );
+    });
+    expect(result.current.face).toBe('thinking');
+  });
+
+  it('does not expose a capture-specific activity face', () => {
+    const { result } = renderHook(() => useHumanMascot());
+    act(() => {
+      capturedListeners?.onInferenceStart?.(fakeEvent({}));
+      capturedListeners?.onToolCall?.(
+        fakeEvent({ tool_name: 'memory_capture', skill_id: 's', args: {}, round: 1 })
+      );
+    });
+    expect(result.current.face).toBe('thinking');
+  });
+
+  it('maps reading tools to reading face', () => {
+    const { result } = renderHook(() => useHumanMascot());
+    act(() => {
+      capturedListeners?.onInferenceStart?.(fakeEvent({}));
+      capturedListeners?.onToolCall?.(
+        fakeEvent({ tool_name: 'web_search', skill_id: 's', args: {}, round: 1 })
+      );
+    });
+    expect(result.current.face).toBe('reading');
+  });
+
+  it('moves to drinking_coffee on iteration_start beyond round 1', () => {
     const { result } = renderHook(() => useHumanMascot());
     act(() => {
       capturedListeners?.onInferenceStart?.(fakeEvent({}));
       capturedListeners?.onIterationStart?.(fakeEvent({ round: 2, message: '' }));
     });
-    expect(result.current.face).toBe('confused');
+    expect(result.current.face).toBe('drinking_coffee');
   });
 
   it('does not flip to confused on iteration_start round 1', () => {
@@ -309,7 +407,7 @@ describe('useHumanMascot state machine', () => {
     act(() => {
       capturedListeners?.onDone?.(
         fakeEvent({
-          full_response: 'hello',
+          full_response: 'sure thing',
           rounds_used: 1,
           total_input_tokens: 1,
           total_output_tokens: 1,
@@ -418,7 +516,7 @@ describe('useHumanMascot state machine', () => {
     expect(result.current.face).toBe('thinking');
   });
 
-  it('promotes to proud on chat_done when a tool succeeded in the same turn', () => {
+  it('promotes to celebrating on chat_done when a tool succeeded in the same turn', () => {
     const { result } = renderHook(() => useHumanMascot({ speakReplies: false }));
     act(() => {
       capturedListeners?.onInferenceStart?.(fakeEvent({}));
@@ -435,7 +533,7 @@ describe('useHumanMascot state machine', () => {
         })
       );
     });
-    expect(result.current.face).toBe('proud');
+    expect(result.current.face).toBe('celebrating');
     act(() => {
       vi.advanceTimersByTime(ACK_FACE_HOLD_MS + 1);
     });
@@ -459,7 +557,7 @@ describe('useHumanMascot state machine', () => {
     expect(result.current.face).toBe('happy');
   });
 
-  it('promotes to proud on chat_done when a subagent succeeded in the same turn', () => {
+  it('promotes to celebrating on chat_done when a subagent succeeded in the same turn', () => {
     const { result } = renderHook(() => useHumanMascot({ speakReplies: false }));
     act(() => {
       capturedListeners?.onInferenceStart?.(fakeEvent({}));
@@ -482,7 +580,7 @@ describe('useHumanMascot state machine', () => {
         })
       );
     });
-    expect(result.current.face).toBe('proud');
+    expect(result.current.face).toBe('celebrating');
   });
 
   it('shows concerned when a subagent fails', () => {
@@ -501,9 +599,38 @@ describe('useHumanMascot state machine', () => {
     expect(result.current.face).toBe('concerned');
   });
 
+  it('shows concerned on chat_done when a tool succeeded but a subagent failed in the same turn', () => {
+    const { result } = renderHook(() => useHumanMascot({ speakReplies: false }));
+    act(() => {
+      capturedListeners?.onInferenceStart?.(fakeEvent({}));
+      capturedListeners?.onToolResult?.(
+        fakeEvent({ tool_name: 'run', skill_id: 's', output: 'ok', success: true, round: 1 })
+      );
+      capturedListeners?.onSubagentDone?.(
+        fakeEvent({
+          tool_name: 'researcher',
+          skill_id: 'sa1',
+          message: 'failed',
+          success: false,
+          round: 1,
+        })
+      );
+      capturedListeners?.onDone?.(
+        fakeEvent({
+          full_response: 'Sorry, the researcher failed.',
+          reaction_emoji: null,
+          rounds_used: 2,
+          total_input_tokens: 1,
+          total_output_tokens: 1,
+        })
+      );
+    });
+    expect(result.current.face).toBe('concerned');
+  });
+
   it('resets work tracking on each new turn', () => {
     const { result } = renderHook(() => useHumanMascot({ speakReplies: false }));
-    // Turn 1: tool succeeded → proud
+    // Turn 1: tool succeeded → celebrating
     act(() => {
       capturedListeners?.onInferenceStart?.(fakeEvent({}));
       capturedListeners?.onToolResult?.(
@@ -519,7 +646,7 @@ describe('useHumanMascot state machine', () => {
         })
       );
     });
-    expect(result.current.face).toBe('proud');
+    expect(result.current.face).toBe('celebrating');
     act(() => {
       vi.advanceTimersByTime(ACK_FACE_HOLD_MS + 1);
     });
@@ -621,7 +748,7 @@ describe('useHumanMascot TTS playback', () => {
 
     const { result } = renderHook(() => useHumanMascot({ speakReplies: true }));
     await act(async () => {
-      capturedListeners?.onDone?.(fakeDone('hello'));
+      capturedListeners?.onDone?.(fakeDone('sure thing'));
       // Let synthesizeSpeech and playBase64Audio resolve.
       await Promise.resolve();
       await Promise.resolve();
@@ -631,6 +758,40 @@ describe('useHumanMascot TTS playback', () => {
 
     await act(async () => {
       fake.finishNaturally();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.face).toBe('happy');
+
+    act(() => {
+      vi.advanceTimersByTime(ACK_FACE_HOLD_MS + 1);
+    });
+    expect(result.current.face).toBe('idle');
+  });
+
+  it('finishes the turn when a clip ends with a real decoder error (no rethrow, not stranded)', async () => {
+    const fake = makeFakePlayback();
+    (synthesizeSpeech as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      audio_base64: 'AAA=',
+      audio_mime: 'audio/mpeg',
+      visemes: [{ viseme: 'aa', start_ms: 0, end_ms: 100 }],
+    });
+    (playBase64Audio as ReturnType<typeof vi.fn>).mockResolvedValueOnce(fake.handle);
+
+    const { result } = renderHook(() => useHumanMascot({ speakReplies: true }));
+    await act(async () => {
+      capturedListeners?.onDone?.(fakeDone('sure thing'));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.face).toBe('speaking');
+
+    // The clip started fine but `ended` rejects with a genuine playback fault.
+    // The pump must swallow it (not rethrow), release the handle, and still end
+    // the turn on the ack face rather than stranding the mascot in 'speaking'.
+    await act(async () => {
+      fake.failWith(new Error('decoder blew up'));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -953,5 +1114,201 @@ describe('useHumanMascot TTS playback', () => {
       // no-regression contract for users who never opened the picker.
       expect(synthesizeSpeech).toHaveBeenCalledWith('hello', { voiceId: 'JBFqnCBsd6RMkjVDRZzb' });
     });
+  });
+});
+
+describe('useHumanMascot streaming TTS (#5358)', () => {
+  beforeEach(() => {
+    capturedListeners = null;
+    mockMascotVoiceId = null;
+    vi.useFakeTimers();
+    (synthesizeSpeech as ReturnType<typeof vi.fn>).mockReset();
+    (playBase64Audio as ReturnType<typeof vi.fn>).mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function delta(text: string) {
+    return { thread_id: 't', request_id: 'r', round: 1, delta: text };
+  }
+  function fakeDone(text: string) {
+    return {
+      thread_id: 't',
+      request_id: 'r',
+      full_response: text,
+      rounds_used: 1,
+      total_input_tokens: 1,
+      total_output_tokens: 1,
+    };
+  }
+  function mockSequentialPlaybacks(): ReturnType<typeof makeFakePlayback>[] {
+    const fakes: ReturnType<typeof makeFakePlayback>[] = [];
+    (synthesizeSpeech as ReturnType<typeof vi.fn>).mockResolvedValue({
+      audio_base64: 'AAA=',
+      audio_mime: 'audio/mpeg',
+      visemes: [{ viseme: 'aa', start_ms: 0, end_ms: 100 }],
+    });
+    (playBase64Audio as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      const f = makeFakePlayback();
+      fakes.push(f);
+      return Promise.resolve(f.handle);
+    });
+    return fakes;
+  }
+
+  it('speaks a streamed reply sentence-by-sentence, in order', async () => {
+    const fakes = mockSequentialPlaybacks();
+    const { result } = renderHook(() => useHumanMascot({ speakReplies: true }));
+
+    await act(async () => {
+      capturedListeners?.onTextDelta?.(delta('Hello world. '));
+      capturedListeners?.onTextDelta?.(delta('How are you? '));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Both complete sentences synthesize eagerly; only the first is playing.
+    expect(synthesizeSpeech).toHaveBeenCalledWith('Hello world.', {
+      voiceId: 'JBFqnCBsd6RMkjVDRZzb',
+    });
+    expect(synthesizeSpeech).toHaveBeenCalledWith('How are you?', {
+      voiceId: 'JBFqnCBsd6RMkjVDRZzb',
+    });
+    expect(playBase64Audio).toHaveBeenCalledTimes(1);
+    expect(result.current.face).toBe('speaking');
+
+    // First clip ends → the queued second sentence plays.
+    await act(async () => {
+      fakes[0].finishNaturally();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(playBase64Audio).toHaveBeenCalledTimes(2);
+    expect(result.current.face).toBe('speaking');
+
+    // chat_done with the whole reply closes the queue; last clip ends → ack.
+    await act(async () => {
+      capturedListeners?.onDone?.(fakeDone('Hello world. How are you?'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fakes[1].finishNaturally();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // "Hello…" trips the greeting cue, so the ack beat is 'waving' — proving the
+    // chat_done ack face propagates through the streaming-queue completion.
+    expect(result.current.face).toBe('waving');
+  });
+
+  it('chunks a multi-sentence reply even when it arrives only at chat_done', async () => {
+    const fakes = mockSequentialPlaybacks();
+    const { result } = renderHook(() => useHumanMascot({ speakReplies: true }));
+
+    await act(async () => {
+      capturedListeners?.onDone?.(fakeDone('First sentence. Second sentence.'));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(synthesizeSpeech).toHaveBeenCalledWith('First sentence.', expect.anything());
+    expect(synthesizeSpeech).toHaveBeenCalledWith('Second sentence.', expect.anything());
+    expect(playBase64Audio).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      fakes[0].finishNaturally();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(playBase64Audio).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      fakes[1].finishNaturally();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.face).toBe('happy');
+  });
+
+  it('barge-in mid-reply stops the active clip and drops queued sentences', async () => {
+    const fakes = mockSequentialPlaybacks();
+    const { result, rerender } = renderHook(
+      ({ listening }: { listening: boolean }) => useHumanMascot({ speakReplies: true, listening }),
+      { initialProps: { listening: false } }
+    );
+
+    await act(async () => {
+      capturedListeners?.onTextDelta?.(delta('Hello world. '));
+      capturedListeners?.onTextDelta?.(delta('How are you? '));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(playBase64Audio).toHaveBeenCalledTimes(1);
+    expect(result.current.face).toBe('speaking');
+
+    const stopSpy = vi.spyOn(fakes[0].handle, 'stop');
+    act(() => {
+      rerender({ listening: true });
+    });
+    expect(result.current.face).toBe('listening');
+    expect(stopSpy).toHaveBeenCalledTimes(1);
+
+    // The queued second sentence must never reach playback after the barge-in.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(playBase64Audio).toHaveBeenCalledTimes(1);
+  });
+
+  it('turning speakReplies off mid-reply stops the active clip and drops the queue', async () => {
+    // `speakRef` is only consulted when a NEW reply arrives, so without an
+    // explicit cancel the mascot keeps talking after speech is switched off —
+    // which is what collapsing the chat mascot's voice stage does.
+    const fakes = mockSequentialPlaybacks();
+    const { result, rerender } = renderHook(
+      ({ speakReplies }: { speakReplies: boolean }) => useHumanMascot({ speakReplies }),
+      { initialProps: { speakReplies: true } }
+    );
+
+    await act(async () => {
+      capturedListeners?.onTextDelta?.(delta('Hello world. '));
+      capturedListeners?.onTextDelta?.(delta('How are you? '));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(playBase64Audio).toHaveBeenCalledTimes(1);
+    expect(result.current.face).toBe('speaking');
+
+    const stopSpy = vi.spyOn(fakes[0].handle, 'stop');
+    act(() => {
+      rerender({ speakReplies: false });
+    });
+    expect(stopSpy).toHaveBeenCalledTimes(1);
+    expect(result.current.face).toBe('idle');
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(playBase64Audio).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cancel anything when speech was already off', async () => {
+    // The effect runs on mount too; it must not disturb a silent mascot.
+    mockSequentialPlaybacks();
+    const { result } = renderHook(() => useHumanMascot({ speakReplies: false }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(playBase64Audio).not.toHaveBeenCalled();
+    expect(result.current.face).toBe('idle');
   });
 });

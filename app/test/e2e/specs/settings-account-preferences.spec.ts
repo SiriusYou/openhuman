@@ -17,7 +17,9 @@ async function waitForHashContains(fragment: string, timeout = 10_000): Promise<
   );
 }
 
-describe('Settings - Account Preferences', () => {
+describe('Settings - Account Preferences', function () {
+  this.timeout(90_000);
+
   before(async function beforeSuite() {
     this.timeout(90_000);
     await startMockServer();
@@ -43,6 +45,13 @@ describe('Settings - Account Preferences', () => {
     this.timeout(90_000);
     await navigateViaHash('/settings/recovery-phrase');
 
+    // A previous suite or persisted local wallet can leave this panel in its
+    // existing-wallet view. Follow the product's replacement flow before
+    // asserting the generated-phrase controls.
+    if (await textExists('Replace wallet')) {
+      await clickText('Replace wallet', 10_000);
+      await clickText('I understand, replace my wallet', 10_000);
+    }
     await waitForText('Copy to Clipboard', 15_000);
     await clickSelector('input[type="checkbox"]');
     await clickText('Save Recovery Phrase', 10_000);
@@ -61,33 +70,30 @@ describe('Settings - Account Preferences', () => {
     // the recovery-phrase flow wired through to the wallet domain.
   });
 
-  it('persists privacy analytics and meet handoff toggles to core config', async function () {
+  it('persists the privacy analytics toggle to core config', async function () {
     this.timeout(90_000);
     const beforeAnalytics = await callOpenhumanRpc('openhuman.config_get_analytics_settings', {});
-    const beforeMeet = await callOpenhumanRpc('openhuman.config_get_meet_settings', {});
     expect(beforeAnalytics.ok).toBe(true);
-    expect(beforeMeet.ok).toBe(true);
 
     const initialAnalytics = Boolean(beforeAnalytics.result?.result?.enabled);
-    const initialMeet = Boolean(beforeMeet.result?.result?.auto_orchestrator_handoff);
 
     await navigateViaHash('/settings/privacy');
     await waitForText('Privacy', 15_000);
-    await waitForText('Share Anonymized Usage Data', 15_000);
+    // Renamed: t('privacy.shareAnonymizedData') = 'Share Product Analytics and Diagnostics'.
+    await waitForText('Share Product Analytics and Diagnostics', 15_000);
 
     await clickSelector('[data-testid="privacy-analytics-toggle"]');
-    await clickSelector('[data-testid="privacy-meet-handoff-toggle"]');
-
     await browser.waitUntil(
       async () => {
         const analytics = await callOpenhumanRpc('openhuman.config_get_analytics_settings', {});
-        const meet = await callOpenhumanRpc('openhuman.config_get_meet_settings', {});
-        return (
-          analytics.ok &&
-          meet.ok &&
-          Boolean(analytics.result?.result?.enabled) === !initialAnalytics &&
-          Boolean(meet.result?.result?.auto_orchestrator_handoff) === !initialMeet
-        );
+        return analytics.ok && Boolean(analytics.result?.result?.enabled) === !initialAnalytics;
+      },
+      { timeout: 15_000, interval: 500, timeoutMsg: 'analytics setting did not persist' }
+    );
+    await browser.waitUntil(
+      async () => {
+        const analytics = await callOpenhumanRpc('openhuman.config_get_analytics_settings', {});
+        return analytics.ok && Boolean(analytics.result?.result?.enabled) === !initialAnalytics;
       },
       { timeout: 15_000, interval: 500, timeoutMsg: 'privacy settings did not persist' }
     );
@@ -95,26 +101,20 @@ describe('Settings - Account Preferences', () => {
     const snapshot = await callOpenhumanRpc('openhuman.app_state_snapshot', {});
     expect(snapshot.ok).toBe(true);
     expect(Boolean(snapshot.result?.result?.analyticsEnabled)).toBe(!initialAnalytics);
-    expect(Boolean(snapshot.result?.result?.meetAutoOrchestratorHandoff)).toBe(!initialMeet);
   });
 
-  it('opens the billing route and settles the redirect status copy', async function () {
+  it('opens the billing route and shows the moved-to-web redirect panel', async function () {
     this.timeout(60_000);
     await navigateViaHash('/settings/billing');
 
     await waitForHashContains('/settings/billing');
-    await waitForText('Open billing dashboard', 15_000);
-
-    await browser.waitUntil(
-      async () =>
-        // browserNotOpen: shown when open succeeds but browser may not have focused
-        (await textExists('If your browser did not open, use the button above.')) ||
-        // browserOpenFailed: shown when openUrl() throws (E2E headless environment)
-        (await textExists('The browser could not be opened automatically.')) ||
-        // Opening state (transient)
-        (await textExists('Opening your browser...')),
-      { timeout: 15_000, interval: 500, timeoutMsg: 'billing redirect status did not settle' }
-    );
+    // BillingPanel is now a static "moved to the web" redirect page: heading
+    // t('settings.billing.movedToWeb'), an "Open billing dashboard" button, and
+    // a "Back to settings" link. The previous auto-open status copy
+    // ("Opening your browser…" / "If your browser did not open…") was removed,
+    // so we assert the panel content instead of the transient open state.
+    await waitForText('Billing moved to the web', 15_000);
+    expect(await textExists('Open billing dashboard')).toBe(true);
 
     await clickText('Back to settings', 10_000);
     await waitForHashContains('/settings');

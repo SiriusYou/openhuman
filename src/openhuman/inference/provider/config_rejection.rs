@@ -32,15 +32,6 @@
 //!   from a user OAuth/scope gap)
 //! - `"not_found_error"` (J2 / J5 / J4 — litellm-compatible envelope
 //!   `type` field carrying "model 'X' not found")
-//! - `"does not support tools"` / `"function calling is not supported"` /
-//!   `"unknown parameter: tools"` / `"unrecognized field \`tools\`"` /
-//!   `"unsupported parameter: tools"` (TAURI-RUST-4K7 — Ollama models such
-//!   as `gemma3:1b-it-qat` and `huihui_ai/deepseek-r1-abliterated:8b`
-//!   reject tool-enabled requests with HTTP 400. The compatible provider
-//!   already retries without tools, so the initial 400 is not a
-//!   bug — it's expected discovery of the model's capability boundary.
-//!   Sentry noise suppressed here; the retry path in `compatible.rs` runs
-//!   unchanged.)
 //!
 //! These are **deterministic user-configuration state**, not bugs the
 //! maintainers can act on: the user pointed OpenHuman at a custom
@@ -62,7 +53,7 @@
 //! that phrase set is intrinsically scoped to custom providers. The
 //! HTTP-layer wrapper [`super::ops::is_provider_config_rejection_http`]
 //! polarity-guards those phrases on `provider !=
-//! openhuman_backend::PROVIDER_LABEL` so a model-rejection from our
+//! openhuman_backend_model::PROVIDER_LABEL` so a model-rejection from our
 //! **own** backend that we did not expect (which would be a real
 //! regression we sent it a bad request) still reaches Sentry. The
 //! message-only predicate is consumed by
@@ -171,54 +162,48 @@ pub fn is_provider_config_rejection_message(body: &str) -> bool {
         // this is the `type` field used by litellm/Anthropic-style
         // envelopes for the same class of user-state error.
         "not_found_error",
-        // TAURI-RUST-4NM — nvidia-nim (and some other providers) return
-        // `{"error":{"message":"model field is required","type":"invalid_request_error","code":"missing_required_field"}}`
-        // when the `model` key is absent or empty in the request body.
-        // This is a user-configuration error (provider string has no model
-        // component, e.g. `nvidia-nim:` with empty model), not a product
-        // regression. Demote from Sentry; the factory now validates this
-        // up-front so in practice this phrase should no longer appear.
-        "model field is required",
-        // TAURI-RUST-4XK — Ollama 403 when the requested model requires a
-        // paid Ollama subscription. Body carries the upgrade URL. User must
-        // switch to a free model or upgrade their Ollama account.
-        "requires a subscription",
-        // TAURI-RUST-2G / TAURI-RUST-2F — DeepSeek / compatible providers
-        // that use extended thinking reject tool-call turns when the
-        // `reasoning_content` block from a prior assistant turn is not
-        // threaded back. This is user-config state (model requires the
-        // caller to replay the thinking block; the frontend replay logic in
-        // `turn.rs` handles it for subsequent turns, so the first-turn 400
-        // is expected capability-discovery, not a regression).
-        "in the thinking mode must be passed back",
-        // TAURI-RUST-35 / TAURI-RUST-4K7 / TAURI-RUST-4Z0 — Ollama models
-        // (e.g. gemma3, phi3, deepseek-r1) that do not support function
-        // calling return HTTP 400 with this phrase. The compatible provider
-        // retries without tools on 400, so the initial rejection is expected
-        // capability-discovery. Sentry noise suppressed here.
-        "does not support tools",
-        // TAURI-RUST-4K7-d — alternative phrasing used by some Ollama model
-        // versions for the same tool-unsupported condition.
-        "function calling is not supported",
-        // TAURI-RUST-4K7-e — litellm / OpenAI-compatible proxies reject the
-        // `tools` key in the request body when the backing model does not
-        // support tool use (e.g. local Ollama via LiteLLM gateway).
-        "unknown parameter: tools",
-        // TAURI-RUST-4K7-f — Ollama native API surface rejects the field
-        // outright when the model has no function-calling capability.
-        "unrecognized field `tools`",
-        // TAURI-RUST-4K7-g — another litellm / proxy variant of the same
-        // tool-unsupported condition.
-        "unsupported parameter: tools",
         // TAURI-RUST-4NM — nvidia-nim (and compatible providers) return
         // `{"error":{"message":"model field is required","code":"missing_required_field"}}`
         // when the request body contains an empty `"model":""` field.
         "model field is required",
+        // TAURI-RUST-GKV (~2.3k events / 1 user) — the LOCAL form of the
+        // 4NM empty-model state, caught one layer earlier. The #2784 cloud-slug
+        // resolution guard bails BEFORE any
+        // provider HTTP call when a `<slug>` provider string carries no
+        // model and the `cloud_providers` entry has no `default_model`:
+        //   "[chat-factory] no model configured: role '<r>' resolved to an
+        //    empty model id for slug '<s>'. Include a model in the provider
+        //    string (e.g. '<s>:<model-id>') or set default_model …".
+        // User-state — the remediation is "add/pick a model in Settings →
+        // LLM", which the user-facing copy surfaces; Sentry has no
+        // remediation. Anchored on the role/slug-interpolation-free
+        // substring, which IS `factory::NO_MODEL_CONFIGURED_ANCHOR` —
+        // referenced directly so the two can never drift (the round-trip
+        // test in `factory_tests.rs` remains as a belt-and-braces guard).
+        super::factory::NO_MODEL_CONFIGURED_ANCHOR,
         // TAURI-RUST-2G (~2684 events) / TAURI-RUST-2F (~950 events) —
-        // thinking-mode model rejects a follow-up turn that doesn't echo
-        // the prior assistant's `reasoning_content` field.
+        // thinking-mode model (DeepSeek-R1 / Moonshot K2-thinking on
+        // `provider=cloud` custom_openai) rejects a follow-up turn that
+        // doesn't echo the prior assistant's `reasoning_content` field.
+        // Body shape (backtick-quoted JSON literal in the upstream body):
+        // `{"error":{"message":"The `reasoning_content` in the thinking
+        // mode must be passed back to the API.",...}}`. The
+        // provider-contract gap is on our side, but until the thinking-
+        // mode round-tripping ships in the inference layer, every affected
+        // turn fires a fresh Sentry event — and the UI already surfaces
+        // the actionable error to the user. Anchor on the unique
+        // `thinking mode must be passed back` substring so the match
+        // doesn't depend on the upstream's backtick-quoting around
+        // `reasoning_content` (some provider versions ship without them).
         "thinking mode must be passed back",
         // TAURI-RUST-4XK (~649 events) — Ollama Cloud subscription gate.
+        // Body: `{"error":"this model requires a subscription, upgrade for
+        // access: https://ollama.com/upgrade (ref: <uuid>)"}` on a 403
+        // Forbidden from the OpenAI-compatible client with
+        // `name = "ollama"`. User-state: the model picked in Settings is
+        // a paid-tier Ollama Cloud model the user's account doesn't
+        // cover. The UI surfaces an actionable upgrade link in the
+        // remediation message itself.
         "requires a subscription, upgrade for access",
         // TAURI-RUST-1V / OPENHUMAN-TAURI-4JS —
         // `reliable.rs::format_failure_aggregate` (no-configured-fallbacks
@@ -228,7 +213,7 @@ pub fn is_provider_config_rejection_message(body: &str) -> bool {
         //   "The model `<name>` may not be available on your provider.
         //    Configure a fallback chain via `reliability.model_fallbacks`
         //    in your OpenHuman config, or change your default model in
-        //    Settings → AI.\n\nAll providers/models failed. Attempts:\n…"
+        //    Connections → API keys → LLM.\n\nAll providers/models failed. Attempts:\n…"
         //
         // The aggregate fires once per turn regardless of the underlying
         // per-attempt cause (auth wall, unknown model, region block,
@@ -266,6 +251,32 @@ pub fn is_provider_config_rejection_message(body: &str) -> bool {
         // harmless (`.any()` short-circuits) and kept so each Sentry
         // family stays self-documenting.
         "does not support tools",
+        // TAURI-RUST-ADC (~5.9k events / 10 users) — OpenRouter's
+        // *router-level* phrasing of the same tool-capability user-state.
+        // When the picked model has no provider endpoint that supports tool
+        // calling, OpenRouter returns a 404 with `{"error":{"message":"No
+        // endpoints found that support tool use. Try disabling \"<tool>\".
+        // ..."}}`. The wording differs from the direct-provider `does not
+        // support tools` body above ("tool use" vs "tools", prefixed with
+        // "No endpoints found"), so it needs its own anchor. Same user-state
+        // class: pick a tool-capable model. Surfaced most often by the
+        // autonomous Subconscious loop, which additionally halts on this via
+        // its own capability breaker (`subconscious/engine.rs`).
+        "no endpoints found that support tool use",
+        // TAURI-RUST-4P6 (~36.6k events / 2 users) — user picked an
+        // *embedding* model (Ollama `bge-m3:latest`, OpenHuman's default
+        // memory-tree embed model) as their chat model. Ollama rejects every
+        // chat turn with `{"error":{"message":"\"bge-m3:latest\" does not
+        // support chat","type":"invalid_request_error",...}}` on a 400. Same
+        // user-state class as `does not support tools`: the model lacks the
+        // chat capability and the user must pick a chat-capable model — Sentry
+        // has no remediation. The 400 status bypasses the
+        // `completion_only_404_guard` (404-only), so without this phrase the
+        // raw body re-reports every turn. The companion `not_chat_capable_guard`
+        // in `compatible.rs` rewrites the opaque upstream JSON into an
+        // actionable "assign a chat-capable model" message that still carries
+        // this substring, so it stays demoted.
+        "does not support chat",
     ];
 
     let lower = body.to_ascii_lowercase();
@@ -281,7 +292,7 @@ pub fn is_provider_config_rejection_message(body: &str) -> bool {
 /// the same phrase already lives in that predicate's list. The narrower
 /// helper exists so the HTTP-layer wrapper
 /// ([`super::ops::is_provider_config_rejection_http`]) can drop its
-/// `provider != openhuman_backend::PROVIDER_LABEL` polarity guard for
+/// `provider != openhuman_backend_model::PROVIDER_LABEL` polarity guard for
 /// this specific body shape — the OpenHuman hosted backend now emits the
 /// same OpenAI-compatible "Model 'X' is not available" wire body in
 /// response to user-configured unknown model ids, so the original
@@ -296,492 +307,5 @@ pub fn is_openai_compatible_unknown_model_message(body: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn detects_real_sentry_bodies() {
-        // The exact upstream bodies from OPENHUMAN-TAURI-WJ / -QW / -HB
-        // / -NH and the stale-pin family.
-        for body in [
-            "The supported API model names are deepseek-v4-pro or deepseek-v4-flash, but you passed reasoning-v1.",
-            "Model 'deepseek-v4-pro' is not available. Use GET /openai/v1/models to list available models.",
-            "Model 'claude-opus-4-7' is not available. Use GET /openai/v1/models to list available models.",
-            "invalid temperature: only 1 is allowed for this model",
-            "The model `gpt-5.5` does not exist or you do not have access to it.",
-            r#"{"error":{"message":"model not found","code":"model_not_found"}}"#,
-            "Model 'reasoning-v1' is an abstract tier — configure a concrete model for your custom provider",
-        ] {
-            assert!(
-                is_provider_config_rejection_message(body),
-                "{body:?} must classify as a provider config-rejection user-state"
-            );
-        }
-    }
-
-    #[test]
-    fn detects_wave4_sentry_bodies() {
-        // Real wire bodies pulled from the OPENHUMAN-TAURI-* Sentry
-        // events the Wave 4 phrases drop.
-        for (sentry_id, body) in [
-            (
-                "R1",
-                r#"custom_openai API error (403 Forbidden): {"error":{"message":"This model is not available in your region.","code":403}}"#,
-            ),
-            (
-                "R4",
-                r#"custom_openai API error (403 Forbidden): {"code":403,"reason":"ModelNotAllowed","message":"模型不允许访问","metadata":{"request_id":"2026051706431574423265420620337"}}"#,
-            ),
-            (
-                "YC",
-                r#"custom_openai API error (401 Unauthorized): {"error":{"message":"Invalid Authentication","type":"invalid_authentication_error"}}"#,
-            ),
-            (
-                "S5",
-                r#"custom_openai API error (402 Payment Required): {"error":{"message":"This request requires more credits, or fewer max_tokens. You requested up to 65536 tokens, but can only afford 597.","type":"insufficient_credits"}}"#,
-            ),
-            (
-                "Y0",
-                r#"custom_openai API error (400 Bad Request): {"error":{"message":"{'error': '/chat/completions: Invalid model name passed in model=reasoning-v1. Call `/v1/models` to view available models for your key.'}","type":"None"}}"#,
-            ),
-            (
-                "JN",
-                r#"custom_openai Responses API error: {"error":{"message":"No active credentials for provider: openai","type":"invalid_request_error","code":"model_not_found"}}"#,
-            ),
-            (
-                "KB",
-                r#"OpenHuman API error (404 Not Found): {"error":{"message":"No active credentials for provider: openai","type":"invalid_request_error","code":"model_not_found"}}"#,
-            ),
-            (
-                "JK",
-                r#"custom_openai API error (400 Bad Request): {"error":{"message":"litellm.BadRequestError: Github_copilotException - Bad Request. Received Model Group=github_copilot/claude-haiku-4.5\nAvailable Model Group Fallbacks=None","type":null}}"#,
-            ),
-            (
-                "J2",
-                r#"custom_openai Responses API error: {"error":{"message":"model 'llama3.3' not found","type":"not_found_error","param":null,"code":null}}"#,
-            ),
-            (
-                "J5",
-                r#"custom_openai API error (404 Not Found): {"error":{"message":"model 'llama3.3' not found","type":"not_found_error","param":null,"code":null}}"#,
-            ),
-            (
-                "J4",
-                r#"custom_openai streaming API error (404 Not Found): {"error":{"message":"model 'llama3.3' not found","type":"not_found_error","param":null,"code":null}}"#,
-            ),
-            // TAURI-RUST-4NM — nvidia-nim (and compatible providers) return
-            // this body when the request body has an empty `"model":""`.
-            // This is user-configuration state: the provider string had no
-            // model id and the config entry has no default_model set.
-            (
-                "4NM",
-                r#"nvidia-nim API error (400 Bad Request): {"error":{"message":"model field is required","type":"invalid_request_error","param":null,"code":"missing_required_field"}}"#,
-            ),
-            (
-                "TAURI-RUST-4XK",
-                r#"ollama API error (403 Forbidden): {"error":"this model requires a subscription, upgrade for access: https://ollama.com/upgrade (ref: bc48f3c8-fba1-40b6-93a9-786a167d16f9)"}"#,
-            ),
-            (
-                "TAURI-RUST-2G",
-                r#"cloud API error (400 Bad Request): {"error":{"message":"The `reasoning_content` in the thinking mode must be passed back to the API.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}"#,
-            ),
-            (
-                "TAURI-RUST-2F",
-                r#"cloud streaming API error (400 Bad Request): {"error":{"message":"The `reasoning_content` in the thinking mode must be passed back to the API.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}"#,
-            ),
-        ] {
-            assert!(
-                is_provider_config_rejection_message(body),
-                "OPENHUMAN-TAURI-{sentry_id} body must classify as provider config-rejection: {body:?}"
-            );
-        }
-    }
-
-    /// TAURI-RUST-4ZF — a user's custom BYO-key DeepSeek provider returns
-    /// HTTP 402 with `{"error":{"message":"… Insufficient Balance …"}}`
-    /// when their DeepSeek account is out of credits. Same user-billing
-    /// class as the OpenRouter S5 "requires more credits" 402 already in
-    /// the list — the remediation is "top up the provider account", which
-    /// Sentry cannot act on. The DeepSeek wire token is `Insufficient
-    /// Balance` (vs OpenRouter's `requires more credits`).
-    #[test]
-    fn detects_insufficient_balance_402_family() {
-        for (sentry_id, body) in [
-            // TAURI-RUST-4ZF — verbatim (truncated) from issue 5679,
-            // model=`ds/deepseek-v4-flash`, provider=custom, status=402.
-            (
-                "4ZF",
-                r#"custom API error (402 Payment Required): {"error":{"message":"[deepseek/deepseek-v4-flash] [402]: {\"error\":{\"message\":\"Insufficient Balance\",\"type\":\"unknown_error\",\"param\":null,\"code\":\"invali (reset after 57s)"}}"#,
-            ),
-            // Bare upstream envelope — what a future caller might re-emit
-            // after unwrapping one layer.
-            (
-                "bare",
-                r#"{"error":{"message":"Insufficient Balance","type":"unknown_error"}}"#,
-            ),
-        ] {
-            assert!(
-                is_provider_config_rejection_message(body),
-                "TAURI-RUST-{sentry_id} insufficient-balance 402 must classify as provider config-rejection: {body:?}"
-            );
-        }
-    }
-
-    /// TAURI-RUST-35 family — model picked by the user doesn't implement
-    /// tool calling. The agent harness tries to send a tool spec and the
-    /// upstream (Ollama / cloud Ollama relay / hosted OpenAI-compatible)
-    /// rejects with `{"error":{"message":"<model> does not support tools",
-    /// "type":"invalid_request_error",...}}`. Pure user-config — the user
-    /// has to pick a tool-capable model (or run a non-agent flow). No
-    /// remediation path through Sentry, and the long tail is large: each
-    /// distinct model id + provider prefix combo creates a new Sentry
-    /// fingerprint, so the same root cause is currently split across at
-    /// least 10 unresolved Sentry issues (458 events total as of
-    /// 2026-05-28):
-    ///
-    /// | shortId | events | provider prefix |
-    /// |---|---|---|
-    /// | TAURI-RUST-35  | 307 | cloud |
-    /// | TAURI-RUST-DF  | 83  | cloud |
-    /// | TAURI-RUST-123 | 25  | cloud |
-    /// | TAURI-RUST-4K7 | 19  | ollama |
-    /// | TAURI-RUST-4FS | 10  | cloud |
-    /// | TAURI-RUST-4F6 | 5   | cloud |
-    /// | TAURI-RUST-2YA | 4   | cloud |
-    /// | TAURI-RUST-4KR | 3   | ollama |
-    /// | TAURI-RUST-4KH | 1   | cloud |
-    /// | TAURI-RUST-4KY | 1   | ollama |
-    ///
-    /// Anchored on the exact `"does not support tools"` substring (the
-    /// message body's stable token — the model id varies per user). The
-    /// `streaming API error` / `API error` wrappers and the
-    /// `cloud` / `ollama` / `custom_openai` provider prefixes all share
-    /// this body, so a single phrase covers every variant.
-    #[test]
-    fn detects_does_not_support_tools_family() {
-        for (sentry_id, body) in [
-            // TAURI-RUST-35 — verbatim from latest issue 168 event
-            // (model=`gemma3:1b-it-qat`, provider=cloud).
-            (
-                "35",
-                r#"cloud streaming API error (400 Bad Request): {"error":{"message":"registry.ollama.ai/library/gemma3:1b-it-qat does not support tools","type":"invalid_request_error","param":null,"code":null}}"#,
-            ),
-            // TAURI-RUST-4K7 — ollama prefix, different upstream wrapper.
-            (
-                "4K7",
-                r#"ollama streaming API error (400 Bad Request): {"error":{"message":"some-local-model does not support tools","type":"invalid_request_error","param":null,"code":null}}"#,
-            ),
-            // Non-streaming sibling — `API error` (no `streaming` token)
-            // for hosted providers that aren't using the streaming endpoint.
-            (
-                "non-streaming",
-                r#"cloud API error (400 Bad Request): {"error":{"message":"registry.ollama.ai/library/qwen2.5:0.5b does not support tools","type":"invalid_request_error"}}"#,
-            ),
-            // Bare body (no wrapper) — what `expected_error_kind` would
-            // see if the body got extracted from the envelope upstream.
-            (
-                "bare",
-                r#"{"error":{"message":"phi3.5:mini does not support tools","type":"invalid_request_error"}}"#,
-            ),
-            // TAURI-RUST-4Z0 — verbatim from issue 5664 (model=`deepseek-r1:8b`,
-            // provider=ollama). The envelope carries `"type":"api_error"`
-            // rather than `"invalid_request_error"` — pin it so the matcher
-            // can never be narrowed to require a specific `type` token; the
-            // `"does not support tools"` body substring is the only anchor.
-            (
-                "4Z0",
-                r#"ollama streaming API error (400 Bad Request): {"error":{"message":"registry.ollama.ai/library/deepseek-r1:8b does not support tools","type":"api_error","param":null,"code":null}}"#,
-            ),
-        ] {
-            assert!(
-                is_provider_config_rejection_message(body),
-                "TAURI-RUST-{sentry_id} body must classify as provider config-rejection: {body:?}"
-            );
-        }
-    }
-
-    /// Polarity guard for the does-not-support-tools arm. The phrase is
-    /// scoped enough that no real bug-class body should accidentally
-    /// match — but pin a few near-miss shapes so a future loosening of
-    /// the matcher can't silently re-classify them.
-    #[test]
-    fn does_not_classify_unrelated_tools_phrases_as_config_rejection() {
-        for body in [
-            // Tool-call dispatch failure (real bug) — must reach Sentry.
-            "tool execution failed: shell returned exit 1",
-            // Generic "tools" mention without the does-not-support phrase.
-            "agent ran with 0 tools available",
-            // Reversed phrasing — provider says they DO support tools but
-            // the call shape is wrong. Still actionable for triage.
-            "supports tools but received malformed tool_calls array",
-            // Empty body.
-            "",
-        ] {
-            assert!(
-                !is_provider_config_rejection_message(body),
-                "{body:?} must NOT classify as a provider config-rejection"
-            );
-        }
-    }
-
-    #[test]
-    fn detects_reliable_aggregate_no_fallbacks_envelope() {
-        // OPENHUMAN-TAURI-4JS — `reliable::format_failure_aggregate`
-        // (no-configured-fallbacks branch) wraps every exhausted turn.
-        // Pin a few realistic shapes:
-        //
-        //   1. Verbatim Sentry 4JS payload (auth wall as the per-attempt cause).
-        //   2. Same aggregate, unknown-model upstream body (proves the matcher
-        //      is per-emit-site, not per-underlying-cause).
-        //   3. Same aggregate, region-block per-attempt body (R1-sibling cause).
-        //   4. Bare two-line aggregate (only the literal prefix + an empty
-        //      attempts dump).
-        //
-        // All four must classify; the unique anchor is the
-        // `reliability.model_fallbacks` config path the message literally
-        // tells the user to set.
-        for raw in [
-            // 1) Verbatim 4JS payload.
-            "The model `reasoning-quick-v1` may not be available on your provider. \
-             Configure a fallback chain via `reliability.model_fallbacks` in your \
-             OpenHuman config, or change your default model in Settings → AI.\n\n\
-             All providers/models failed. Attempts:\n\
-             provider=openhuman model=reasoning-quick-v1 attempt 1/3: non_retryable; \
-             error=OpenHuman API error (401 Unauthorized): {\"success\":false,\"error\":\"Invalid token\"}",
-            // 2) Unknown-model upstream cause.
-            "The model `gpt-5.5` may not be available on your provider. \
-             Configure a fallback chain via `reliability.model_fallbacks` in your \
-             OpenHuman config, or change your default model in Settings → AI.\n\n\
-             All providers/models failed. Attempts:\n\
-             provider=custom_openai model=gpt-5.5 attempt 1/3: non_retryable; \
-             error=custom_openai API error (404 Not Found): {\"error\":\"model not found\"}",
-            // 3) Region-block (R1-sibling) per-attempt cause.
-            "The model `gpt-4o` may not be available on your provider. \
-             Configure a fallback chain via `reliability.model_fallbacks` in your \
-             OpenHuman config, or change your default model in Settings → AI.\n\n\
-             All providers/models failed. Attempts:\n\
-             provider=custom_openai model=gpt-4o attempt 1/3: non_retryable; \
-             error=custom_openai API error (403 Forbidden): {\"error\":{\"message\":\"This model is not available in your region.\"}}",
-            // 4) Bare aggregate — minimal anchor surface.
-            "The model `x` may not be available on your provider. \
-             Configure a fallback chain via `reliability.model_fallbacks` in your \
-             OpenHuman config, or change your default model in Settings → AI.\n\n\
-             All providers/models failed. Attempts:\n",
-        ] {
-            assert!(
-                is_provider_config_rejection_message(raw),
-                "OPENHUMAN-TAURI-4JS aggregate must classify as provider config-rejection: {raw:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn does_not_classify_reliable_aggregate_with_configured_fallbacks() {
-        // The configured-fallbacks branch of `format_failure_aggregate`
-        // emits ONLY the attempts dump (`"All providers/models failed.
-        // Attempts:\n…"`), with no `reliability.model_fallbacks`
-        // remediation hint — the user has already engaged with the knob,
-        // so the aggregate is closer to a real diagnostic surface than a
-        // user-config nudge. Without the anchor phrase, this matcher
-        // must NOT fire on its own — only the per-attempt body
-        // classifiers (#2786 SessionExpired, config_rejection siblings,
-        // …) can demote it on a per-shape basis.
-        let aggregate_with_fallbacks = "All providers/models failed. Attempts:\n\
-             provider=openhuman model=gpt-5.5 attempt 1/3: non_retryable; \
-             error=OpenHuman API error (404 Not Found): {\"error\":\"unknown model\"}";
-        assert!(
-            !is_provider_config_rejection_message(aggregate_with_fallbacks),
-            "configured-fallbacks aggregate (no `reliability.model_fallbacks` anchor) \
-             must NOT classify on the aggregate phrase alone"
-        );
-    }
-
-    #[test]
-    fn detection_is_case_insensitive() {
-        assert!(is_provider_config_rejection_message(
-            "INVALID TEMPERATURE: ONLY 1 IS ALLOWED FOR THIS MODEL"
-        ));
-        assert!(is_provider_config_rejection_message(
-            "The Supported API Model Names Are gpt-4o or gpt-4o-mini"
-        ));
-    }
-
-    #[test]
-    fn ignores_transient_and_server_and_unrelated() {
-        // Must NOT demote: transient/server failures and generic 4xx
-        // that carry no config-rejection signal — those stay Sentry
-        // actionable. (A real backend bug must not be silenced.)
-        for body in [
-            "Internal server error",
-            "503 Service Unavailable",
-            "Bad request: missing field",
-            "rate limit exceeded, retry after 1s",
-            "insufficient budget — add credits",
-            "",
-        ] {
-            assert!(
-                !is_provider_config_rejection_message(body),
-                "{body:?} must NOT classify as a provider config-rejection"
-            );
-        }
-    }
-
-    #[test]
-    fn detects_reliable_chain_exhaustion_rollup() {
-        // TAURI-RUST-1V — `reliable.rs:325` rolls every attempt into
-        // `All providers/models failed. Attempts:\n…\nThe model `<id>`
-        // may not be available on your provider. Configure a fallback
-        // chain via `reliability.model_fallbacks` in …`. The wrapped err
-        // bubbles to `memory_sync::composio::bus` which previously
-        // emitted it as a raw `tracing::error!` — 10.7k events / 14d on
-        // self-hosted Sentry. The remediation lives entirely in the
-        // user's `reliability.model_fallbacks` config; Sentry has no
-        // remediation path.
-        let rollup = "All providers/models failed. Attempts:\n\
-            provider=openhuman model=gemini-3-flash-preview attempt 1/3: \
-            non_retryable; error=custom_openai API error (404 Not Found): \
-            <html>...</html>\n\
-            The model `gemini-3-flash-preview` may not be available on \
-            your provider. Configure a fallback chain via \
-            `reliability.model_fallbacks` in your config to route around \
-            unavailable models.";
-        assert!(
-            is_provider_config_rejection_message(rollup),
-            "TAURI-RUST-1V multi-line rollup must classify as provider config-rejection"
-        );
-
-        // Single-line `reliable.rs:332` emission (without the outer
-        // rollup wrapper) also matches — defensive against callers that
-        // surface only the inner remediation message.
-        let bare = "The model `chat-v1` may not be available on your provider. \
-            Configure a fallback chain via `reliability.model_fallbacks` in …";
-        assert!(
-            is_provider_config_rejection_message(bare),
-            "bare `may not be available on your provider` phrase must classify"
-        );
-    }
-
-    #[test]
-    fn unknown_model_helper_matches_openai_compatible_bodies() {
-        // TAURI-RUST-2Z1 — the OpenHuman hosted backend now emits the
-        // OpenAI-compatible "Model 'X' is not available" wire body for
-        // user-configured unknown model ids. The helper is anchored on
-        // the `/openai/v1/models` remediation hint so the same body shape
-        // matches whether it came from a third-party `custom_openai`
-        // upstream or our own backend.
-        for body in [
-            r#"OpenHuman API error (400 Bad Request): {"success":false,"error":"Model 'MiniMax-M2.7-highspeed' is not available. Use GET /openai/v1/models to list available models."}"#,
-            r#"OpenHuman API error (400 Bad Request): {"success":false,"error":"Model 'custom:MiniMax-M2.7' is not available. Use GET /openai/v1/models to list available models."}"#,
-            "Model 'deepseek-v4-pro' is not available. Use GET /openai/v1/models to list available models.",
-        ] {
-            assert!(
-                is_openai_compatible_unknown_model_message(body),
-                "TAURI-RUST-2Z1 body must classify as openai-compatible unknown model: {body:?}"
-            );
-            // Sanity: must remain a member of the broader phrase set so
-            // the message-only classifier in
-            // `crate::core::observability::expected_error_kind` keeps
-            // demoting the aggregate (TAURI-RUST-2Z2).
-            assert!(
-                is_provider_config_rejection_message(body),
-                "broader classifier must continue to match: {body:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn detects_nvidia_nim_missing_model_body() {
-        // TAURI-RUST-4NM — nvidia-nim rejects requests with model="" with
-        // `{"error":{"message":"model field is required",...}}`.
-        let body = r#"nvidia-nim API error (400 Bad Request): {"error":{"message":"model field is required","type":"invalid_request_error","code":"missing_required_field"}}"#;
-        assert!(
-            is_provider_config_rejection_message(body),
-            "TAURI-RUST-4NM body must classify as provider config-rejection: {body:?}"
-        );
-        // Also verify the bare phrase on its own (defense-in-depth path).
-        assert!(is_provider_config_rejection_message(
-            "model field is required"
-        ));
-    }
-
-    #[test]
-    fn unknown_model_helper_rejects_other_config_rejection_phrases() {
-        // Polarity exception must stay narrow: other config-rejection
-        // shapes (DeepSeek `supported api model names are`, Moonshot
-        // `invalid temperature`, OpenRouter `requires more credits`, …)
-        // must still go through the provider-polarity guard so a
-        // hypothetical regression where our own backend emits one of
-        // those phrases reaches Sentry.
-        for body in [
-            "The supported API model names are deepseek-v4-pro or deepseek-v4-flash, but you passed reasoning-v1.",
-            "invalid temperature: only 1 is allowed for this model",
-            "The model `gpt-5.5` does not exist or you do not have access to it.",
-            r#"{"error":{"message":"model not found","code":"model_not_found"}}"#,
-            "This request requires more credits, or fewer max_tokens.",
-        ] {
-            assert!(
-                !is_openai_compatible_unknown_model_message(body),
-                "{body:?} must NOT match the narrow openai-compatible-unknown-model helper"
-            );
-        }
-    }
-
-    /// TAURI-RUST-4K7 — Ollama models that don't support tool calling
-    /// (e.g. `gemma3:1b-it-qat`, `huihui_ai/deepseek-r1-abliterated:8b`)
-    /// return HTTP 400 with one of several tool-rejection phrases.
-    /// The compatible provider retries without tools, so the 400 is expected
-    /// capability-discovery rather than a product bug. These phrases must be
-    /// classified as config-rejections so Sentry is not flooded on every turn.
-    #[test]
-    fn detects_ollama_tool_unsupported_bodies() {
-        for (sentry_id, body) in [
-            (
-                "4K7-a",
-                r#"{"error":"gemma3:1b-it-qat does not support tools"}"#,
-            ),
-            (
-                "4K7-b",
-                r#"{"error":"huihui_ai/deepseek-r1-abliterated:8b does not support tools"}"#,
-            ),
-            (
-                "4K7-c",
-                r#"ollama streaming API error (400 Bad Request): {"error":"phi3:mini does not support tools"}"#,
-            ),
-            (
-                "4K7-d",
-                r#"{"error":"function calling is not supported by this model"}"#,
-            ),
-            (
-                "4K7-e",
-                r#"{"error":{"message":"unknown parameter: tools","type":"invalid_request_error"}}"#,
-            ),
-            (
-                "4K7-f",
-                r#"{"error":"unrecognized field `tools` in request body"}"#,
-            ),
-            (
-                "4K7-g",
-                r#"{"error":{"message":"unsupported parameter: tools","type":"invalid_request_error"}}"#,
-            ),
-        ] {
-            assert!(
-                is_provider_config_rejection_message(body),
-                "TAURI-RUST-{sentry_id} body must classify as provider config-rejection (tool-unsupported): {body:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn detects_ollama_tool_unsupported_bodies_case_insensitive() {
-        // Ollama error messages should match regardless of casing.
-        for body in [
-            "Model 'gemma3:1b-it-qat' DOES NOT SUPPORT TOOLS",
-            "Function Calling Is Not Supported By This Model",
-            "Unknown Parameter: Tools",
-        ] {
-            assert!(
-                is_provider_config_rejection_message(body),
-                "{body:?} must classify as config-rejection regardless of case"
-            );
-        }
-    }
-}
+#[path = "config_rejection_tests.rs"]
+mod tests;

@@ -1,141 +1,139 @@
-import type { ReactElement } from 'react';
+import { useState } from 'react';
 
 import { useT } from '../../../lib/i18n/I18nContext';
 import { useAppDispatch, useAppSelector } from '../../../store/hooks';
 import {
-  setTabBarLabels,
-  setThemeMode,
-  type TabBarLabels,
-  type ThemeMode,
+  FONT_SIZE_PX,
+  type FontSize,
+  MAX_FONT_SIZE_PX,
+  MIN_FONT_SIZE_PX,
+  selectEffectiveFontSizePx,
+  setCustomFontSizePx,
+  setFontSize,
 } from '../../../store/themeSlice';
-import SettingsHeader from '../components/SettingsHeader';
-import { useSettingsNavigation } from '../hooks/useSettingsNavigation';
+import LanguageSelect from '../../LanguageSelect';
+import { Card } from '../../ui';
+import Slider from '../../ui/Slider';
+import { SettingsNumberField, SettingsRow, SettingsSection } from '../controls';
+import SettingsPanel from '../layout/SettingsPanel';
+import ThemeStudioPanel from './ThemeStudioPanel';
 
-interface ModeOption {
-  id: ThemeMode;
+interface FontSizeOption {
+  id: FontSize;
   label: string;
   description: string;
-  icon: ReactElement;
+  /** Sample "A" glyph sized to preview the option inline. */
+  glyphClass: string;
 }
-
-const SunIcon = (
-  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M7.05 16.95l-1.414 1.414m12.728 0l-1.414-1.414M7.05 7.05L5.636 5.636M16 12a4 4 0 11-8 0 4 4 0 018 0z"
-    />
-  </svg>
-);
-
-const MoonIcon = (
-  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"
-    />
-  </svg>
-);
-
-const SystemIcon = (
-  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      d="M9 17v2m6-2v2m-9-2h12a2 2 0 002-2V7a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2z"
-    />
-  </svg>
-);
 
 const AppearancePanel = () => {
   const { t } = useT();
-  const { navigateBack, breadcrumbs } = useSettingsNavigation();
   const dispatch = useAppDispatch();
-  const mode = useAppSelector(state => state.theme.mode);
-  const tabBarLabels = useAppSelector(state => state.theme.tabBarLabels);
-  const labelsAlwaysVisible = tabBarLabels === 'always';
-  const toggleTabBarLabels = () => {
-    const next: TabBarLabels = labelsAlwaysVisible ? 'hover' : 'always';
-    dispatch(setTabBarLabels(next));
+  const effectiveFontSizePx = useAppSelector(selectEffectiveFontSizePx);
+
+  // Local draft for the numeric px field so partial typing doesn't thrash the
+  // store; commits (blur / Enter) clamp and dispatch, while the slider dispatches
+  // live. Re-sync the draft to the effective size when it changes externally
+  // (slider drag, preset click) via React's render-phase pattern — no effect,
+  // so there's no cascading-render round-trip.
+  const [pxDraft, setPxDraft] = useState(String(effectiveFontSizePx));
+  const [syncedPx, setSyncedPx] = useState(effectiveFontSizePx);
+  if (effectiveFontSizePx !== syncedPx) {
+    setSyncedPx(effectiveFontSizePx);
+    setPxDraft(String(effectiveFontSizePx));
+  }
+  const commitCustomFontSize = () => {
+    const parsed = Number.parseInt(pxDraft, 10);
+    if (Number.isFinite(parsed)) {
+      console.debug('[appearance] commit custom font-size', { pxDraft, parsed });
+      dispatch(setCustomFontSizePx(parsed));
+    } else {
+      console.debug('[appearance] custom font-size rejected, reverting draft', { pxDraft });
+      setPxDraft(String(effectiveFontSizePx));
+    }
+  };
+  const handleFontSizeSlider = (values: number[]) => {
+    const px = values[0];
+    console.debug('[appearance] custom font-size slider', { px });
+    dispatch(setCustomFontSizePx(px));
   };
 
-  // Build at render time so the labels follow the active locale; `t()` itself
+  // Built at render time so the labels follow the active locale; `t()` itself
   // memoises on locale change, so this stays stable across re-renders within a
   // locale.
-  const OPTIONS: ModeOption[] = [
+  const FONT_SIZE_OPTIONS: FontSizeOption[] = [
     {
-      id: 'light',
-      label: t('settings.appearance.modeLight'),
-      description: t('settings.appearance.modeLightDesc'),
-      icon: SunIcon,
+      id: 'small',
+      label: t('settings.appearance.fontSizeSmall'),
+      description: t('settings.appearance.fontSizeSmallDesc'),
+      glyphClass: 'text-xs',
     },
     {
-      id: 'dark',
-      label: t('settings.appearance.modeDark'),
-      description: t('settings.appearance.modeDarkDesc'),
-      icon: MoonIcon,
+      id: 'medium',
+      label: t('settings.appearance.fontSizeMedium'),
+      description: t('settings.appearance.fontSizeMediumDesc'),
+      glyphClass: 'text-sm',
     },
     {
-      id: 'system',
-      label: t('settings.appearance.modeSystem'),
-      description: t('settings.appearance.modeSystemDesc'),
-      icon: SystemIcon,
+      id: 'large',
+      label: t('settings.appearance.fontSizeLarge'),
+      description: t('settings.appearance.fontSizeLargeDesc'),
+      glyphClass: 'text-base',
+    },
+    {
+      id: 'xlarge',
+      label: t('settings.appearance.fontSizeXLarge'),
+      description: t('settings.appearance.fontSizeXLargeDesc'),
+      glyphClass: 'text-lg',
     },
   ];
 
   return (
-    <div>
-      <SettingsHeader
-        title={t('settings.appearance.title')}
-        showBackButton
-        onBack={navigateBack}
-        breadcrumbs={breadcrumbs}
-      />
+    <SettingsPanel description={t('settings.appearance.menuDesc')}>
+      {/* Colours, fonts and background — the former "Theme studio" page, now
+          sections of this one. Its gallery header carries the Light / Dark /
+          Auto toggle, which is why this page no longer has a separate theme-mode
+          tile list: `setThemeMode` and `setThemeVariant` write the same two
+          slice fields, so the two controls were one control shown twice. */}
+      <ThemeStudioPanel embedded />
 
-      <div className="p-4 space-y-4">
-        <div>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 mb-2 px-1">
-            {t('settings.appearance.themeHeading')}
-          </h3>
-          <div
-            className="bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden"
-            role="radiogroup"
-            aria-label={t('settings.appearance.themeAria')}>
-            {OPTIONS.map((opt, idx) => {
-              const selected = opt.id === mode;
+      {/* ── Font size picker — intentional bespoke tile UI ─────────── */}
+      <div>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-content-faint mb-2 px-1">
+          {t('settings.appearance.fontSizeHeading')}
+        </h3>
+        {/* Card forwards no `role`/`aria-label` to its wrapper, so the
+            radiogroup semantics move to an inner div that still encloses
+            every option — `within(group)` in the specs resolves the same. */}
+        <Card divided={false}>
+          <div role="radiogroup" aria-label={t('settings.appearance.fontSizeAria')}>
+            {FONT_SIZE_OPTIONS.map((opt, idx) => {
+              // Highlight the preset whose px matches the effective size, so a
+              // fine-tuned value landing exactly on a preset still lights it up.
+              const selected = Number.parseInt(FONT_SIZE_PX[opt.id], 10) === effectiveFontSizePx;
               return (
                 <button
                   key={opt.id}
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  onClick={() => dispatch(setThemeMode(opt.id))}
-                  className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors focus:outline-none focus-visible:bg-primary-50 dark:bg-primary-500/10 dark:focus-visible:bg-primary-900/30 ${
-                    idx !== 0 ? 'border-t border-neutral-100 dark:border-neutral-800' : ''
-                  } ${
-                    selected
-                      ? 'bg-primary-50 dark:bg-primary-500/10'
-                      : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/60'
-                  }`}>
+                  onClick={() => dispatch(setFontSize(opt.id))}
+                  className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors focus:outline-hidden focus-visible:bg-primary-50 dark:focus-visible:bg-primary-900/30 ${
+                    idx !== 0 ? 'border-t border-line-subtle' : ''
+                  } ${selected ? 'bg-primary-50 dark:bg-primary-500/10' : 'hover:bg-surface-hover'}`}>
                   <span
                     className={`flex items-center justify-center w-9 h-9 rounded-lg ${
                       selected
-                        ? 'bg-primary-500 text-white'
-                        : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300'
+                        ? 'bg-primary-500 text-content-inverted'
+                        : 'bg-surface-subtle text-content-secondary'
                     }`}>
-                    {opt.icon}
+                    <span className={`font-semibold leading-none ${opt.glyphClass}`} aria-hidden>
+                      A
+                    </span>
                   </span>
                   <span className="flex-1 min-w-0">
-                    <span className="block text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                      {opt.label}
-                    </span>
-                    <span className="block text-xs text-neutral-500 dark:text-neutral-400">
-                      {opt.description}
-                    </span>
+                    <span className="block text-sm font-medium text-content">{opt.label}</span>
+                    <span className="block text-xs text-content-muted">{opt.description}</span>
                   </span>
                   {selected && (
                     <svg
@@ -156,46 +154,59 @@ const AppearancePanel = () => {
               );
             })}
           </div>
-          <p className="text-xs text-neutral-500 dark:text-neutral-400 leading-relaxed px-1 mt-2">
-            {t('settings.appearance.helperText')}
-          </p>
-        </div>
-
-        <div>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 mb-2 px-1">
-            {t('settings.appearance.tabBarHeading')}
-          </h3>
-          <div className="bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
-            <button
-              type="button"
-              role="switch"
-              aria-checked={labelsAlwaysVisible}
-              onClick={toggleTabBarLabels}
-              className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-800/60 focus:outline-none focus-visible:bg-primary-50 dark:focus-visible:bg-primary-900/30">
-              <span className="flex-1 min-w-0">
-                <span className="block text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                  {t('settings.appearance.tabBarAlwaysShowLabels')}
-                </span>
-                <span className="block text-xs text-neutral-500 dark:text-neutral-400">
-                  {t('settings.appearance.tabBarAlwaysShowLabelsDesc')}
-                </span>
-              </span>
-              <span
-                aria-hidden
-                className={`relative inline-flex w-10 h-6 rounded-full transition-colors flex-shrink-0 ${
-                  labelsAlwaysVisible ? 'bg-primary-500' : 'bg-neutral-300 dark:bg-neutral-700'
-                }`}>
-                <span
-                  className={`absolute top-0.5 inline-block w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                    labelsAlwaysVisible ? 'translate-x-[18px]' : 'translate-x-0.5'
-                  }`}
-                />
-              </span>
-            </button>
+        </Card>
+        {/* Fine-tune the exact size beyond the presets (issue #4246). */}
+        {/* px-4 py-3, not Card's `padded` p-4, to keep this box's original
+            (denser) vertical padding pixel-identical. */}
+        <Card divided={false} className="px-4 py-3 mt-3">
+          <div className="flex items-center justify-between gap-3">
+            <label htmlFor="font-size-custom-number" className="text-sm font-medium text-content">
+              {t('settings.appearance.fontSizeCustomLabel')}
+            </label>
+            <SettingsNumberField
+              id="font-size-custom-number"
+              value={pxDraft}
+              onChange={setPxDraft}
+              onCommit={commitCustomFontSize}
+              unit={t('settings.appearance.fontSizeUnit')}
+              min={MIN_FONT_SIZE_PX}
+              max={MAX_FONT_SIZE_PX}
+              aria-label={t('settings.appearance.fontSizeCustomAria')}
+              data-testid="font-size-custom-number"
+            />
           </div>
-        </div>
+          <Slider
+            id="font-size-slider"
+            min={MIN_FONT_SIZE_PX}
+            max={MAX_FONT_SIZE_PX}
+            step={1}
+            value={[effectiveFontSizePx]}
+            onValueChange={handleFontSizeSlider}
+            thumbLabels={[t('settings.appearance.fontSizeCustomSliderAria')]}
+            aria-valuetext={`${effectiveFontSizePx}${t('settings.appearance.fontSizeUnit')}`}
+            className="mt-3"
+            data-testid="font-size-slider"
+          />
+          <div className="flex items-center justify-between mt-1 text-[11px] text-content-faint">
+            <span>{`${MIN_FONT_SIZE_PX}${t('settings.appearance.fontSizeUnit')}`}</span>
+            <span>{`${MAX_FONT_SIZE_PX}${t('settings.appearance.fontSizeUnit')}`}</span>
+          </div>
+        </Card>
+
+        <p className="text-xs text-content-muted leading-relaxed px-1 mt-2">
+          {t('settings.appearance.fontSizeHelperText')}
+        </p>
       </div>
-    </div>
+
+      {/* ── Display language (moved from the old settings home list) ── */}
+      <SettingsSection title={t('settings.language')}>
+        <SettingsRow
+          label={t('settings.language')}
+          description={t('settings.languageDesc')}
+          control={<LanguageSelect ariaLabel={t('settings.language')} />}
+        />
+      </SettingsSection>
+    </SettingsPanel>
   );
 };
 

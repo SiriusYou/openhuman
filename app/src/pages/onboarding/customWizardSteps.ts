@@ -1,14 +1,15 @@
 import type { CustomStepKey } from './OnboardingContext';
 
 /** Ordered list of custom-wizard steps. Index drives the step counter UI and
- *  the back/continue navigation. `search` and `memory` are commented out for
- *  now — their pages still exist and route in case we want to re-enable. */
+ *  the back/continue navigation. */
 export const CUSTOM_WIZARD_STEPS: CustomStepKey[] = [
   'inference',
   'voice',
   'oauth',
   'search',
   'embeddings',
+  'activity',
+  'vault',
   // 'memory',
 ];
 
@@ -18,16 +19,7 @@ export const CUSTOM_WIZARD_ROUTES: Record<CustomStepKey, string> = {
   oauth: '/onboarding/custom/oauth',
   search: '/onboarding/custom/search',
   embeddings: '/onboarding/custom/embeddings',
+  activity: '/onboarding/custom/activity',
   memory: '/onboarding/custom/memory',
-};
-
-/** Deep-link target inside Settings for users who pick "Configure" and want
- *  to finish wiring this domain up after onboarding. */
-export const CUSTOM_WIZARD_SETTINGS_ROUTES: Record<CustomStepKey, string> = {
-  inference: '/settings/llm',
-  voice: '/settings/voice',
-  oauth: '/settings/composio-routing',
-  search: '/settings/tools',
-  embeddings: '/settings/embeddings',
-  memory: '/settings/memory-data',
+  vault: '/onboarding/custom/vault',
 };

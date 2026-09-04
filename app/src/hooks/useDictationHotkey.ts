@@ -45,7 +45,7 @@ interface DictationSettings {
   streaming_interval_ms: number;
 }
 
-export interface DictationHotkeyState {
+interface DictationHotkeyState {
   /** Whether dictation is enabled in the core config. */
   dictationEnabled: boolean;
   /** Whether the core hotkey listener is active. */
@@ -150,7 +150,9 @@ export function useDictationHotkey(): DictationHotkeyState {
           if (!text) return;
           console.debug(`[dictation] transcription received: ${text.length} chars — "${text}"`);
 
-          window.dispatchEvent(new CustomEvent('dictation://insert-text', { detail: { text } }));
+          window.dispatchEvent(
+            new CustomEvent('dictation://insert-text', { detail: { text, autoSend: true } })
+          );
         });
 
         socket.connect();

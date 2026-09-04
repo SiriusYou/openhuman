@@ -1,7 +1,7 @@
 use crate::openhuman::agent::hooks::ToolCallRecord;
-use crate::openhuman::inference::provider::ChatMessage;
+use crate::openhuman::agent::messages::ChatMessage;
 
-pub(super) fn assistant_message_has_tool_calls(msg: &ChatMessage) -> bool {
+pub(crate) fn assistant_message_has_tool_calls(msg: &ChatMessage) -> bool {
     if msg.role != "assistant" {
         return false;
     }
@@ -72,5 +72,34 @@ pub(super) fn build_deterministic_checkpoint(
     out.push_str(
         "\n**Next steps:** I'll continue from here — just reply (e.g. \"continue\") and I'll pick up where I left off.",
     );
+    out
+}
+
+/// Instruction appended (as a synthetic user turn) when a turn finished its
+/// tool work but the model produced **no final answer** — it yielded a
+/// terminating response with empty text after running tools (issue #4093).
+/// Native tools are disabled for this call so the model wraps up in prose
+/// instead of requesting more tools.
+pub(super) const FINAL_ANSWER_INSTRUCTION: &str = "\
+You have finished using tools for this turn but have not yet written a reply to the user. \
+Do not call any more tools. Write a short, self-contained final message that summarises what you did and \
+what you found or accomplished, grounded in the tool results above. If nothing conclusive resulted, say so plainly.";
+
+/// Build a deterministic final answer from this turn's tool-call records.
+/// Used as the guaranteed non-empty fallback when a turn ran tools but the
+/// model produced no closing message and the re-prompt for one also came
+/// back empty — so a turn that did work can never end silently (issue #4093).
+/// Distinct from [`build_deterministic_checkpoint`]: the turn did NOT hit the
+/// iteration cap, so this reads as a completed summary, not a paused one.
+pub(super) fn build_deterministic_final_summary(records: &[ToolCallRecord]) -> String {
+    if records.is_empty() {
+        return "I finished this turn but produced no result to report.".to_string();
+    }
+    let mut out = String::from("Here's a summary of what I did this turn:\n\n");
+    for r in records {
+        let status = if r.success { "ok" } else { "failed" };
+        out.push_str(&format!("- `{}` — {}\n", r.name, status));
+    }
+    out.push_str("\nLet me know if you'd like me to go further.");
     out
 }

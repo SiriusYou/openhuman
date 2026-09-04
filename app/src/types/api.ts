@@ -94,6 +94,3 @@ export interface CoinbaseChargeData {
   status: string;
   expiresAt: string;
 }
-
-// API Endpoints
-export type GetMeResponse = ApiResponse<User>;

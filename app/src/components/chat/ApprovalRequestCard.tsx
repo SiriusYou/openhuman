@@ -31,7 +31,7 @@ interface Props {
  * thread; clears itself on a recorded decision (the turn-end handlers in
  * {@link ChatRuntimeProvider} also clear it if the turn is cancelled).
  */
-export const ApprovalRequestCard: React.FC<Props> = ({ threadId, approval }) => {
+const ApprovalRequestCard: React.FC<Props> = ({ threadId, approval }) => {
   const { t } = useT();
   const dispatch = useAppDispatch();
   const [deciding, setDeciding] = useState<Decision | null>(null);
@@ -61,32 +61,39 @@ export const ApprovalRequestCard: React.FC<Props> = ({ threadId, approval }) => 
     <div
       role="alertdialog"
       aria-label={t('chat.approval.title')}
-      className="rounded-xl border border-amber/40 bg-amber/5 p-3 text-sm">
+      className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm shadow-xs dark:border-amber-700 dark:bg-amber-950">
       <div className="flex items-start gap-2">
-        <span aria-hidden className="text-base leading-none">
+        <span aria-hidden className="text-base leading-none text-amber-700 dark:text-amber-200">
           🔒
         </span>
         <div className="min-w-0 flex-1">
-          <p className="font-semibold text-ink">{t('chat.approval.title')}</p>
-          <p className="mt-1 text-ink-soft break-words">
+          <p className="font-semibold text-amber-900 dark:text-amber-100">
+            {t('chat.approval.title')}
+          </p>
+          <p className="mt-1 wrap-break-word text-amber-800/90 dark:text-amber-200/90">
             {approval.message || t('chat.approval.fallback')}
           </p>
           {approval.command && (
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-ink/5 px-2 py-1.5 font-mono text-xs text-ink">
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border border-amber-200/80 bg-surface px-2 py-1.5 font-mono text-xs text-content shadow-inner dark:border-amber-700 dark:bg-surface-canvas">
               {approval.command}
             </pre>
           )}
-          <p className="mt-1 text-xs text-ink-soft">
+          <p className="mt-1 text-xs text-amber-800/80 dark:text-amber-200/80">
             {t('chat.approval.tool')}{' '}
-            <span className="font-mono text-ink">{approval.toolName}</span>
+            <span className="font-mono text-amber-950 dark:text-amber-100">
+              {approval.toolName}
+            </span>
           </p>
 
-          {errorMsg && <p className="mt-2 text-xs text-coral">⚠ {errorMsg}</p>}
+          {errorMsg && (
+            <p className="mt-2 text-xs text-coral-600 dark:text-coral-400">⚠ {errorMsg}</p>
+          )}
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button
               variant="primary"
               size="sm"
+              data-analytics-id="chat-approval-approve-once"
               onClick={() => void decide('approve_once')}
               disabled={deciding !== null}>
               {deciding === 'approve_once'
@@ -96,6 +103,7 @@ export const ApprovalRequestCard: React.FC<Props> = ({ threadId, approval }) => 
             <Button
               variant="secondary"
               size="sm"
+              data-analytics-id="chat-approval-approve-always"
               onClick={() => void decide('approve_always_for_tool')}
               disabled={deciding !== null}
               title={t('chat.approval.alwaysAllowHint')}>
@@ -106,6 +114,7 @@ export const ApprovalRequestCard: React.FC<Props> = ({ threadId, approval }) => 
             <Button
               variant="secondary"
               size="sm"
+              data-analytics-id="chat-approval-deny"
               onClick={() => void decide('deny')}
               disabled={deciding !== null}>
               {deciding === 'deny' ? t('chat.approval.deciding') : t('chat.approval.deny')}

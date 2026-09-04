@@ -1,10 +1,6 @@
-export { Ghosty } from './Ghosty';
-export type { GhostyProps, MascotFace } from './Ghosty';
+export type { MascotFace } from './Ghosty';
 export { CustomGifMascot } from './CustomGifMascot';
-export type { CustomGifMascotProps } from './CustomGifMascot';
 export { RiveMascot } from './RiveMascot';
-export type { RiveMascotProps } from './RiveMascot';
-export { lerpViseme, VISEMES, visemePath } from './visemes';
-export type { VisemeId, VisemeShape } from './visemes';
+export { ManifestRiveMascot } from './ManifestRiveMascot';
+export type { MascotManifestEntry } from './manifest/types';
 export { getMascotPalette, hexToArgbInt } from './mascotPalette';
-export type { MascotColor, MascotPalette } from './mascotPalette';

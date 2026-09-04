@@ -18,24 +18,31 @@ use std::sync::Arc;
 use serde_json::json;
 use tempfile::tempdir;
 
-use openhuman_core::openhuman::agent::personality_paths::{
+use openhuman_core::openhuman::agent::profiles::{
+    built_in_profiles, AgentProfile, AgentProfileStore, DEFAULT_PROFILE_ID,
+};
+use openhuman_core::openhuman::agent::profiles::{
     filter_integrations, memory_subdir_for_suffix, memory_tree_subdir_for_suffix,
     resolve_personality_memory_md, resolve_personality_soul, session_raw_subdir_for_suffix,
     HasToolkit, PersonalityContext,
-};
-use openhuman_core::openhuman::agent::profiles::{
-    built_in_profiles, AgentProfile, AgentProfileStore, DEFAULT_PROFILE_ID,
 };
 use openhuman_core::openhuman::agent::prompts::types::LearnedContextData;
 use openhuman_core::openhuman::agent::prompts::{
     IdentitySection, PersonalityRosterEntry, PersonalityRosterSection, PromptContext,
     PromptSection, ToolCallFormat, UserFilesSection,
 };
-use openhuman_core::openhuman::embeddings::NoopEmbedding;
-use openhuman_core::openhuman::memory::{NamespaceDocumentInput, UnifiedMemory};
-use openhuman_core::openhuman::memory_conversations::{
+use openhuman_core::openhuman::inference::embeddings::NoopEmbedding;
+use openhuman_core::openhuman::memory::conversations::{
     ensure_thread, list_threads, update_thread_title, ConversationStore, CreateConversationThread,
 };
+use openhuman_core::openhuman::memory::NamespaceDocumentInput;
+// The engine handle is named on the crate rather than reached through the
+// memory module's public surface: it is an in-process engine type, not
+// contract vocabulary, and the alias that used to re-export it existed for
+// callers that no longer exist (#5560). This note is about `UnifiedMemory`
+// alone — the conversation store above is host code again as of #5560 and is
+// reached through the memory module's surface like any other host type.
+use tinymemory_core::store::UnifiedMemory;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test helpers
@@ -57,9 +64,15 @@ fn make_profile(id: &str, name: &str) -> AgentProfile {
         soul_md: None,
         soul_md_path: None,
         composio_integrations: None,
+        memory_sources: None,
+        include_agent_conversations: true,
+        allowed_skills: None,
+        allowed_mcp_servers: None,
         memory_dir_suffix: None,
         is_master: false,
         sort_order: None,
+        dedicated_memory: false,
+        dedicated_workspace: false,
     }
 }
 
@@ -70,7 +83,6 @@ fn empty_prompt_context<'a>(workspace_dir: &'a std::path::Path) -> PromptContext
         model_name: "test-model",
         agent_id: "orchestrator",
         tools: &[],
-        skills: &[],
         workflows: &[],
         dispatcher_instructions: "",
         learned: LearnedContextData::default(),
@@ -85,6 +97,8 @@ fn empty_prompt_context<'a>(workspace_dir: &'a std::path::Path) -> PromptContext
         personality_soul_md: None,
         personality_memory_md: None,
         personality_roster: vec![],
+        agents_md_global: None,
+        agents_md_local: None,
     }
 }
 
@@ -265,6 +279,7 @@ async fn two_personalities_have_isolated_sqlite_stores() {
             category: "core".to_string(),
             session_id: None,
             document_id: None,
+            taint: openhuman_core::openhuman::memory::MemoryTaint::Internal,
         })
         .await
         .expect("write default");
@@ -282,6 +297,7 @@ async fn two_personalities_have_isolated_sqlite_stores() {
             category: "core".to_string(),
             session_id: None,
             document_id: None,
+            taint: openhuman_core::openhuman::memory::MemoryTaint::Internal,
         })
         .await
         .expect("write alice");
@@ -337,6 +353,7 @@ async fn personality_memory_persists_across_reopens() {
             category: "core".to_string(),
             session_id: None,
             document_id: None,
+            taint: openhuman_core::openhuman::memory::MemoryTaint::Internal,
         })
         .await
         .expect("write");

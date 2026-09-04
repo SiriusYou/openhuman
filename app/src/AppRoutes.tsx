@@ -1,31 +1,47 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { type Location, Navigate, Route, Routes } from 'react-router-dom';
 
 import AppRoutesIOS from './AppRoutesIOS';
 import DefaultRedirect from './components/DefaultRedirect';
 import ProtectedRoute from './components/ProtectedRoute';
 import PublicRoute from './components/PublicRoute';
+import ForwardSearch from './components/routing/ForwardSearch';
+import CoreRegistriesPage from './features/coreRegistries/CoreRegistriesPage';
 import HumanPage from './features/human/HumanPage';
 import { getIsMobile } from './lib/platform';
 import Accounts from './pages/Accounts';
 import ActionRequestInbox from './pages/ActionRequestInbox';
-import AgentWorkflows from './pages/AgentWorkflows';
-import Channels from './pages/Channels';
+import Activity from './pages/Activity';
+import Brain from './pages/Brain';
+import AgentInsightsPreview from './pages/dev/AgentInsightsPreview';
+import AssistantUiDemoPage from './pages/dev/assistant-ui-demo';
+import UiGallery from './pages/dev/UiGallery';
+import FlowCanvasPage, { FlowCanvasDraftPage } from './pages/FlowCanvasPage';
+import FlowsPage from './pages/FlowsPage';
 import Home from './pages/Home';
-import Intelligence from './pages/Intelligence';
 import Invites from './pages/Invites';
 import Notifications from './pages/Notifications';
 import Onboarding from './pages/onboarding/Onboarding';
+import { PttOverlayPage } from './pages/PttOverlayPage';
 import Rewards from './pages/Rewards';
-import Routines from './pages/Routines';
 import Settings from './pages/Settings';
-import SkillNew from './pages/SkillNew';
 import Skills from './pages/Skills';
-import SkillsRun from './pages/SkillsRun';
 import WebCallbackPage from './pages/WebCallbackPage';
 import Welcome from './pages/Welcome';
 import Workbench from './pages/Workbench';
+import WorkflowsRun from './pages/WorkflowsRun';
 
-const AppRoutes = () => {
+interface AppRoutesProps {
+  /**
+   * Optional location override. Nothing passes one today — the router uses the
+   * ambient location. It existed for the desktop Settings modal, which rendered
+   * the page *behind* it from a stashed background location; Settings is a
+   * routed page now. Kept because `<Routes location=…>` is the standard escape
+   * hatch for any future overlay-over-a-page surface.
+   */
+  location?: Location | string;
+}
+
+const AppRoutes = ({ location }: AppRoutesProps = {}) => {
   // Mobile target (iOS or Android): pair → Human/Chat/Settings only.
   // Desktop routes are not rendered.
   if (getIsMobile()) {
@@ -33,7 +49,7 @@ const AppRoutes = () => {
   }
 
   return (
-    <Routes>
+    <Routes location={location}>
       {/* Public routes - redirect to /home if logged in */}
       <Route
         path="/"
@@ -44,6 +60,7 @@ const AppRoutes = () => {
         }
       />
 
+      <Route path="/auth" element={<WebCallbackPage callbackKind="auth" />} />
       <Route path="/callback/:kind" element={<WebCallbackPage />} />
       <Route path="/callback/:kind/:status" element={<WebCallbackPage />} />
 
@@ -68,6 +85,18 @@ const AppRoutes = () => {
       />
 
       <Route
+        path="/registries"
+        element={
+          <ProtectedRoute requireAuth={true}>
+            <CoreRegistriesPage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Human — the dedicated full-bleed mascot stage. The chat surface carries
+          the same mascot docked on its composer; both read one set of mascot
+          preferences from `mascotSlice`, so they cannot drift apart. */}
+      <Route
         path="/human"
         element={
           <ProtectedRoute requireAuth={true}>
@@ -76,44 +105,79 @@ const AppRoutes = () => {
         }
       />
 
+      {/* Brain — the centerpiece memory knowledge-graph surface, reached from
+          the raised center button in the bottom bar. Full-page, graph-only. */}
       <Route
-        path="/intelligence"
+        path="/brain"
         element={
           <ProtectedRoute requireAuth={true}>
-            <Intelligence />
+            <Brain />
           </ProtectedRoute>
         }
       />
 
-      {/* Skills lives at /skills with its 4 sub-tabs (Composio / Channels /
-          MCP Servers / Runners). The scheduled-skills dashboard concept
-          composes INSIDE the Runners sub-tab, not as a separate top-level
-          page — the bottom-bar "Connections" entry has always pointed at
-          /skills to surface Composio integrations + MCP, and that muscle
-          memory is restored here.
-          `/skills/new` is the create-a-skill authoring page.
-          Order matters: keep `/skills/new` before `/skills` so it wins the
-          prefix match. */}
+      {/* Workflows — the `flows::` domain's discoverable list hub (issue
+          B5a) plus the read-only Workflow Canvas (issue B5b.1) at
+          `/flows/:id`. Distinct from the legacy SKILL.md `/workflows/*`
+          Skill routes below (create/run); the bare `/workflows` and
+          `/routines` slugs now redirect here (to `/flows`) since Workflows is
+          a first-level module. Not a tab-level route (unlike `/flows` itself,
+          `/flows/:id` isn't reached from the BottomTabBar), so
+          `navigation.spec.ts`'s ROUTES table needs no change. Full editing
+          (B5b.2+) and the agent-proposal surface (B4) are separate, later
+          work. */}
       <Route
-        path="/skills/new"
+        path="/flows"
         element={
           <ProtectedRoute requireAuth={true}>
-            <SkillNew />
+            <FlowsPage />
+          </ProtectedRoute>
+        }
+      />
+      {/* Unsaved draft canvas (Phase 4e) — the chat WorkflowProposalCard's
+          "Open in canvas" action lands here with the proposed graph in
+          `location.state`. Declared BEFORE `/flows/:id` so it matches first;
+          otherwise `:id` would capture "draft" and try to `flows_get('draft')`.
+          Opening a draft never persists — the canvas's own Save is the gate. */}
+      <Route
+        path="/flows/draft"
+        element={
+          <ProtectedRoute requireAuth={true}>
+            <FlowCanvasDraftPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/flows/:id"
+        element={
+          <ProtectedRoute requireAuth={true}>
+            <FlowCanvasPage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Back-compat: /activity and /intelligence → settings notifications page. */}
+      <Route path="/activity" element={<Navigate to="/settings/notifications" replace />} />
+      <Route path="/intelligence" element={<Navigate to="/settings/notifications" replace />} />
+
+      {/* Connections page lives at /connections (Phase 2 rename from /skills).
+          The old /skills path is kept as a back-compat redirect so bookmarks
+          and deep links continue to work.  ForwardSearch copies the current
+          ?tab= (and any other query params) to the destination so existing
+          deep links still land on the right sub-tab. */}
+      {/* `/workflows/run` is the single-purpose Skill runner page — the live
+          destination of the Run button in the Automations tab (WorkflowsTab). */}
+      <Route
+        path="/workflows/run"
+        element={
+          <ProtectedRoute requireAuth={true}>
+            <WorkflowsRun />
           </ProtectedRoute>
         }
       />
 
       <Route
-        path="/skills/run"
-        element={
-          <ProtectedRoute requireAuth={true}>
-            <SkillsRun />
-          </ProtectedRoute>
-        }
-      />
-
-      <Route
-        path="/skills"
+        path="/connections"
         element={
           <ProtectedRoute requireAuth={true}>
             <Skills />
@@ -121,10 +185,13 @@ const AppRoutes = () => {
         }
       />
 
+      {/* Back-compat: /skills → /connections (preserves ?tab= deep links). */}
+      <Route path="/skills" element={<ForwardSearch to="/connections" />} />
+
       {/* Unified chat = agent + connected web apps. Replaces the old
           /conversations and /accounts routes. */}
       <Route
-        path="/chat"
+        path="/chat/:threadId?"
         element={
           <ProtectedRoute requireAuth={true}>
             <Accounts />
@@ -132,14 +199,12 @@ const AppRoutes = () => {
         }
       />
 
-      <Route
-        path="/channels"
-        element={
-          <ProtectedRoute requireAuth={true}>
-            <Channels />
-          </ProtectedRoute>
-        }
-      />
+      {/* Preserve links to the retired standalone accounts view. */}
+      <Route path="/accounts" element={<Navigate to="/chat" replace />} />
+
+      {/* Back-compat: /channels was an orphaned standalone page; it now
+          redirects to the unified Connections page on the Messaging tab. */}
+      <Route path="/channels" element={<Navigate to="/connections?tab=messaging" replace />} />
 
       <Route
         path="/invites"
@@ -150,38 +215,16 @@ const AppRoutes = () => {
         }
       />
 
+      {/* Feedback is a settings panel now (`/settings/feedback`). Kept as a
+          redirect rather than deleted: it was a real top-level route, so it is
+          in users' history and in the walkthrough's deep links. */}
+      <Route path="/feedback" element={<Navigate to="/settings/feedback" replace />} />
+
       <Route
         path="/notifications"
         element={
           <ProtectedRoute requireAuth={true}>
             <Notifications />
-          </ProtectedRoute>
-        }
-      />
-
-      <Route
-        path="/routines"
-        element={
-          <ProtectedRoute requireAuth={true}>
-            <Routines />
-          </ProtectedRoute>
-        }
-      />
-
-      <Route
-        path="/rewards"
-        element={
-          <ProtectedRoute requireAuth={true}>
-            <Rewards />
-          </ProtectedRoute>
-        }
-      />
-
-      <Route
-        path="/workflows"
-        element={
-          <ProtectedRoute requireAuth={true}>
-            <AgentWorkflows />
           </ProtectedRoute>
         }
       />
@@ -204,8 +247,38 @@ const AppRoutes = () => {
         }
       />
 
-      <Route path="/webhooks" element={<Navigate to="/settings/webhooks-triggers" replace />} />
+      {/* Back-compat: /routines was an orphaned dead page. Workflows is now a
+          first-level module — redirect surviving deep links to /flows. */}
+      <Route path="/routines" element={<Navigate to="/flows" replace />} />
 
+      <Route
+        path="/rewards"
+        element={
+          <ProtectedRoute requireAuth={true}>
+            <Rewards />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Installed SKILL.md workflows remain a separate runtime surface from
+          visual Flows. Keep the legacy top-level hub reachable. */}
+      <Route
+        path="/workflows"
+        element={
+          <ProtectedRoute requireAuth={true}>
+            <Activity />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Webhooks retired from the UI — land on the Integrations settings. */}
+      <Route path="/webhooks" element={<ForwardSearch to="/settings/integrations" />} />
+
+      {/* Settings is a routed page like every other surface: the shared route
+          table renders inside `SettingsLayout`, which projects the settings nav
+          into the app sidebar's dynamic region. It was a modal overlay (the
+          backgroundLocation pattern) until this route replaced it. iOS keeps
+          its own /settings/* route in AppRoutesIOS.tsx. */}
       <Route
         path="/settings/*"
         element={
@@ -214,6 +287,17 @@ const AppRoutes = () => {
           </ProtectedRoute>
         }
       />
+
+      <Route path="/ptt-overlay" element={<PttOverlayPage />} />
+
+      {/* Dev-only visual preview of the Agentic task insights surface. */}
+      <Route path="/dev/agent-insights" element={<AgentInsightsPreview />} />
+
+      {/* Dev-only gallery of every shared UI primitive, in the active theme. */}
+      <Route path="/dev/ui" element={<UiGallery />} />
+
+      {/* Dev-only: the upstream assistant-ui `base` demo on a mock runtime. */}
+      <Route path="/dev/assistant-ui" element={<AssistantUiDemoPage />} />
 
       {/* Default redirect based on auth status */}
       <Route path="*" element={<DefaultRedirect />} />

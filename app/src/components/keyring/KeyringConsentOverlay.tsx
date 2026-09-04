@@ -58,7 +58,7 @@ const KeyringConsentOverlay = () => {
   const failureReason = keyringStatus.failureReason;
 
   return (
-    <div className="fixed inset-0 z-[10000] bg-stone-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-10000 bg-stone-950/80 backdrop-blur-sm flex items-center justify-center p-4">
       <div
         role="dialog"
         aria-modal="true"
@@ -84,10 +84,10 @@ const KeyringConsentOverlay = () => {
           </h2>
         </div>
 
-        <p className="text-sm text-stone-300">{t('keyring.consent.description')}</p>
+        <p className="text-sm text-content-faint">{t('keyring.consent.description')}</p>
 
         {failureReason && (
-          <p className="mt-2 text-xs text-stone-400">
+          <p className="mt-2 text-xs text-content-faint">
             {t('keyring.consent.reasonPrefix')} {failureReason}
           </p>
         )}
@@ -95,13 +95,15 @@ const KeyringConsentOverlay = () => {
         <button
           type="button"
           onClick={() => setShowDetails(!showDetails)}
-          className="mt-3 text-xs text-ocean-400 hover:text-ocean-300 underline">
+          className="mt-3 text-xs text-primary-400 hover:text-primary-300 underline">
           {showDetails ? t('keyring.consent.hideDetails') : t('keyring.consent.showDetails')}
         </button>
 
         {showDetails && (
-          <div className="mt-2 rounded-lg bg-stone-800/60 p-3 text-xs text-stone-400 leading-relaxed">
-            <p className="font-medium text-stone-300 mb-1">{t('keyring.consent.tradeoffTitle')}</p>
+          <div className="mt-2 rounded-lg bg-stone-800/60 p-3 text-xs text-content-faint leading-relaxed">
+            <p className="font-medium text-content-faint mb-1">
+              {t('keyring.consent.tradeoffTitle')}
+            </p>
             <p>{t('keyring.consent.tradeoffBody')}</p>
           </div>
         )}
@@ -113,7 +115,7 @@ const KeyringConsentOverlay = () => {
             type="button"
             onClick={handleConsent}
             disabled={isConsenting || isRetrying}
-            className="rounded-lg bg-ocean-500 px-4 py-2 text-sm font-medium text-white hover:bg-ocean-600 disabled:opacity-60">
+            className="rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-60">
             {isConsenting ? t('common.loading') : t('keyring.consent.consentButton')}
           </button>
           <button
@@ -127,7 +129,7 @@ const KeyringConsentOverlay = () => {
             type="button"
             onClick={handleDecline}
             disabled={isConsenting || isRetrying}
-            className="rounded-lg border border-stone-700 px-4 py-2 text-sm text-stone-400 hover:bg-stone-800 disabled:opacity-60">
+            className="rounded-lg border border-stone-700 px-4 py-2 text-sm text-content-faint hover:bg-stone-800 disabled:opacity-60">
             {t('keyring.consent.declineButton')}
           </button>
         </div>

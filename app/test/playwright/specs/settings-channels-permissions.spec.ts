@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 import {
   bootAuthenticatedPage,
+  callCoreRpc,
   dismissWalkthroughIfPresent,
   waitForAppReady,
 } from '../helpers/core-rpc';
@@ -27,21 +28,32 @@ test.describe('Settings - Channels & Permissions', () => {
   });
 
   test('allows switching default messaging channel', async ({ page }) => {
-    await page.goto('/#/skills');
+    // "Set as default" now appears only on *connected* channels. In a fresh
+    // workspace the only always-connected channel is Web (built-in chat), so
+    // make Telegram the default first (turning Web into a connected,
+    // non-default tile with the control), then switch the default to Web.
+    await callCoreRpc('openhuman.channels_set_default', { channel: 'telegram' });
+
+    // Phase 2: default messaging channel UI moved to /connections (Messaging tab).
+    // Mounting the panel re-seeds the default from the core.
+    await page.goto('/#/connections?tab=messaging');
     await waitForAppReady(page);
     await dismissWalkthroughIfPresent(page);
 
-    const channelsTab = page.getByRole('tab', { name: 'Channels', exact: true });
-    if (await channelsTab.isVisible().catch(() => false)) {
-      await channelsTab.click();
+    const messagingTab = page.getByTestId('two-pane-nav-channels');
+    if (await messagingTab.isVisible().catch(() => false)) {
+      await messagingTab.click();
     }
 
     await expect(page.getByText('Default Messaging Channel').last()).toBeVisible();
     await expect(page.getByText('Telegram').last()).toBeVisible();
-    await expect(page.getByText('Discord').last()).toBeVisible();
+    await expect(page.getByText('Web').last()).toBeVisible();
 
-    await page.getByText('Discord').last().click();
-    await expect.poll(() => getDefaultMessagingChannel(page)).toBe('discord');
+    // Confirm the panel seeded Telegram as the default before switching.
+    await expect.poll(() => getDefaultMessagingChannel(page)).toBe('telegram');
+
+    await page.getByTestId('channel-select-web').click();
+    await expect.poll(() => getDefaultMessagingChannel(page)).toBe('web');
   });
 
   test('renders privacy settings and analytics toggle', async ({ page }) => {
@@ -49,9 +61,9 @@ test.describe('Settings - Channels & Permissions', () => {
     await waitForAppReady(page);
     await dismissWalkthroughIfPresent(page);
 
-    await expect(page.getByRole('heading', { name: 'Privacy & Security' })).toBeVisible();
-    await expect(page.getByText('Anonymized Analytics')).toBeVisible();
-    await expect(page.getByText('Share Anonymized Usage Data')).toBeVisible();
+    await expect(page.getByTestId('settings-privacy-panel')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Product Analytics' })).toBeVisible();
+    await expect(page.getByText('Share Product Analytics and Diagnostics')).toBeVisible();
     await expect(page.getByText('What leaves your computer')).toBeVisible();
   });
 });

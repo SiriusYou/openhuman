@@ -38,6 +38,42 @@ export interface CostDashboardPayload {
   by_model: CostDashboardModelStats[];
 }
 
+export interface CostUsageRecord {
+  id: string;
+  timestamp: string;
+  session_id: string;
+  model: string;
+  provider: string | null;
+  category: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cached_input_tokens: number;
+  cache_creation_tokens: number;
+  reasoning_tokens: number;
+  cost_usd: number;
+  cost_source: 'estimated' | 'provider_charged';
+}
+
+export interface CostUsageCategoryStats {
+  category: string;
+  cost_usd: number;
+  total_tokens: number;
+  request_count: number;
+  percent_of_total: number;
+}
+
+interface CostUsageLogPayload {
+  records: CostUsageRecord[];
+  by_category: CostUsageCategoryStats[];
+  total_cost_usd: number;
+  total_tokens: number;
+  request_count: number;
+  currency: string;
+  days: number;
+  limit: number;
+}
+
 interface RpcEnvelope<T> {
   result?: T;
   logs?: string[];
@@ -45,13 +81,13 @@ interface RpcEnvelope<T> {
 
 const DEFAULT_REFRESH_MS = 10_000;
 
-export interface UseCostDashboardOptions {
+interface UseCostDashboardOptions {
   refreshMs?: number;
   /** When true, polling pauses (e.g. when the panel is hidden). */
   paused?: boolean;
 }
 
-export interface UseCostDashboardResult {
+interface UseCostDashboardResult {
   data: CostDashboardPayload | null;
   /** True only before the first successful fetch resolves. */
   isLoading: boolean;
@@ -62,6 +98,26 @@ export interface UseCostDashboardResult {
   lastUpdated: number | null;
   /** Manual refetch — does not toggle `isLoading` if `data` is already present. */
   refetch: () => Promise<void>;
+}
+
+interface UseCostUsageLogOptions extends UseCostDashboardOptions {
+  days?: number;
+  limit?: number;
+}
+
+interface UseCostUsageLogResult {
+  data: CostUsageLogPayload | null;
+  isLoading: boolean;
+  isFetching: boolean;
+  error: string | null;
+  lastUpdated: number | null;
+  refetch: () => Promise<void>;
+}
+
+function unwrapRpcPayload<T>(response: RpcEnvelope<T> | T): T {
+  return response && typeof response === 'object' && 'result' in response && response.result
+    ? (response.result as T)
+    : (response as T);
 }
 
 /**
@@ -86,10 +142,7 @@ export function useCostDashboard(options: UseCostDashboardOptions = {}): UseCost
         params: {},
       });
       if (cancelledRef.current) return;
-      const payload =
-        response && typeof response === 'object' && 'result' in response && response.result
-          ? (response.result as CostDashboardPayload)
-          : (response as CostDashboardPayload);
+      const payload = unwrapRpcPayload(response);
       setData(payload);
       setError(null);
       setLastUpdated(Date.now());
@@ -115,6 +168,67 @@ export function useCostDashboard(options: UseCostDashboardOptions = {}): UseCost
     // only suppresses the periodic interval — not the initial load —
     // so the user never sees a blank chart on first navigation. If you
     // need a fully-inert hook, gate the call site on the same flag.
+    void fetchOnce();
+    if (paused) {
+      return () => {
+        cancelledRef.current = true;
+      };
+    }
+    const interval = window.setInterval(
+      () => {
+        void fetchOnce();
+      },
+      Math.max(1000, refreshMs)
+    );
+    return () => {
+      cancelledRef.current = true;
+      window.clearInterval(interval);
+    };
+  }, [fetchOnce, refreshMs, paused]);
+
+  return { data, isLoading, isFetching, error, lastUpdated, refetch };
+}
+
+/**
+ * Fetches detailed persisted cost rows and inferred category distribution.
+ */
+export function useCostUsageLog(options: UseCostUsageLogOptions = {}): UseCostUsageLogResult {
+  const { refreshMs = DEFAULT_REFRESH_MS, paused = false, days = 30, limit = 250 } = options;
+  const [data, setData] = useState<CostUsageLogPayload | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isFetching, setIsFetching] = useState<boolean>(true);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const cancelledRef = useRef<boolean>(false);
+
+  const fetchOnce = useCallback(async () => {
+    setIsFetching(true);
+    try {
+      const response = await callCoreRpc<RpcEnvelope<CostUsageLogPayload> | CostUsageLogPayload>({
+        method: 'openhuman.cost_get_usage_log',
+        params: { days, limit },
+      });
+      if (cancelledRef.current) return;
+      setData(unwrapRpcPayload(response));
+      setError(null);
+      setLastUpdated(Date.now());
+    } catch (err) {
+      if (cancelledRef.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (!cancelledRef.current) {
+        setIsLoading(false);
+        setIsFetching(false);
+      }
+    }
+  }, [days, limit]);
+
+  const refetch = useCallback(async () => {
+    await fetchOnce();
+  }, [fetchOnce]);
+
+  useEffect(() => {
+    cancelledRef.current = false;
     void fetchOnce();
     if (paused) {
       return () => {

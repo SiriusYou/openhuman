@@ -4,6 +4,7 @@ import { resolvePreferredAuthModeForChannel } from '../../lib/channels/routing';
 import { useT } from '../../lib/i18n/I18nContext';
 import { useAppSelector } from '../../store/hooks';
 import type { ChannelConnectionStatus, ChannelDefinition, ChannelType } from '../../types/channels';
+import Button from '../ui/Button';
 import { renderChannelIcon } from './channelIcon';
 import ChannelStatusBadge from './ChannelStatusBadge';
 
@@ -42,12 +43,10 @@ const ChannelSelector = ({
   }, [channelConnections, t]);
 
   return (
-    <section className="rounded-xl border border-stone-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4 space-y-4">
+    <section className="rounded-xl border border-line bg-surface p-4 space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-stone-900 dark:text-neutral-100">
-          {t('channels.title')}
-        </h2>
-        <p className="text-xs text-stone-400 dark:text-neutral-500">
+        <h2 className="text-sm font-semibold text-content">{t('channels.title')}</h2>
+        <p className="text-xs text-content-faint">
           {t('channels.activeRoute')}:{' '}
           <span className="text-primary-600 dark:text-primary-300">{activeRoute}</span>
         </p>
@@ -69,21 +68,22 @@ const ChannelSelector = ({
             CHANNEL_STATUS_PRIORITY.find(status => modeStatuses.includes(status)) ?? 'disconnected';
 
           return (
-            <button
+            <Button
               key={channelId}
-              type="button"
+              variant="tertiary"
+              data-testid={`channel-select-${channelId}`}
               onClick={() => onSelectChannel(channelId)}
-              className={`flex-1 flex items-center justify-between gap-2 rounded-lg border px-4 py-3 text-sm transition-colors ${
+              className={`flex-1 justify-between gap-2 rounded-lg border px-4 py-3 text-sm font-normal ${
                 isSelected
                   ? 'border-primary-500/60 bg-primary-50 dark:bg-primary-500/15 text-primary-600 dark:text-primary-300'
-                  : 'border-stone-200 dark:border-neutral-800 bg-stone-50 dark:bg-neutral-800/60 text-stone-600 dark:text-neutral-300 hover:border-stone-300 dark:hover:border-neutral-700'
+                  : 'border-line bg-surface-muted text-content-secondary hover:border-line-strong dark:hover:border-line-strong'
               }`}>
               <span className="flex items-center gap-2">
                 {renderChannelIcon(def.icon)}
                 <span className="font-medium">{def.display_name}</span>
               </span>
               <ChannelStatusBadge status={bestStatus} />
-            </button>
+            </Button>
           );
         })}
 
@@ -91,18 +91,18 @@ const ChannelSelector = ({
         {VIRTUAL_TABS.map(tab => {
           const isSelected = selectedChannel === tab.id;
           return (
-            <button
+            <Button
               key={tab.id}
-              type="button"
+              variant="tertiary"
               onClick={() => onSelectChannel(tab.id)}
-              className={`flex-1 flex items-center gap-2 rounded-lg border px-4 py-3 text-sm transition-colors ${
+              className={`flex-1 justify-start gap-2 rounded-lg border px-4 py-3 text-sm font-normal ${
                 isSelected
                   ? 'border-primary-500/60 bg-primary-50 dark:bg-primary-500/15 text-primary-600 dark:text-primary-300'
-                  : 'border-stone-200 dark:border-neutral-800 bg-stone-50 dark:bg-neutral-800/60 text-stone-600 dark:text-neutral-300 hover:border-stone-300 dark:hover:border-neutral-700'
+                  : 'border-line bg-surface-muted text-content-secondary hover:border-line-strong dark:hover:border-line-strong'
               }`}>
               {renderChannelIcon(tab.id)}
               <span className="font-medium">{tab.display_name}</span>
-            </button>
+            </Button>
           );
         })}
       </div>

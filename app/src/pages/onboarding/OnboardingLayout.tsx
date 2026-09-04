@@ -11,7 +11,7 @@ import { OnboardingContext, type OnboardingDraft } from './OnboardingContext';
 /**
  * Full-page chrome for the onboarding flow. Hosts the shared draft + the
  * completion side-effects (persist `onboarding_completed`, notify backend,
- * navigate to /home). Individual steps render through `<Outlet />`.
+ * navigate to /chat). Individual steps render through `<Outlet />`.
  */
 const OnboardingLayout = () => {
   const navigate = useNavigate();
@@ -29,12 +29,26 @@ const OnboardingLayout = () => {
     });
 
     try {
+      // Preserve a tool preference the user already customized (e.g. via
+      // Settings → Tools or an earlier onboarding run) rather than resetting
+      // to catalog defaults on every completion. Re-applying defaults here
+      // could silently narrow an existing selection. Only seed defaults when
+      // no preference has been persisted yet. The Rust-side filter
+      // (`filter_tools_by_user_preference`) is the authoritative guard against
+      // stale snapshots stripping newer tools (issue #3096); this is
+      // defense-in-depth on the write path.
+      const existingEnabledTools = snapshot.localState.onboardingTasks?.enabledTools;
+      const enabledTools =
+        existingEnabledTools && existingEnabledTools.length > 0
+          ? existingEnabledTools
+          : getEnabledRustToolNames(getDefaultEnabledTools());
+
       await setOnboardingTasks({
         accessibilityPermissionGranted:
           snapshot.localState.onboardingTasks?.accessibilityPermissionGranted ?? false,
         localModelConsentGiven: false,
         localModelDownloadStarted: false,
-        enabledTools: getEnabledRustToolNames(getDefaultEnabledTools()),
+        enabledTools,
         connectedSources: draft.connectedSources,
         updatedAtMs: Date.now(),
       });
@@ -52,16 +66,16 @@ const OnboardingLayout = () => {
     // Fire onboarding_complete analytics event before navigation.
     trackEvent('onboarding_complete');
 
-    // Flag the Joyride walkthrough as pending so it auto-starts on /home.
+    // Flag the Joyride walkthrough as pending so it auto-starts on the chat landing surface.
     // Best-effort: localStorage failures must not block navigation.
     try {
       setWalkthroughPending();
-      console.debug('[onboarding:layout] walkthrough pending flag set — navigating to /home');
+      console.debug('[onboarding:layout] walkthrough pending flag set — navigating to /chat');
     } catch (e) {
       console.warn('[onboarding:layout] could not set walkthrough pending flag; continuing', e);
     }
 
-    navigate('/home', { replace: true });
+    navigate('/chat', { replace: true });
   }, [draft.connectedSources, navigate, setOnboardingCompletedFlag, setOnboardingTasks, snapshot]);
 
   const value = useMemo(

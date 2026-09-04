@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { useT } from '../../../lib/i18n/I18nContext';
 import { useCoreState } from '../../../providers/CoreStateProvider';
@@ -10,8 +10,17 @@ import {
   type SearchSettings,
   type SearchSettingsUpdate,
 } from '../../../utils/tauriCommands/config';
-import SettingsHeader from '../components/SettingsHeader';
+import PanelPage from '../../layout/PanelPage';
+import { Alert, AlertDescription } from '../../ui/Alert';
+import Button from '../../ui/Button';
+import { CenteredLoadingState } from '../../ui/LoadingState';
+import StatusLine from '../../ui/StatusLine';
+import TextArea from '../../ui/TextArea';
+import { ToggleGroupItem, ToggleGroupRoot } from '../../ui/ToggleGroup';
+import SettingsBackButton from '../components/SettingsBackButton';
 import { useSettingsNavigation } from '../hooks/useSettingsNavigation';
+import SearchPanelEngineList, { type EngineOption } from './SearchPanelEngineList';
+import KeyEditor from './SearchPanelKeyEditor';
 
 type Status =
   | { kind: 'idle' }
@@ -32,12 +41,16 @@ type Status =
  */
 type AccessMode = 'all' | 'custom' | 'block';
 
-interface EngineOption {
-  id: SearchEngineId;
-  label: string;
-  description: string;
-  requiresKey: boolean;
-}
+/** Search engines that route directly from this machine with the user's own key. */
+type ByokEngine = 'parallel' | 'brave' | 'querit' | 'exa';
+
+/** Patch field that carries each BYOK engine's key. Empty string clears it. */
+const BYOK_KEY_FIELD: Record<ByokEngine, keyof SearchSettingsUpdate> = {
+  parallel: 'parallel_api_key',
+  brave: 'brave_api_key',
+  querit: 'querit_api_key',
+  exa: 'exa_api_key',
+};
 
 /**
  * Normalize a user-entered allowed-site entry down to a bare host so it
@@ -54,7 +67,7 @@ const normalizeAllowedHost = (raw: string): string =>
 
 const SearchPanel = ({ embedded = false }: { embedded?: boolean }) => {
   const { t } = useT();
-  const { navigateBack, breadcrumbs } = useSettingsNavigation();
+  const { navigateBack } = useSettingsNavigation();
   const { snapshot } = useCoreState();
   const isLocalSession = isLocalSessionToken(snapshot.sessionToken);
 
@@ -63,9 +76,11 @@ const SearchPanel = ({ embedded = false }: { embedded?: boolean }) => {
   const [parallelKey, setParallelKey] = useState<string>('');
   const [braveKey, setBraveKey] = useState<string>('');
   const [queritKey, setQueritKey] = useState<string>('');
+  const [exaKey, setExaKey] = useState<string>('');
   const [showParallel, setShowParallel] = useState(false);
   const [showBrave, setShowBrave] = useState(false);
   const [showQuerit, setShowQuerit] = useState(false);
+  const [showExa, setShowExa] = useState(false);
   // Editor text for the allowed-websites host list (one host per line). The
   // "*" wildcard is represented by the access mode, not shown here.
   const [allowedText, setAllowedText] = useState<string>('');
@@ -105,6 +120,12 @@ const SearchPanel = ({ embedded = false }: { embedded?: boolean }) => {
       id: 'querit',
       label: t('settings.search.engineQueritLabel'),
       description: t('settings.search.engineQueritDesc'),
+      requiresKey: true,
+    },
+    {
+      id: 'exa',
+      label: t('settings.search.engineExaLabel'),
+      description: t('settings.search.engineExaDesc'),
       requiresKey: true,
     },
   ];
@@ -156,22 +177,22 @@ const SearchPanel = ({ embedded = false }: { embedded?: boolean }) => {
     }
   };
 
-  const persistKey = async (engine: 'parallel' | 'brave' | 'querit', rawKey: string) => {
+  // Clear the local draft input once its key round-trips to the core.
+  const clearDraftKey: Record<ByokEngine, () => void> = {
+    parallel: () => setParallelKey(''),
+    brave: () => setBraveKey(''),
+    querit: () => setQueritKey(''),
+    exa: () => setExaKey(''),
+  };
+
+  const persistKey = async (engine: ByokEngine, rawKey: string) => {
     if (!settings) return;
     setStatus({ kind: 'saving' });
     try {
-      const update =
-        engine === 'parallel'
-          ? { parallel_api_key: rawKey }
-          : engine === 'brave'
-            ? { brave_api_key: rawKey }
-            : { querit_api_key: rawKey };
-      await openhumanUpdateSearchSettings(update);
+      await openhumanUpdateSearchSettings({ [BYOK_KEY_FIELD[engine]]: rawKey });
       const refreshed = await openhumanGetSearchSettings();
       setSettings(refreshed.result);
-      if (engine === 'parallel') setParallelKey('');
-      else if (engine === 'brave') setBraveKey('');
-      else setQueritKey('');
+      clearDraftKey[engine]();
       setStatus({ kind: 'saved' });
     } catch (err) {
       setStatus({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
@@ -217,108 +238,40 @@ const SearchPanel = ({ embedded = false }: { embedded?: boolean }) => {
     if (engine === 'parallel') return settings.parallel_configured;
     if (engine === 'brave') return settings.brave_configured;
     if (engine === 'querit') return settings.querit_configured;
+    if (engine === 'exa') return settings.exa_configured;
     return false;
   };
 
   return (
-    <div className="z-10 relative" data-testid="search-settings-panel">
-      {!embedded && (
-        <SettingsHeader
-          title={t('settings.search.title')}
-          showBackButton
-          onBack={navigateBack}
-          breadcrumbs={breadcrumbs}
-        />
-      )}
-
-      <div className={embedded ? 'space-y-4' : 'p-4 space-y-4'}>
-        <p className="text-xs text-stone-500 dark:text-neutral-400 leading-relaxed">
+    <PanelPage
+      className="z-10"
+      testId="search-settings-panel"
+      contentClassName=""
+      description={embedded ? undefined : t('settings.search.menuDesc')}
+      leading={embedded ? undefined : <SettingsBackButton onBack={navigateBack} />}>
+      <div className={embedded ? 'space-y-5' : 'p-4 space-y-5'}>
+        <p className="text-xs text-content-muted leading-relaxed">
           {t('settings.search.description')}
         </p>
 
         {isLocalSession && (
-          <div className="rounded-lg border border-stone-200 dark:border-neutral-800 bg-stone-50 dark:bg-neutral-800/60 px-4 py-3 text-sm text-stone-700 dark:text-neutral-200">
-            {t('settings.search.localManagedUnavailable')}
-          </div>
+          <Alert variant="info">
+            <AlertDescription>{t('settings.search.localManagedUnavailable')}</AlertDescription>
+          </Alert>
         )}
 
-        {status.kind === 'loading' && (
-          <div className="rounded-lg border border-stone-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4 text-xs text-stone-500 dark:text-neutral-400">
-            {t('common.loading')}
-          </div>
-        )}
+        {status.kind === 'loading' && <CenteredLoadingState label={t('common.loading')} />}
 
         {settings && (
           <>
-            <div
-              className="bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden"
-              role="radiogroup"
-              aria-label={t('settings.search.engineAria')}>
-              {visibleEngines.map((opt, idx) => {
-                const selected = opt.id === selectedEngine;
-                const configured = isConfigured(opt.id);
-                const blocked = opt.requiresKey && !configured && selected;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    data-testid={`search-engine-${opt.id}`}
-                    role="radio"
-                    aria-checked={selected}
-                    onClick={() => void persistEngine(opt.id)}
-                    className={`w-full flex items-start gap-3 px-4 py-3 text-left transition-colors focus:outline-none focus-visible:bg-primary-50 dark:focus-visible:bg-primary-900/30 ${
-                      idx !== 0 ? 'border-t border-neutral-100 dark:border-neutral-800' : ''
-                    } ${
-                      selected
-                        ? 'bg-primary-50 dark:bg-primary-500/10'
-                        : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/60'
-                    }`}>
-                    <span className="flex-1 min-w-0">
-                      <span className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                          {opt.label}
-                        </span>
-                        {opt.requiresKey && (
-                          <span
-                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider ${
-                              configured
-                                ? 'bg-sage-100 text-sage-700 dark:bg-sage-900/40 dark:text-sage-200'
-                                : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'
-                            }`}>
-                            {configured
-                              ? t('settings.search.statusConfigured')
-                              : t('settings.search.statusNeedsKey')}
-                          </span>
-                        )}
-                      </span>
-                      <span className="block mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
-                        {opt.description}
-                      </span>
-                      {blocked && (
-                        <span className="block mt-1 text-[11px] text-amber-700 dark:text-amber-300">
-                          {t('settings.search.fallbackToManaged')}
-                        </span>
-                      )}
-                    </span>
-                    {selected && (
-                      <svg
-                        className="w-5 h-5 text-primary-500 flex-shrink-0 mt-0.5"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                        aria-hidden>
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M5 13l4 4L19 7"
-                        />
-                      </svg>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+            <SearchPanelEngineList
+              engines={visibleEngines}
+              selectedEngine={selectedEngine}
+              ariaLabel={t('settings.search.engineAria')}
+              isConfigured={isConfigured}
+              onSelect={engine => void persistEngine(engine)}
+              t={t}
+            />
 
             {/* BYO API keys */}
             <div className="space-y-3">
@@ -373,50 +326,60 @@ const SearchPanel = ({ embedded = false }: { embedded?: boolean }) => {
                 docUrl="https://www.querit.ai/en/docs/reference/post"
                 t={t}
               />
+              <KeyEditor
+                label={t('settings.search.exaKeyLabel')}
+                placeholder={
+                  settings.exa_configured
+                    ? t('settings.search.placeholderStored')
+                    : t('settings.search.placeholderExa')
+                }
+                show={showExa}
+                onToggleShow={() => setShowExa(s => !s)}
+                value={exaKey}
+                onChange={setExaKey}
+                onSave={() => void persistKey('exa', exaKey)}
+                onClear={() => void persistKey('exa', '')}
+                configured={settings.exa_configured}
+                docUrl="https://exa.ai"
+                t={t}
+              />
             </div>
 
             {/* Allowed websites — unified host allowlist shared by web_fetch /
                 curl and (when enabled) the browser tool. Web search is not
                 gated by this list. */}
-            <div className="rounded-xl border border-stone-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-3 space-y-2">
+            <div className="rounded-xl border border-line bg-surface p-3 space-y-2">
               {/* Section heading, not a form label — use a <p> so screen
                   readers don't announce an orphan <label> with no htmlFor. */}
-              <p className="text-xs font-semibold text-stone-700 dark:text-neutral-200">
+              <p className="text-xs font-semibold text-content-secondary">
                 {t('settings.search.allowedSitesLabel')}
               </p>
-              <div
-                role="radiogroup"
+              <ToggleGroupRoot
+                type="single"
                 aria-label={t('settings.search.accessModeAria')}
-                className="flex rounded-lg border border-stone-200 dark:border-neutral-800 overflow-hidden">
+                value={mode}
+                onValueChange={value => {
+                  if (value) selectMode(value as AccessMode);
+                }}
+                disabled={status.kind === 'saving'}
+                className="flex w-full rounded-lg border border-line overflow-hidden gap-0">
                 {(
                   [
                     ['all', 'settings.search.accessAllowAll'],
                     ['custom', 'settings.search.accessCustom'],
                     ['block', 'settings.search.accessBlockAll'],
                   ] as const
-                ).map(([value, labelKey], idx) => {
-                  const selected = mode === value;
-                  return (
-                    <button
-                      key={value}
-                      type="button"
-                      role="radio"
-                      aria-checked={selected}
-                      onClick={() => selectMode(value)}
-                      disabled={status.kind === 'saving'}
-                      className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 focus:outline-none focus-visible:bg-primary-50 dark:focus-visible:bg-primary-900/30 ${
-                        idx !== 0 ? 'border-l border-stone-200 dark:border-neutral-800' : ''
-                      } ${
-                        selected
-                          ? 'bg-primary-500 text-white'
-                          : 'bg-white dark:bg-neutral-900 text-stone-700 dark:text-neutral-200 hover:bg-stone-50 dark:hover:bg-neutral-800/60'
-                      }`}>
-                      {t(labelKey)}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-[11px] text-stone-500 dark:text-neutral-400 leading-relaxed">
+                ).map(([value, labelKey]) => (
+                  <ToggleGroupItem
+                    key={value}
+                    value={value}
+                    variant="tertiary"
+                    className="flex-1 rounded-none border-0 border-l border-line first:border-l-0 px-3 py-1.5 text-xs data-[state=on]:bg-primary-500 data-[state=on]:text-content-inverted">
+                    {t(labelKey)}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroupRoot>
+              <p className="text-[11px] text-content-muted leading-relaxed">
                 {mode === 'all'
                   ? t('settings.search.allowedSitesAllOn')
                   : mode === 'block'
@@ -425,125 +388,41 @@ const SearchPanel = ({ embedded = false }: { embedded?: boolean }) => {
               </p>
               {mode === 'custom' && (
                 <>
-                  <textarea
+                  <TextArea
                     value={allowedText}
                     onChange={e => setAllowedText(e.target.value)}
                     rows={4}
                     spellCheck={false}
                     placeholder={t('settings.search.allowedSitesPlaceholder')}
-                    className="w-full rounded-lg border border-stone-200 dark:border-neutral-800 bg-stone-50 dark:bg-neutral-800/60 px-2 py-1.5 text-xs font-mono text-stone-800 dark:text-neutral-100 focus:outline-none focus-visible:border-primary-400"
+                    className="font-mono text-xs"
+                    aria-label={t('settings.search.allowedSitesLabel')}
                   />
-                  <button
+                  <Button
                     type="button"
+                    variant="primary"
+                    size="xs"
                     onClick={() => persistAllowedDomains()}
-                    disabled={status.kind === 'saving'}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary-500 text-white hover:bg-primary-600 disabled:opacity-50">
+                    disabled={status.kind === 'saving'}>
                     {t('settings.search.allowedSitesSave')}
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
 
-            <div
-              role="status"
-              aria-live="polite"
-              className="text-xs min-h-[1rem] text-stone-500 dark:text-neutral-400">
-              {status.kind === 'saving' && t('settings.search.statusSaving')}
-              {status.kind === 'saved' && t('settings.search.statusSaved')}
-              {status.kind === 'error' && (
-                <span className="text-coral-600 dark:text-coral-300">
-                  {t('settings.search.statusError')}: {status.message}
-                </span>
-              )}
-            </div>
+            <StatusLine
+              saving={status.kind === 'saving'}
+              savedNote={status.kind === 'saved' ? t('settings.search.statusSaved') : null}
+              error={
+                status.kind === 'error'
+                  ? `${t('settings.search.statusError')}: ${status.message}`
+                  : null
+              }
+              savingLabel={t('settings.search.statusSaving')}
+            />
           </>
         )}
       </div>
-    </div>
-  );
-};
-
-interface KeyEditorProps {
-  label: string;
-  placeholder: string;
-  show: boolean;
-  onToggleShow: () => void;
-  value: string;
-  onChange: (v: string) => void;
-  onSave: () => void;
-  onClear: () => void;
-  configured: boolean;
-  docUrl: string;
-  t: (key: string) => string;
-}
-
-const KeyEditor = ({
-  label,
-  placeholder,
-  show,
-  onToggleShow,
-  value,
-  onChange,
-  onSave,
-  onClear,
-  configured,
-  docUrl,
-  t,
-}: KeyEditorProps) => {
-  const inputId = useId();
-
-  return (
-    <div
-      role="group"
-      aria-labelledby={inputId}
-      className="rounded-xl border border-stone-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-3">
-      <div className="flex items-center justify-between mb-2">
-        <label
-          id={inputId}
-          htmlFor={`${inputId}-input`}
-          className="text-xs font-semibold text-stone-700 dark:text-neutral-200">
-          {label}
-        </label>
-        <a
-          href={docUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-[10px] text-primary-500 hover:underline">
-          {t('settings.search.getApiKey')} ↗
-        </a>
-      </div>
-      <div className="flex items-center gap-2">
-        <input
-          id={`${inputId}-input`}
-          type={show ? 'text' : 'password'}
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          placeholder={placeholder}
-          className="flex-1 min-w-0 px-2 py-1.5 rounded-md border border-stone-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-xs font-mono text-stone-900 dark:text-neutral-100 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
-        />
-        <button
-          type="button"
-          onClick={onToggleShow}
-          className="px-2 py-1.5 rounded-md border border-stone-200 dark:border-neutral-800 text-xs text-stone-600 dark:text-neutral-300 hover:bg-stone-50 dark:hover:bg-neutral-800">
-          {show ? t('settings.search.hide') : t('settings.search.show')}
-        </button>
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={value.trim().length === 0}
-          className="px-3 py-1.5 rounded-md bg-primary-500 hover:bg-primary-600 text-white text-xs font-medium disabled:opacity-50">
-          {t('settings.search.save')}
-        </button>
-        {configured && (
-          <button
-            type="button"
-            onClick={onClear}
-            className="px-2 py-1.5 rounded-md border border-coral-200 dark:border-coral-500/30 text-xs text-coral-600 dark:text-coral-300 hover:bg-coral-50 dark:hover:bg-coral-500/10">
-            {t('settings.search.clear')}
-          </button>
-        )}
-      </div>
-    </div>
+    </PanelPage>
   );
 };
 

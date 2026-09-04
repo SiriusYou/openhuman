@@ -115,20 +115,6 @@ export async function getActiveUserIdFromCore(): Promise<string | null> {
 }
 
 /**
- * Queue deletion of a user-scoped CEF profile on the next app launch.
- */
-export async function scheduleCefProfilePurge(userId?: string | null): Promise<string | null> {
-  if (!isTauri()) {
-    console.debug('[cef-profile] scheduleCefProfilePurge: skipped — not running in Tauri');
-    return null;
-  }
-  console.debug('[cef-profile] scheduleCefProfilePurge: invoking schedule_cef_profile_purge', {
-    hasUserId: userId != null,
-  });
-  return invoke<string>('schedule_cef_profile_purge', { userId: userId ?? null });
-}
-
-/**
  * Check if the running core sidecar is outdated compared to what the app expects.
  */
 export const checkCoreUpdate = async (): Promise<CoreUpdateStatus | null> => {
@@ -260,7 +246,7 @@ export const installAppUpdate = async (): Promise<void> => {
   console.debug('[app-update] installAppUpdate: returned (install did not relaunch)');
 };
 
-export async function resetOpenHumanDataAndRestartCore(): Promise<void> {
+export async function resetOpenHumanDataAndRestartCore(userId?: string | null): Promise<void> {
   if (!isTauri()) {
     console.debug('[core] resetOpenHumanDataAndRestartCore: skipped — not running in Tauri');
     return;
@@ -273,9 +259,16 @@ export async function resetOpenHumanDataAndRestartCore(): Promise<void> {
   // tokio task — on Windows that hit `ERROR_SHARING_VIOLATION` (os error
   // 32) because the core still held SQLite / log / Sentry handles open in
   // the directory it was trying to delete (OPENHUMAN-TAURI-AF).
-  console.debug('[core] resetOpenHumanDataAndRestartCore: invoking reset_local_data');
+  // Forward the signed-in user's id so the core deletes THAT user's
+  // `users/<id>` slice. The clear flow signs the user out (clearing
+  // `active_user.toml`) before this runs, so without the explicit id the core
+  // would fall back to the pre-login dir and leave the real data behind
+  // (issue #4950).
+  console.debug('[core] resetOpenHumanDataAndRestartCore: invoking reset_local_data', {
+    hasUserId: userId != null,
+  });
   try {
-    await invoke<void>('reset_local_data');
+    await invoke<void>('reset_local_data', { userId: userId ?? null });
   } catch (err) {
     console.error('[core] resetOpenHumanDataAndRestartCore: reset_local_data failed', err);
     throw err;

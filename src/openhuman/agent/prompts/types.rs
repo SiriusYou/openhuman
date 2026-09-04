@@ -6,7 +6,7 @@
 //! the sibling `mod.rs` so type edits don't pull in the whole 2 000-line
 //! renderer.
 
-use crate::openhuman::skills::Skill;
+use crate::openhuman::skills::Workflow;
 use crate::openhuman::tools::Tool;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -103,6 +103,26 @@ pub struct NamespaceSummary {
 // Connected integrations (Composio toolkits)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Identity of a single active connection within a toolkit.
+///
+/// Surfaced in the system prompt so the orchestrator can disambiguate
+/// multiple accounts for the same toolkit (e.g. "work Gmail" vs
+/// "personal Gmail") and pass the correct `connection_id` to the
+/// execute pipeline.
+#[derive(Debug, Clone)]
+pub struct IntegrationConnection {
+    /// Composio connection ID — passed to execute when the user/agent
+    /// targets a specific account.
+    pub connection_id: String,
+    /// Human-readable label derived from the connection's identity
+    /// fields: `account_email`, `workspace`, or `username` (first
+    /// non-empty wins). `None` when identity hasn't been enriched yet.
+    pub label: Option<String>,
+    /// Whether this is the default connection for the toolkit (oldest
+    /// active connection by `created_at`).
+    pub is_default: bool,
+}
+
 /// An external integration (e.g. a Composio OAuth-backed toolkit)
 /// surfaced in the system prompt so the orchestrator knows which
 /// services are available — both **already connected** and **available
@@ -138,6 +158,10 @@ pub struct ConnectedIntegration {
     /// and the orchestrator must point the user at Settings instead of
     /// attempting to delegate.
     pub connected: bool,
+    /// All active connections for this toolkit, sorted by `created_at`
+    /// ascending (oldest first). The first entry is the default.
+    /// Empty when `connected == false`.
+    pub connections: Vec<IntegrationConnection>,
     /// Raw upstream connection status when a connection row exists but
     /// is not `ACTIVE` — e.g. `"INITIATED"`, `"INITIALIZING"`,
     /// `"FAILED"`, `"EXPIRED"`. `None` means either the user is
@@ -315,7 +339,7 @@ pub struct PromptContext<'a> {
     /// Id of the agent this prompt is being built for.
     pub agent_id: &'a str,
     pub tools: &'a [PromptTool<'a>],
-    pub skills: &'a [Skill],
+    pub workflows: &'a [Workflow],
     pub dispatcher_instructions: &'a str,
     /// Pre-fetched learned context (empty when learning is disabled).
     pub learned: LearnedContextData,
@@ -357,11 +381,17 @@ pub struct PromptContext<'a> {
     /// Non-self personality roster entries for the master agent's prompt.
     /// Empty for non-master agents.
     pub personality_roster: Vec<PersonalityRosterEntry>,
-    /// Agent workflows available in this session. Injected into the prompt
-    /// so agents know which workflows they can invoke via `workflow_phase`.
-    /// Empty when no workflows are installed or the harness has not yet loaded
-    /// them (sub-agent paths, tests, etc.).
-    pub workflows: &'a [crate::openhuman::agent_workflows::Workflow],
+    /// Pre-loaded global `AGENTS.md` content (`<workspace_dir>/AGENTS.md`),
+    /// injected by [`crate::openhuman::agent::prompts::sections::AgentsInstructionsSection`].
+    /// `None` when the file is absent/empty or the `agents_md_enabled` config
+    /// gate is off. Loaded once at system-prompt build time (never re-read per
+    /// turn) so the frozen system-prompt prefix / KV-cache contract holds.
+    pub agents_md_global: Option<String>,
+    /// Pre-loaded project-layer `AGENTS.md` content — `<action_dir>/AGENTS.md`,
+    /// or a sub-agent's `worktree_action_dir` override. `None` when the file is
+    /// absent/empty, deduplicated against the global layer (same dir), or the
+    /// gate is off. Rendered after the global layer.
+    pub agents_md_local: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -385,7 +415,6 @@ pub trait PromptSection: Send + Sync {
 pub struct SubagentRenderOptions {
     pub include_safety_preamble: bool,
     pub include_identity: bool,
-    pub include_skills_catalog: bool,
     pub include_profile: bool,
     pub include_memory_md: bool,
 }
@@ -401,14 +430,12 @@ impl SubagentRenderOptions {
     pub fn from_definition_flags(
         omit_identity: bool,
         omit_safety_preamble: bool,
-        omit_skills_catalog: bool,
         omit_profile: bool,
         omit_memory_md: bool,
     ) -> Self {
         Self {
             include_identity: !omit_identity,
             include_safety_preamble: !omit_safety_preamble,
-            include_skills_catalog: !omit_skills_catalog,
             include_profile: !omit_profile,
             include_memory_md: !omit_memory_md,
         }

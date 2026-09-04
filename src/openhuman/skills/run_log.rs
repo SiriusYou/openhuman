@@ -9,13 +9,69 @@
 //! `.runs` is a sibling of the runtime skill *definitions* (`<workspace>/
 //! skills/<id>/`) so run logs never collide with a skill-id directory.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
+use once_cell::sync::Lazy;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::Receiver;
+use tokio_util::sync::CancellationToken;
 
 use crate::openhuman::agent::progress::AgentProgress;
+
+/// Registry of in-flight workflow runs → their cancellation token. A run
+/// registers itself before executing and removes itself when it finishes; the
+/// `skills_cancel` RPC looks a run up by id and fires its token, which the
+/// run's `tokio::select!` observes to stop the agent and write a `CANCELLED`
+/// footer.
+static RUN_CANCELS: Lazy<Mutex<HashMap<String, CancellationToken>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Register a fresh cancellation token for `run_id` and return it. The caller
+/// passes the returned token into its run loop's `select!`.
+pub fn register_run_cancel(run_id: &str) -> CancellationToken {
+    let token = CancellationToken::new();
+    let live = {
+        let mut map = RUN_CANCELS.lock().unwrap_or_else(|e| e.into_inner());
+        map.insert(run_id.to_string(), token.clone());
+        map.len()
+    };
+    log::debug!("[workflows::run-cancel] registered run_id={run_id} (live={live})");
+    token
+}
+
+/// Drop the registry entry for `run_id` (call once the run is fully done).
+pub fn unregister_run_cancel(run_id: &str) {
+    let (existed, live) = {
+        let mut map = RUN_CANCELS.lock().unwrap_or_else(|e| e.into_inner());
+        let existed = map.remove(run_id).is_some();
+        (existed, map.len())
+    };
+    log::debug!(
+        "[workflows::run-cancel] unregistered run_id={run_id} (existed={existed}, live={live})"
+    );
+}
+
+/// Signal cancellation for a running run. Returns `true` if a live run with
+/// this id was found and signalled, `false` if it's unknown (already finished
+/// or never existed).
+pub fn cancel_run(run_id: &str) -> bool {
+    let found = match RUN_CANCELS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(run_id)
+    {
+        Some(token) => {
+            token.cancel();
+            true
+        }
+        None => false,
+    };
+    log::debug!("[workflows::run-cancel] cancel requested run_id={run_id} (found={found})");
+    found
+}
 
 /// `<workspace>/skills/.runs`.
 pub fn runs_dir(workspace: &Path) -> PathBuf {
@@ -39,11 +95,11 @@ fn short(s: &str) -> &str {
 }
 
 /// `<runs_dir>/<skill>_<UTC ts>_<short run id>.log`.
-pub fn run_log_path(workspace: &Path, skill_id: &str, run_id: &str) -> PathBuf {
+pub fn run_log_path(workspace: &Path, workflow_id: &str, run_id: &str) -> PathBuf {
     let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
     runs_dir(workspace).join(format!(
         "{}_{}_{}.log",
-        sanitize(skill_id),
+        sanitize(workflow_id),
         ts,
         sanitize(short(run_id))
     ))
@@ -77,19 +133,36 @@ fn truncate(s: &str, n: usize) -> String {
 /// Write the run header (skill, inputs, the resolved task prompt).
 pub async fn write_header(
     path: &Path,
-    skill_id: &str,
+    workflow_id: &str,
     run_id: &str,
     inputs: &Value,
     task_prompt: &str,
 ) -> std::io::Result<()> {
+    write_header_with_profile(path, workflow_id, run_id, inputs, task_prompt, None).await
+}
+
+/// Write a run header attributed to the active profile. Profile-less callers
+/// retain the legacy header format through [`write_header`].
+pub async fn write_header_with_profile(
+    path: &Path,
+    workflow_id: &str,
+    run_id: &str,
+    inputs: &Value,
+    task_prompt: &str,
+    profile_id: Option<&str>,
+) -> std::io::Result<()> {
+    let profile_line = profile_id
+        .map(|id| format!("profile_id: {id}\n"))
+        .unwrap_or_default();
     let header = format!(
-        "==== skill_run: {skill} ====\n\
+        "==== workflow_run: {skill} ====\n\
          run_id : {run}\n\
+         {profile_line}\
          started: {start} UTC\n\
          inputs : {inputs}\n\n\
          --- task prompt ---\n{prompt}\n\n\
          --- steps ---",
-        skill = skill_id,
+        skill = workflow_id,
         run = run_id,
         start = chrono::Utc::now().to_rfc3339(),
         inputs = serde_json::to_string(inputs).unwrap_or_default(),
@@ -173,10 +246,12 @@ pub fn format_event(ev: &AgentProgress) -> Option<String> {
         | AgentProgress::ThinkingDelta { .. }
         | AgentProgress::ToolCallArgsDelta { .. }
         | AgentProgress::TurnCostUpdated { .. }
+        | AgentProgress::ModelCallCompleted { .. }
         | AgentProgress::TaskBoardUpdated { .. }
         | AgentProgress::SubagentTextDelta { .. }
         | AgentProgress::SubagentThinkingDelta { .. }
-        | AgentProgress::SubagentIterationStarted { .. } => return None,
+        | AgentProgress::SubagentIterationStarted { .. }
+        | AgentProgress::TurnContent { .. } => return None,
     };
     Some(format!(
         "{}  {}",
@@ -232,7 +307,10 @@ pub fn detect_repeated_line(
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 pub struct ScannedRun {
     pub run_id: String,
-    pub skill_id: String,
+    pub workflow_id: String,
+    /// Profile that launched the run. `None` denotes a legacy/profile-less run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
     /// Header `started:` timestamp (RFC3339); empty if header was malformed.
     pub started: String,
     /// `"DONE"` / `"DEGENERATE"` / `"FAILED"` / `"RUNNING"` (running ⇔ no footer yet).
@@ -248,11 +326,11 @@ pub struct ScannedRun {
 
 /// Scan `<workspace>/skills/.runs/` for run-log files, parse their header +
 /// footer, and return a vec sorted by `started` *descending* (most-recent
-/// first). When `skill_id` is `Some(_)`, only entries whose header
-/// `skill_id` matches are returned. `limit` caps the result (post-filter,
+/// first). When `workflow_id` is `Some(_)`, only entries whose header
+/// `workflow_id` matches are returned. `limit` caps the result (post-filter,
 /// post-sort) so the panel can render a short list cheaply. Malformed
 /// files are skipped silently — never blocks the response.
-pub fn scan_runs(workspace: &Path, skill_id: Option<&str>, limit: usize) -> Vec<ScannedRun> {
+pub fn scan_runs(workspace: &Path, workflow_id: Option<&str>, limit: usize) -> Vec<ScannedRun> {
     let dir = runs_dir(workspace);
     let mut runs: Vec<ScannedRun> = Vec::new();
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -272,6 +350,7 @@ pub fn scan_runs(workspace: &Path, skill_id: Option<&str>, limit: usize) -> Vec<
         let mut sid = String::new();
         let mut rid = String::new();
         let mut started = String::new();
+        let mut profile_id: Option<String> = None;
         let mut status = String::from("RUNNING");
         let mut duration_ms: Option<u64> = None;
         let mut finished: Option<String> = None;
@@ -283,10 +362,10 @@ pub fn scan_runs(workspace: &Path, skill_id: Option<&str>, limit: usize) -> Vec<
         // `:` and trimming both halves is robust to that padding without
         // hand-tracking each label's exact whitespace.
         for line in text.lines() {
-            if line.starts_with("==== skill_run:") {
-                // Header banner: `==== skill_run: <id> ====`
+            if line.starts_with("==== workflow_run:") {
+                // Header banner: `==== workflow_run: <id> ====`
                 sid = line
-                    .trim_start_matches("==== skill_run:")
+                    .trim_start_matches("==== workflow_run:")
                     .trim()
                     .trim_end_matches('=')
                     .trim()
@@ -305,6 +384,7 @@ pub fn scan_runs(workspace: &Path, skill_id: Option<&str>, limit: usize) -> Vec<
             match (label, seen_result) {
                 // Header fields (before --- result ---)
                 ("run_id", false) => rid = value.to_string(),
+                ("profile_id", false) => profile_id = Some(value.to_string()),
                 ("started", false) => started = value.to_string(),
                 // Footer fields (after --- result ---)
                 ("status", true) => status = value.to_string(),
@@ -325,14 +405,15 @@ pub fn scan_runs(workspace: &Path, skill_id: Option<&str>, limit: usize) -> Vec<
             // Malformed header — skip rather than show a half-row.
             continue;
         }
-        if let Some(want) = skill_id {
+        if let Some(want) = workflow_id {
             if sid != want {
                 continue;
             }
         }
         runs.push(ScannedRun {
             run_id: rid,
-            skill_id: sid,
+            workflow_id: sid,
+            profile_id,
             started,
             status,
             duration_ms,
@@ -374,6 +455,69 @@ pub fn find_run_log_path(workspace: &Path, run_id: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Terminal outcome of a finished run, parsed from the `--- result ---`
+/// footer: the status word (`DONE` / `DEGENERATE` / `FAILED`) and the
+/// final output body that follows it. Used by `run_workflow` /
+/// `await_workflow` to hand the spawned run's result straight back to the
+/// orchestrator instead of making it scrape the log itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunOutcome {
+    pub status: String,
+    pub output: String,
+}
+
+/// Read a run-log file and, if the footer has landed, return the terminal
+/// status + final output body. Returns `None` while the run is still
+/// `RUNNING` (no footer yet) or the file is unreadable — callers poll on
+/// `None`. Mirrors the on-disk layout written by [`write_footer`]:
+///
+/// ```text
+/// --- result ---
+/// status  : DONE
+/// duration: 1234 ms
+/// finished: <rfc3339> UTC
+///
+/// <output body…>
+/// ```
+pub fn read_terminal_outcome(path: &Path) -> Option<RunOutcome> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let marker = "--- result ---";
+    let idx = text.find(marker)?;
+    let after = &text[idx + marker.len()..];
+    let mut status = String::new();
+    let mut saw_finished = false;
+    let mut lines = after.lines();
+    // Consume the footer header lines (status/duration/finished); the first
+    // blank line after `finished:` separates them from the output body.
+    for line in lines.by_ref() {
+        let Some((label, value)) = line.split_once(':') else {
+            // A line without a colon before `finished:` means a malformed
+            // footer — bail rather than mis-slice the body.
+            if line.trim().is_empty() {
+                continue;
+            }
+            break;
+        };
+        match label.trim() {
+            "status" => status = value.trim().to_string(),
+            "finished" => {
+                saw_finished = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    // Require BOTH `status:` and the closing `finished:` line — write_footer
+    // emits `finished:` last, so its absence means we raced a partially
+    // written (or malformed) footer and the run isn't actually terminal yet.
+    if status.is_empty() || !saw_finished {
+        return None;
+    }
+    // Everything past the footer header is the final output body.
+    let output = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+    Some(RunOutcome { status, output })
 }
 
 /// Read a slice of a run log file. Returns the bytes from `offset`
@@ -468,197 +612,5 @@ pub async fn write_footer(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn detect_repeated_line_catches_real_failure_modes() {
-        // The exact text shapes we observed in run adcd2dfd (×23) and
-        // dffae55d (×8). With defaults (min_len=30, min_count=4) both must
-        // trip and the worst offender is returned.
-        let adcd = std::iter::repeat(
-            "Now I understand the structure. The keys need to go into the chunk files.",
-        )
-        .take(23)
-        .collect::<Vec<_>>()
-        .join("\n");
-        let (line, n) = detect_repeated_line(&adcd, 30, 4).expect("must trip");
-        assert_eq!(n, 23);
-        assert!(line.contains("Now I understand the structure"));
-
-        let dffae = std::iter::repeat("Good, the repo is cloned. Let me narrow down the search.")
-            .take(8)
-            .collect::<Vec<_>>()
-            .join("\n");
-        let (_, n2) = detect_repeated_line(&dffae, 30, 4).expect("must trip");
-        assert_eq!(n2, 8);
-    }
-
-    #[test]
-    fn scan_runs_parses_header_footer_and_status() {
-        // Mirror the on-disk layout: <workspace>/skills/.runs/<file>.log
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let runs = runs_dir(tmp.path());
-        std::fs::create_dir_all(&runs).unwrap();
-
-        // (a) finished run — full footer
-        let done = "==== skill_run: github-issue-crusher ====\n\
-                    run_id : aaaaaaaa-1111-2222-3333-444444444444\n\
-                    started: 2026-05-28T07:51:13.604134255+00:00 UTC\n\
-                    inputs : {}\n\n\
-                    --- task prompt ---\nfoo\n\
-                    --- steps ---\nstep 1\n\
-                    --- result ---\n\
-                    status  : DONE\n\
-                    duration: 617236 ms\n\
-                    finished: 2026-05-28T08:01:30.944918997+00:00 UTC\n\n\
-                    body...\n";
-        std::fs::write(
-            runs.join("github-issue-crusher_20260528T075113Z_aaaaaaaa.log"),
-            done,
-        )
-        .unwrap();
-
-        // (b) still-running — no footer yet
-        let running = "==== skill_run: pr-review-shepherd ====\n\
-                       run_id : bbbbbbbb-1111-2222-3333-444444444444\n\
-                       started: 2026-05-28T09:00:00.000000000+00:00 UTC\n\
-                       inputs : {}\n\n\
-                       --- task prompt ---\nfoo\n\
-                       --- steps ---\nstep 1\n";
-        std::fs::write(
-            runs.join("pr-review-shepherd_20260528T090000Z_bbbbbbbb.log"),
-            running,
-        )
-        .unwrap();
-
-        let all = scan_runs(tmp.path(), None, 10);
-        assert_eq!(all.len(), 2, "both runs visible");
-        // Newest first — (b) started later than (a).
-        assert_eq!(all[0].run_id, "bbbbbbbb-1111-2222-3333-444444444444");
-        assert_eq!(all[0].status, "RUNNING");
-        assert_eq!(all[0].duration_ms, None);
-        assert_eq!(all[1].status, "DONE");
-        assert_eq!(all[1].duration_ms, Some(617236));
-        assert!(all[1]
-            .finished
-            .as_deref()
-            .unwrap()
-            .starts_with("2026-05-28T08:01:30"));
-
-        // Filter by skill_id
-        let only_pr = scan_runs(tmp.path(), Some("pr-review-shepherd"), 10);
-        assert_eq!(only_pr.len(), 1);
-        assert_eq!(only_pr[0].skill_id, "pr-review-shepherd");
-
-        // Limit caps the result post-sort
-        let one = scan_runs(tmp.path(), None, 1);
-        assert_eq!(one.len(), 1);
-        assert_eq!(one[0].run_id, "bbbbbbbb-1111-2222-3333-444444444444");
-    }
-
-    #[test]
-    fn read_run_log_slice_pages_and_detects_footer_completion() {
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let runs = runs_dir(tmp.path());
-        std::fs::create_dir_all(&runs).unwrap();
-
-        // (a) Still-running file — no footer. read should return content
-        //     with complete=false so the FE keeps polling.
-        let running = "==== skill_run: pr-review-shepherd ====\n\
-                       run_id : 11111111-aaaa-bbbb-cccc-dddddddddddd\n\
-                       started: 2026-05-28T09:00:00.000000000+00:00 UTC\n\n\
-                       --- task prompt ---\nfoo\n\
-                       --- steps ---\nstep 1\nstep 2\n";
-        std::fs::write(
-            runs.join("pr-review-shepherd_20260528T090000Z_11111111.log"),
-            running,
-        )
-        .unwrap();
-
-        let path = find_run_log_path(tmp.path(), "11111111-aaaa-bbbb-cccc-dddddddddddd")
-            .expect("must find log by run id");
-        let s1 = read_run_log_slice(&path, 0, 1024).expect("read ok");
-        assert!(s1.bytes_read > 0);
-        assert!(s1.eof, "small file fits in one read");
-        assert!(!s1.complete, "no footer ⇒ keep polling");
-        assert!(s1.content.contains("step 2"));
-
-        // Second call from the cursor returns zero bytes + still incomplete.
-        let s2 = read_run_log_slice(&path, s1.offset, 1024).expect("tail ok");
-        assert_eq!(s2.bytes_read, 0);
-        assert!(s2.eof);
-        assert!(!s2.complete);
-
-        // (b) Append the footer — next read should flip complete=true.
-        let mut more = String::new();
-        more.push_str("\n--- result ---\n");
-        more.push_str("status  : DONE\nduration: 1234 ms\nfinished: 2026-05-28T09:00:01.000000000+00:00 UTC\n\nfinal output here\n");
-        let full = format!("{running}{more}");
-        std::fs::write(&path, &full).unwrap();
-        let s3 = read_run_log_slice(&path, s1.offset, 4096).expect("read tail ok");
-        assert!(s3.bytes_read > 0);
-        assert!(s3.complete, "footer landed ⇒ FE stops polling");
-        assert!(s3.content.contains("status  : DONE"));
-    }
-
-    #[test]
-    fn find_run_log_path_returns_none_for_unknown_id() {
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        std::fs::create_dir_all(runs_dir(tmp.path())).unwrap();
-        assert!(find_run_log_path(tmp.path(), "ffffffff-no-such-id").is_none());
-        // Empty id is always None — handler rejects later for clarity.
-        assert!(find_run_log_path(tmp.path(), "").is_none());
-    }
-
-    #[test]
-    fn scan_runs_skips_malformed_files() {
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let runs = runs_dir(tmp.path());
-        std::fs::create_dir_all(&runs).unwrap();
-        // Empty header — no `==== skill_run: ` line ⇒ skip silently.
-        std::fs::write(runs.join("garbage_x_y.log"), "hi i'm not a run log\n").unwrap();
-        let scanned = scan_runs(tmp.path(), None, 10);
-        assert!(scanned.is_empty(), "malformed files must be skipped");
-    }
-
-    #[test]
-    fn detect_repeated_line_does_not_false_positive_on_legitimate_output() {
-        // Normal prose with each sentence on its own line and no repeats
-        // should not trip. Also short lines (`OK`, `Done`) under min_len
-        // must be ignored even when repeated, so a verbose log of "OK"
-        // markers doesn't look like degeneracy.
-        let prose = "First, I read the issue and identified the failing test.\n\
-                     Then I edited src/foo.rs to add a None-guard around the dereference.\n\
-                     Finally I ran cargo test -p foo and confirmed the fix.\n\
-                     OK\nOK\nOK\nOK\nOK\nOK\nOK\nOK";
-        assert!(detect_repeated_line(prose, 30, 4).is_none());
-    }
-
-    #[test]
-    fn log_path_is_under_runs_and_sanitised() {
-        let p = run_log_path(Path::new("/ws"), "github/issue crusher", "abcdef12-3456");
-        let s = p.to_string_lossy();
-        assert!(s.contains("/ws/skills/.runs/"));
-        assert!(s.contains("github-issue-crusher_"));
-        assert!(s.ends_with("_abcdef12.log"), "got {s}");
-    }
-
-    #[test]
-    fn noisy_events_are_skipped_steps_are_kept() {
-        assert!(format_event(&AgentProgress::TextDelta {
-            delta: "hi".into(),
-            iteration: 1
-        })
-        .is_none());
-        let line = format_event(&AgentProgress::ToolCallStarted {
-            call_id: "c1".into(),
-            tool_name: "codegraph_search".into(),
-            arguments: serde_json::json!({"query": "x"}),
-            iteration: 2,
-        })
-        .expect("tool call logged");
-        assert!(line.contains("codegraph_search"));
-        assert!(line.contains("it 2"));
-    }
-}
+#[path = "run_log_tests.rs"]
+mod tests;

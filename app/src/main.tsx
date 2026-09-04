@@ -6,18 +6,34 @@ import ReactDOM from 'react-dom/client';
 
 import App from './App';
 import './index.css';
+import { installAutoHideScrollbars } from './lib/autoHideScrollbars';
 import { getCoreStateSnapshot } from './lib/coreState/store';
 import MascotWindowApp from './mascot/MascotWindowApp';
+import NotchApp from './notch/NotchApp';
 import OverlayApp from './overlay/OverlayApp';
 import './polyfills';
-import { initGA, initSentry, trackEvent } from './services/analytics';
+import { initGA, initSentry, startUiInteractionTracking, trackEvent } from './services/analytics';
 import { setStoreForApiClient } from './services/apiClient';
 import { primeActiveUserId } from './store/userScopedStorage';
-import './styles/theme.css';
+import './styles/code-highlight.css';
+import { resolveActiveUserBootstrap } from './utils/bootstrapActiveUser';
 import { APP_VERSION } from './utils/config';
+import { getStoredCoreMode } from './utils/configPersistence';
 import { setupDesktopDeepLinkListener } from './utils/desktopDeepLinkListener';
+import { missingHashRedirectTarget } from './utils/hashRouterBootstrap';
+import { installIpcTransportFallback } from './utils/ipcTransportFallback';
 import { getActiveUserIdFromCore } from './utils/tauriCommands';
 import { isTauri as tauriRuntimeAvailable } from './utils/tauriCommands/common';
+
+// Must run before anything can `invoke()`. Tauri's vendored IPC bootstrap
+// falls back to `window.ipc.postMessage(...)` once the `ipc://` custom-protocol
+// fetch rejects even once, and CEF never wires `window.ipc` — that dereference
+// is Sentry TAURI-REACT-6 / #5155. Installing a working fallback here makes the
+// undefined access impossible AND lets the latched fallback keep serving IPC
+// instead of bricking the session. Module-body position is early enough: ESM
+// hoists every import above this line, and no imported module invokes at
+// import time — the first real `invoke()` happens in a React effect.
+installIpcTransportFallback();
 
 setStoreForApiClient(() => getCoreStateSnapshot().snapshot.sessionToken);
 
@@ -37,18 +53,23 @@ const urlWindowParam = (() => {
   }
 })();
 const isMascotWindow = urlWindowParam === 'mascot';
+const isNotchWindow = urlWindowParam === 'notch';
 const currentWindowLabel = isMascotWindow
   ? 'mascot'
-  : tauriRuntimeAvailable()
-    ? getCurrentWindow().label
-    : 'main';
+  : isNotchWindow
+    ? 'notch'
+    : tauriRuntimeAvailable()
+      ? getCurrentWindow().label
+      : 'main';
 const isOverlayWindow = currentWindowLabel === 'overlay';
-const isStandaloneWindow = isOverlayWindow || isMascotWindow;
+const isStandaloneWindow = isOverlayWindow || isMascotWindow || isNotchWindow;
 
 const ensureDefaultHashRoute = () => {
   const hash = window.location.hash;
   if (!hash || hash === '#') {
-    window.location.replace(`${window.location.pathname}${window.location.search}#/`);
+    window.location.replace(
+      missingHashRedirectTarget(window.location.pathname, window.location.search)
+    );
     return;
   }
   if (!hash.startsWith('#/')) {
@@ -60,6 +81,7 @@ const ensureDefaultHashRoute = () => {
 initSentry();
 initGA();
 if (!isStandaloneWindow) {
+  startUiInteractionTracking();
   trackEvent('app_open', { version: APP_VERSION });
 }
 document.documentElement.dataset.window = currentWindowLabel;
@@ -81,18 +103,35 @@ if (!isStandaloneWindow) {
 // into a second restart. Reading the Rust state up front pins the right
 // namespace from the first storage call. (#900)
 function bootRender() {
+  // Reveal scrollbars only while a pane is actually scrolling. Installed here
+  // rather than in a component so it covers every window entry (main, mascot,
+  // notch, overlay) with one document-level capture listener, and so panes
+  // mounted later need no wiring. Lives for the document's lifetime.
+  installAutoHideScrollbars();
+
   const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
-  const tree = isMascotWindow ? <MascotWindowApp /> : isOverlayWindow ? <OverlayApp /> : <App />;
+  const tree = isMascotWindow ? (
+    <MascotWindowApp />
+  ) : isNotchWindow ? (
+    <NotchApp />
+  ) : isOverlayWindow ? (
+    <OverlayApp />
+  ) : (
+    <App />
+  );
   root.render(<React.StrictMode>{tree}</React.StrictMode>);
 }
 
-// The mascot lives in a native WKWebView (no Tauri IPC), so
-// `getActiveUserIdFromCore()` would just reject after a roundtrip and
-// delay first paint for nothing. Skip the bootstrap entirely in that
-// path — the mascot UI doesn't read user-scoped storage anyway.
-const activeUserBootstrap = isMascotWindow
-  ? Promise.resolve<string | null>(null)
-  : getActiveUserIdFromCore();
+// Decide which source (Rust IPC vs preserved localStorage seed) primes
+// `userScopedStorage` at boot. Cloud mode and standalone native windows
+// both fall through to `primeActiveUserId(null)`, which preserves whatever
+// `setActiveUserId(...)` wrote in a prior session — see
+// `resolveActiveUserBootstrap` for the full rationale (#4545, #900).
+const activeUserBootstrap = resolveActiveUserBootstrap({
+  isStandaloneNativeWindow: isMascotWindow || isNotchWindow,
+  coreMode: getStoredCoreMode(),
+  getActiveUserIdFromCore,
+});
 
 activeUserBootstrap
   .then(id => primeActiveUserId(id))

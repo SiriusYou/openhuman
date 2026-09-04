@@ -6,19 +6,18 @@ single provider runtime.
 
 ## Scope
 
-The contract lives in the top-level `src/openhuman/image/` module and
+The contract lives in the top-level `src/openhuman/media/image/` module and
 currently covers two model-facing tools:
 
-| Tool | Purpose | Permission | Output |
-| --- | --- | --- | --- |
-| `image_generation` | Generate or edit raster images from a prompt. | Write | Local generated-media artifact paths. |
-| `view_image` | Load a local image file into model-visible image context. | Read-only | Image content visible to the model. |
+| Tool               | Purpose                                                   | Permission | Output                                |
+| ------------------ | --------------------------------------------------------- | ---------- | ------------------------------------- |
+| `image_generation` | Generate or edit raster images from a prompt.             | Write      | Local generated-media artifact paths. |
+| `view_image`       | Load a local image file into model-visible image context. | Read-only  | Image content visible to the model.   |
 
 This layer is intentionally high level. Existing lower-level tools still own
 their concrete behavior:
 
 - `image_info` reads local image metadata and optional base64 text.
-- Browser screenshot tooling captures pages and writes image files.
 - Agent multimodal preparation normalizes `[IMAGE:...]` markers for providers
   that accept image data.
 
@@ -79,3 +78,38 @@ The module has focused Rust tests for:
 
 Future runtime PRs should add provider-specific execution tests next to the
 runtime adapter, not in the hosted contract module.
+
+## Media generation (GMI): image and video tools
+
+Separate from the high-level `image_generation` contract above, the
+`src/openhuman/media/generation/` domain ships **wired, executing** tools that
+generate images and video through the OpenHuman backend's `media_generation`
+provider (GMI Cloud: Seedream, SeedEdit, Seedance, Veo).
+
+| Tool                   | Purpose                                                          | Permission | Output                                    |
+| ---------------------- | ---------------------------------------------------------------- | ---------- | ----------------------------------------- |
+| `media_generate_image` | Text-to-image / image-to-image via GMI.                          | Execute    | Local file path under `generated-media/`. |
+| `media_generate_video` | Text-to-video / image-to-video via GMI.                          | Execute    | Local file path under `generated-media/`. |
+| `media_list_models`    | List the curated model catalog (and optionally GMI's live list). | Read-only  | Model ids + pricing.                      |
+
+How it works:
+
+- Generation is asynchronous. The tool submits to the backend (which charges on
+  submit and returns a request id), then **blocks with progress**, polling until
+  the request reaches a terminal state.
+- GMI returns expiring signed URLs; the tool downloads each artifact into the
+  agent's `generated-media/` directory and returns a stable local file path.
+- The backend owns provider keys, billing, and rate limiting
+  (`/agent-integrations/media-generation/*`, see `backend/docs/media-generation.md`).
+
+### Image & video sub-agents
+
+Two specialist sub-agents wrap these tools and are reachable from the
+orchestrator via delegation:
+
+- **`image_agent`** (`delegate_create_image`) owns prompt craft, model
+  selection, and saving generated images. It rides the multimodal `vision-v1`
+  tier so it can inspect what it produces.
+- **`video_agent`** (`delegate_create_video`) owns text-to-video and
+  image-to-video. It sets expectations that generation can take minutes and
+  blocks until the clip is saved.

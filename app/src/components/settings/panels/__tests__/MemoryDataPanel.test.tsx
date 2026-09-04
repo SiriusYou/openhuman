@@ -26,6 +26,9 @@ const hoisted = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../../utils/tauriCommands', () => ({
+  // The status hook polls this alongside pipeline status; a factory mock
+  // without it turns every render into an unhandled rejection.
+  memoryNamespaceSummaries: vi.fn(async () => ({ namespaces: [], total_documents: 0 })),
   isTauri: hoisted.mockIsTauri,
   openhumanGetConfig: hoisted.mockGetConfig,
   openhumanUpdateMemorySettings: hoisted.mockUpdateMemorySettings,
@@ -87,6 +90,17 @@ describe('MemoryDataPanel', () => {
     resolveConfigWith('balanced');
     renderWithProviders(<MemoryDataPanel />);
 
+    await waitFor(() => {
+      expect(screen.getByTestId('memory-sources')).toBeInTheDocument();
+    });
+  });
+
+  it('renders in embedded mode (embedded padding branch)', async () => {
+    resolveConfigWith('balanced');
+    renderWithProviders(<MemoryDataPanel embedded />);
+
+    // Body sections still render when embedded (exercises the embedded layout
+    // branch of the root container).
     await waitFor(() => {
       expect(screen.getByTestId('memory-sources')).toBeInTheDocument();
     });

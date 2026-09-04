@@ -1,8 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import Workbench, { workbenchIdempotencyStorageKey } from './Workbench';
+import { setActiveUserId } from '../store/userScopedStorage';
+import Workbench, {
+  setWorkbenchIntentStorageAdapter,
+  workbenchIdempotencyStorageKey,
+} from './Workbench';
 
 const mockClient = vi.hoisted(() => ({
   listAlerts: vi.fn(),
@@ -10,6 +14,8 @@ const mockClient = vi.hoisted(() => ({
   resolveAlert: vi.fn(),
   getAlertTrace: vi.fn(),
 }));
+
+const ACTIVE_USER = 'workbench-user-a';
 
 vi.mock('../services/api/coreWorkbenchClient', () => ({
   createCoreWorkbenchClient: () => mockClient,
@@ -141,8 +147,12 @@ const baseTrace = {
 };
 
 function storedIdempotencyKeys() {
-  const raw = window.localStorage.getItem(workbenchIdempotencyStorageKey);
+  const raw = window.localStorage.getItem(physicalStorageKey());
   return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+}
+
+function physicalStorageKey(userId = ACTIVE_USER) {
+  return `${userId}:${workbenchIdempotencyStorageKey}`;
 }
 
 function deferred<T>() {
@@ -155,13 +165,22 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+type AlertList = Array<Omit<typeof baseAlert, 'id' | 'summary'> & { id: string; summary: string }>;
+
 describe('Workbench', () => {
   beforeEach(() => {
     mockClient.listAlerts.mockReset();
     mockClient.ackAlert.mockReset();
     mockClient.resolveAlert.mockReset();
     mockClient.getAlertTrace.mockReset();
+    setWorkbenchIntentStorageAdapter(null);
+    setActiveUserId(ACTIVE_USER);
     window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    setWorkbenchIntentStorageAdapter(null);
+    setActiveUserId(null);
   });
 
   it('renders alerts with operational context', async () => {
@@ -214,6 +233,28 @@ describe('Workbench', () => {
     );
   });
 
+  it('keeps newer alert-list results when an older filter request resolves late', async () => {
+    const first = deferred<AlertList>();
+    const second = deferred<AlertList>();
+    mockClient.listAlerts.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+
+    await user.selectOptions(screen.getByLabelText('Alert severity filter'), 'high');
+
+    await waitFor(() =>
+      expect(mockClient.listAlerts).toHaveBeenNthCalledWith(2, { status: 'open', severity: 'high' })
+    );
+
+    second.resolve([{ ...baseAlert, id: 'alert-2', summary: 'Milo missed a check-in.' }]);
+    expect(await screen.findByText('Milo missed a check-in.')).toBeInTheDocument();
+
+    first.resolve([baseAlert]);
+    await waitFor(() => expect(screen.getByText('Milo missed a check-in.')).toBeInTheDocument());
+    expect(screen.queryByText('Buddy missed a check-in.')).not.toBeInTheDocument();
+  });
+
   it('persists ack idempotency keys across retry and remount', async () => {
     mockClient.listAlerts.mockResolvedValue([baseAlert]);
     mockClient.ackAlert.mockRejectedValue(new Error('temporary failure'));
@@ -235,6 +276,72 @@ describe('Workbench', () => {
 
     expect(mockClient.ackAlert.mock.calls[1]?.[1]?.idempotencyKey).toBe(firstKey);
     expect(storedIdempotencyKeys()['ack:alert-1']).toBe(firstKey);
+  });
+
+  it('fails closed when there is no active user for scoped retry-key storage', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    setActiveUserId(null);
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
+
+    expect(mockClient.ackAlert).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(
+        'Local retry-key storage is unavailable. Decision blocked until storage works so retries stay idempotent.'
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('fails closed when retry-key persistence cannot verify durable storage', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    setWorkbenchIntentStorageAdapter({
+      getItem: () => null,
+      setItem: () => undefined,
+      removeItem: () => undefined,
+    });
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
+
+    expect(mockClient.ackAlert).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(
+        'Local retry-key storage is unavailable. Decision blocked until storage works so retries stay idempotent.'
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('does not share retry keys across active users', async () => {
+    mockClient.listAlerts.mockResolvedValue([baseAlert]);
+    mockClient.ackAlert.mockRejectedValue(new Error('temporary failure'));
+    const user = userEvent.setup();
+
+    const firstRender = render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
+    await waitFor(() => expect(mockClient.ackAlert).toHaveBeenCalledTimes(1));
+    const firstKey = mockClient.ackAlert.mock.calls[0]?.[1]?.idempotencyKey as string;
+    expect(window.localStorage.getItem(physicalStorageKey(ACTIVE_USER))).toContain(firstKey);
+
+    firstRender.unmount();
+    setActiveUserId('workbench-user-b');
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
+    await waitFor(() => expect(mockClient.ackAlert).toHaveBeenCalledTimes(2));
+
+    const secondKey = mockClient.ackAlert.mock.calls[1]?.[1]?.idempotencyKey as string;
+    expect(secondKey).not.toBe(firstKey);
+    expect(window.localStorage.getItem(physicalStorageKey('workbench-user-b'))).toContain(
+      secondKey
+    );
+    expect(window.localStorage.getItem(physicalStorageKey(ACTIVE_USER))).toContain(firstKey);
   });
 
   it('clears action keys only after success and refreshes visible alert state', async () => {
@@ -262,7 +369,7 @@ describe('Workbench', () => {
     expect(await screen.findByText('acknowledged')).toBeInTheDocument();
   });
 
-  it('preserves existing context when an action response is plain and refresh fails', async () => {
+  it('preserves existing context when an action response omits context and refresh fails', async () => {
     const plainAcknowledged = {
       id: baseAlert.id,
       alert_type: baseAlert.alert_type,
@@ -279,6 +386,40 @@ describe('Workbench', () => {
       .mockResolvedValueOnce([baseAlert])
       .mockRejectedValueOnce(new Error('refresh failed'));
     mockClient.ackAlert.mockResolvedValueOnce(plainAcknowledged);
+    const user = userEvent.setup();
+
+    render(<Workbench />);
+    await screen.findByText('Buddy missed a check-in.');
+    await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
+
+    await waitFor(() => expect(mockClient.ackAlert).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockClient.listAlerts).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('acknowledged')).toBeInTheDocument();
+    expect(screen.getByText('Mochi')).toBeInTheDocument();
+    expect(screen.getByText('Daily check-in')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Operational context unavailable for this alert.')
+    ).not.toBeInTheDocument();
+  });
+
+  it('preserves existing context when an action response returns context null and refresh fails', async () => {
+    const nullContextAcknowledged = {
+      id: baseAlert.id,
+      alert_type: baseAlert.alert_type,
+      severity: baseAlert.severity,
+      related_type: baseAlert.related_type,
+      related_id: baseAlert.related_id,
+      status: 'acknowledged',
+      summary: baseAlert.summary,
+      created_at: baseAlert.created_at,
+      acknowledged_at: '2026-06-01T01:00:00Z',
+      resolved_at: null,
+      context: null,
+    } as const;
+    mockClient.listAlerts
+      .mockResolvedValueOnce([baseAlert])
+      .mockRejectedValueOnce(new Error('refresh failed'));
+    mockClient.ackAlert.mockResolvedValueOnce(nullContextAcknowledged);
     const user = userEvent.setup();
 
     render(<Workbench />);

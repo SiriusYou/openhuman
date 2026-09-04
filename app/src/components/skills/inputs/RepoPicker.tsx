@@ -2,7 +2,7 @@
 // user's Composio-connected GitHub account via
 // `composio_execute(GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER)`.
 //
-// Used by SkillsRunnerBody for any skill input whose name matches the
+// Used by WorkflowRunnerBody for any skill input whose name matches the
 // repo-shaped conventions (`repo`, `repository`, `upstream`, `fork`,
 // `fork_owner`). Replaces the plain text input with this picker so users
 // don't have to type `owner/name` manually for skills like
@@ -13,17 +13,17 @@
 // identically to the Settings → Dev Workflow panel. The original panel
 // stays in place with its own inline implementation; this is a parallel
 // component for the generic Skills Runner surface.
-
 import createDebug from 'debug';
 import { useCallback, useEffect, useState } from 'react';
 
 import { execute as composioExecute, listConnections } from '../../../lib/composio/composioApi';
 import { useT } from '../../../lib/i18n/I18nContext';
+import { NativeSelect } from '../../ui';
 
 const log = createDebug('app:skills:RepoPicker');
 
 /** Shape returned by `openhuman.composio_list_github_repos`. */
-export interface ComposioGhRepo {
+interface ComposioGhRepo {
   owner: string;
   repo: string;
   fullName: string;
@@ -32,7 +32,7 @@ export interface ComposioGhRepo {
   htmlUrl?: string;
 }
 
-export interface RepoPickerProps {
+interface RepoPickerProps {
   /** Currently-selected `owner/name` (or empty). */
   value: string;
   /** Fires with the picked `owner/name`. */
@@ -59,17 +59,14 @@ const RepoPicker = ({ value, onChange, id, placeholder, disabled }: RepoPickerPr
       // Step 1: Is GitHub connected via Composio?
       const conns = await listConnections();
       const ghConn = conns.connections?.find(
-        (c) =>
+        c =>
           c.toolkit.toLowerCase().includes('github') &&
           (c.status === 'ACTIVE' || c.status === 'CONNECTED')
       );
       if (!ghConn) throw new Error('NOT_CONNECTED');
 
       // Step 2: Fetch repos.
-      const res = await composioExecute(
-        'GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER',
-        {}
-      );
+      const res = await composioExecute('GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER', {});
       if (!res.successful) throw new Error(res.error ?? 'Failed to fetch repositories');
 
       // Step 3: Parse — GitHub API returns an array of repo objects;
@@ -79,7 +76,7 @@ const RepoPicker = ({ value, onChange, id, placeholder, disabled }: RepoPickerPr
         ? raw
         : ((raw as Record<string, unknown>)?.repositories ?? []);
       const list: ComposioGhRepo[] = Array.isArray(items)
-        ? (items as Record<string, unknown>[]).map((r) => ({
+        ? (items as Record<string, unknown>[]).map(r => ({
             owner: String((r.owner as Record<string, unknown>)?.login ?? r.owner ?? ''),
             repo: String(r.name ?? ''),
             fullName: String(
@@ -112,35 +109,27 @@ const RepoPicker = ({ value, onChange, id, placeholder, disabled }: RepoPickerPr
     void loadRepos();
   }, [loadRepos]);
 
-  // Common <select> classes — match the plain inputs in SkillsRunnerBody
-  // so the picker visually blends with the surrounding form.
-  const selectClass =
-    'w-full rounded border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-800 px-3 py-2 text-sm text-stone-900 dark:text-stone-100';
-
   return (
     <div>
-      <select
+      <NativeSelect
         id={id}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={e => onChange(e.target.value)}
         disabled={disabled || loading || error !== null}
-        className={selectClass}
-      >
+        className="w-full">
         <option value="">
           {loading
             ? t('settings.skillsRunner.repoPicker.loading')
             : (placeholder ?? t('settings.skillsRunner.repoPicker.select'))}
         </option>
-        {repos.map((r) => (
+        {repos.map(r => (
           <option key={r.fullName} value={r.fullName}>
             {r.fullName}
             {r.private ? ` ${t('settings.skillsRunner.repoPicker.privateTag')}` : ''}
           </option>
         ))}
-      </select>
-      {error && (
-        <p className="text-xs text-red-600 dark:text-red-400 mt-1">{error}</p>
-      )}
+      </NativeSelect>
+      {error && <p className="text-xs text-coral-500 mt-1">{error}</p>}
     </div>
   );
 };

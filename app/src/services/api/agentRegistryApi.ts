@@ -17,6 +17,10 @@ const log = debug('agentRegistryApi');
 
 export type AgentRegistrySource = 'default' | 'custom';
 
+export interface AgentSubagentPolicy {
+  allowlist?: string[];
+}
+
 /** Mirror of the Rust `AgentRegistryEntry` (snake_case on the wire). */
 export interface AgentRegistryEntry {
   id: string;
@@ -28,13 +32,13 @@ export interface AgentRegistryEntry {
   system_prompt?: string | null;
   tool_allowlist?: string[];
   tool_denylist?: string[];
-  subagents?: string[];
+  subagents?: AgentSubagentPolicy;
   tags?: string[];
   metadata?: unknown;
 }
 
 /** Fields accepted when creating a custom agent. */
-export interface CreateCustomAgentInput {
+interface CreateCustomAgentInput {
   id: string;
   name: string;
   description: string;
@@ -43,7 +47,7 @@ export interface CreateCustomAgentInput {
   system_prompt?: string | null;
   tool_allowlist?: string[];
   tool_denylist?: string[];
-  subagents?: string[];
+  subagents?: AgentSubagentPolicy;
   tags?: string[];
 }
 
@@ -54,7 +58,7 @@ export interface AgentToolInfo {
 }
 
 /** Patch for `update` — any omitted field is left unchanged. */
-export interface UpdateAgentInput {
+interface UpdateAgentInput {
   name?: string;
   description?: string;
   enabled?: boolean;
@@ -62,7 +66,7 @@ export interface UpdateAgentInput {
   system_prompt?: string | null;
   tool_allowlist?: string[];
   tool_denylist?: string[];
-  subagents?: string[];
+  subagents?: AgentSubagentPolicy;
   tags?: string[];
 }
 

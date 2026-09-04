@@ -1,3 +1,6 @@
+worktrees/*
+!worktrees/.gitkeep
+
 # Workflow docs (local only)
 workflow
 create_issue
@@ -71,7 +74,10 @@ app/src-tauri/runtime-skill-*
 .mypy_cache
 .ruff_cache
 .kotlin
-.cargo
+# Keep .cargo/ untracked (local per-machine config + credentials) EXCEPT the
+# shared, opt-in repo config that documents faster-linker setup.
+.cargo/*
+!.cargo/config.toml
 
 CLAUDE.local.md
 
@@ -90,6 +96,8 @@ tauri.key
 tauri.key.pub
 /target/
 src-tauri/target/
+app/src-tauri-mobile/gen/
+app/src-tauri-mobile/target/
 .target-codex/
 
 workflow
@@ -113,3 +121,24 @@ test-map.md
 .claude/skills/
 .codex-tmp
 *.enc
+
+# Apple signing and App Store Connect credentials
+AuthKey_*.p8
+*.mobileprovision
+*.certSigningRequest
+*.p12
+distribution.cer
+
+# Release note previews
+CHANGELOG.preview.md
+*.profraw
+*.diff
+
+.claude/worktrees/
+
+# Python bytecode from scripts/dep-sim.py
+__pycache__/
+
+# Coverage/diff-cover artifacts (generated locally, never shipped)
+lcov*.info
+diff-coverage.md

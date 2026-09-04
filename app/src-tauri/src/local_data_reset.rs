@@ -22,18 +22,25 @@ use crate::reset_reboot_schedule;
 /// 3. Shut down the embedded core. `CoreProcessHandle::shutdown` cancels
 ///    the cancellation token and awaits the tokio task, which drops the
 ///    SQLite pool, log writer, etc. — releasing every Windows file handle.
-/// 4. Remove the three paths (current data dir, default data dir, active
-///    workspace marker) from this process. Missing entries are non-fatal.
+/// 4. Remove the **active user's** slice from this process: the current data
+///    dir plus the two shared root markers (`active_workspace.toml` and
+///    `active_user.toml`). The shared root `~/.openhuman` is left in place so
+///    other users' `users/<id>` subtrees survive. Missing entries are
+///    non-fatal.
 /// 5. Restart the embedded core via `ensure_running`.
 ///
-/// Returns `Ok(())` only when the core is back up and the directories are
-/// gone (or were already absent). Any step's `Err` short-circuits and
+/// Returns `Ok(())` only when the core is back up and the active user's data
+/// is gone (or was already absent). Any step's `Err` short-circuits and
 /// surfaces to the UI, which already renders the message as a toast.
 #[tauri::command]
 pub async fn reset_local_data(
     state: tauri::State<'_, core_process::CoreProcessHandle>,
+    user_id: Option<String>,
 ) -> Result<(), String> {
-    log::info!("[core] reset_local_data: command invoked from frontend");
+    log::info!(
+        "[core] reset_local_data: command invoked from frontend (explicit_user_id={})",
+        user_id.is_some()
+    );
 
     // ── 1. Ask the core for the paths it would remove ────────────────────
     //
@@ -41,12 +48,21 @@ pub async fn reset_local_data(
     // loading, the workspace marker, and the staging-vs-prod default-dir
     // suffix). Resolve while the core is still up so we don't duplicate
     // that logic here.
-    let paths = fetch_data_paths().await?;
+    //
+    // `user_id` is forwarded so the core resolves the signed-in user's
+    // `users/<id>` slice directly. The GUI clear flow signs the user out
+    // (clearing `active_user.toml`) *before* invoking us, so a marker-based
+    // resolution would fall back to the pre-login `users/local` dir and delete
+    // an empty directory — leaving the real user's memory/history intact
+    // (issue #4950). When absent (pre-login recovery), the core falls back to
+    // the marker as before.
+    let paths = fetch_data_paths(user_id).await?;
     log::info!(
-        "[core] reset_local_data: paths resolved current={} default={} marker={}",
+        "[core] reset_local_data: paths resolved current={} default={} workspace_marker={} user_marker={}",
         paths.current_openhuman_dir.display(),
         paths.default_openhuman_dir.display(),
-        paths.active_workspace_marker_path.display()
+        paths.active_workspace_marker_path.display(),
+        paths.active_user_marker_path.display()
     );
 
     // ── 2. Acquire the restart lock ─────────────────────────────────────
@@ -85,20 +101,25 @@ pub async fn reset_local_data(
     // `?` — we must still restart the embedded core in step 5 so the app
     // doesn't end up with the sidecar dead. The original delete error is
     // surfaced after the restart attempt.
+    //
+    // Scoping (issue: "Clear App Data" wiped every user, not just the active
+    // one): all user data lives under `~/.openhuman/users/<id>` and the shared
+    // root `~/.openhuman` holds every user's subtree. So we remove ONLY:
+    //   * the two shared root-level marker files — `active_workspace.toml`
+    //     (workspace pointer) and `active_user.toml` (sign-out), and
+    //   * the active user's own directory (`current_openhuman_dir`).
+    // We must NOT `remove_dir_all` the shared root `default_openhuman_dir`:
+    // that destroyed sibling accounts' `users/<other>` data. Removing the
+    // active-user marker is what now signs the user out (previously this only
+    // happened as a side effect of nuking the root).
     let delete_result: Result<(), String> = async {
         remove_path_if_exists(
             &paths.active_workspace_marker_path,
             "active workspace marker",
         )
         .await?;
+        remove_path_if_exists(&paths.active_user_marker_path, "active user marker").await?;
         remove_dir_if_exists(&paths.current_openhuman_dir, "current openhuman dir").await?;
-        if paths.default_openhuman_dir != paths.current_openhuman_dir {
-            remove_dir_if_exists(&paths.default_openhuman_dir, "default openhuman dir").await?;
-        } else {
-            log::debug!(
-                "[core] reset_local_data: default dir == current dir; already removed above"
-            );
-        }
         Ok(())
     }
     .await;
@@ -130,8 +151,14 @@ pub async fn reset_local_data(
 /// Resolved data paths returned by `config_get_data_paths`.
 struct ResolvedDataPaths {
     current_openhuman_dir: std::path::PathBuf,
+    /// The shared root `~/.openhuman`. Retained for logging/diagnostics only —
+    /// the reset must NOT delete it, because it holds every user's
+    /// `users/<id>` subtree (deleting it wiped sibling accounts' data).
     default_openhuman_dir: std::path::PathBuf,
     active_workspace_marker_path: std::path::PathBuf,
+    /// `~/.openhuman/active_user.toml` — the shared active-user marker. Removed
+    /// to sign the current user out so the next launch boots pre-login.
+    active_user_marker_path: std::path::PathBuf,
 }
 
 fn is_windows_file_lock_raw_os_error(raw_os_error: Option<i32>) -> bool {
@@ -264,13 +291,24 @@ fn schedule_reboot_delete_or_describe(
 }
 
 /// Call the core's `config_get_data_paths` RPC and parse the response.
-async fn fetch_data_paths() -> Result<ResolvedDataPaths, String> {
+///
+/// When `user_id` is `Some`, the core resolves the target dir from that id
+/// (`users/<id>`) rather than the active-user marker — see the note on
+/// `reset_local_data` and issue #4950. Passing `null` preserves the legacy
+/// marker-based resolution for pre-login recovery.
+async fn fetch_data_paths(user_id: Option<String>) -> Result<ResolvedDataPaths, String> {
     let url = crate::core_rpc::core_rpc_url_value();
+    // Only include `user_id` when present so the pre-login recovery path sends
+    // the exact same empty `params: {}` it always has (marker-based resolution).
+    let mut params = serde_json::Map::new();
+    if let Some(id) = user_id {
+        params.insert("user_id".to_string(), serde_json::Value::String(id));
+    }
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "openhuman.config_get_data_paths",
-        "params": {}
+        "params": serde_json::Value::Object(params),
     });
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -306,10 +344,15 @@ async fn fetch_data_paths() -> Result<ResolvedDataPaths, String> {
         .get("active_workspace_marker_path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "config_get_data_paths missing active_workspace_marker_path".to_string())?;
+    let user_marker = inner
+        .get("active_user_marker_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "config_get_data_paths missing active_user_marker_path".to_string())?;
     Ok(ResolvedDataPaths {
         current_openhuman_dir: std::path::PathBuf::from(current),
         default_openhuman_dir: std::path::PathBuf::from(default),
         active_workspace_marker_path: std::path::PathBuf::from(marker),
+        active_user_marker_path: std::path::PathBuf::from(user_marker),
     })
 }
 

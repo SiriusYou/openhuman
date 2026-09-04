@@ -25,7 +25,7 @@ async function resetMock(): Promise<void> {
 }
 
 async function gotoRewards(page: import('@playwright/test').Page, userId: string): Promise<void> {
-  await bootAuthenticatedPage(page, userId, '/rewards');
+  await bootAuthenticatedPage(page, userId, '/rewards?view=main');
   await waitForAppReady(page);
   await dismissWalkthroughIfPresent(page);
   await expect(page.getByText('Your Progress')).toBeVisible();
@@ -55,8 +55,8 @@ test.describe('Rewards Progression Persistence', () => {
     await setMockBehavior('rewardsScenario', 'high_usage');
     await gotoRewards(page, 'pw-rewards-progress-metrics');
 
-    await expect(page.getByText('Current streak')).toBeVisible();
-    await expect(page.getByText('14')).toBeVisible();
+    await expect(page.getByText('Activity streak')).toBeVisible();
+    await expect(page.getByText('14 days')).toBeVisible();
     await expect(page.getByText('Cumulative tokens')).toBeVisible();
     await expect(page.getByText('12,500,000')).toBeVisible();
   });
@@ -67,8 +67,8 @@ test.describe('Rewards Progression Persistence', () => {
     await setMockBehavior('rewardsLastSyncedAt', '2026-04-28T09:00:00.000Z');
     await gotoRewards(page, 'pw-rewards-progress-persist');
 
-    await expect(page.getByText('Current streak')).toBeVisible();
-    await expect(page.getByText('14')).toBeVisible();
+    await expect(page.getByText('Activity streak')).toBeVisible();
+    await expect(page.getByText('14 days')).toBeVisible();
     await expect(page.getByText('12,500,000')).toBeVisible();
 
     await setMockBehavior('rewardsScenario', 'post_restart');
@@ -76,14 +76,14 @@ test.describe('Rewards Progression Persistence', () => {
 
     await page.goto('/#/home');
     await waitForAppReady(page);
-    await page.goto('/#/rewards');
+    await page.goto('/#/rewards?view=main');
     await waitForAppReady(page);
     await dismissWalkthroughIfPresent(page);
     await expect(page.getByText('Your Progress')).toBeVisible();
 
     await expect(page.getByText('3 of 3 achievements unlocked')).toBeVisible();
-    await expect(page.getByText('Current streak')).toBeVisible();
-    await expect(page.getByText('14')).toBeVisible();
+    await expect(page.getByText('Activity streak')).toBeVisible();
+    await expect(page.getByText('14 days')).toBeVisible();
     await expect(page.getByText('12,500,000')).toBeVisible();
     await expect.poll(() => rewardsRequestCount()).toBeGreaterThanOrEqual(2);
   });

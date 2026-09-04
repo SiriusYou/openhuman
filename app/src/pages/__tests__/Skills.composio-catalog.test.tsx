@@ -7,8 +7,11 @@ import Skills from '../Skills';
 
 let composioRefresh = vi.fn();
 let composioError: string | null = null;
+let composioLoading = false;
 let composioToolkits: string[] = [];
+let composioCatalogByToolkit = new Map();
 let composioConnectionByToolkit = new Map();
+let composioConnectionsByToolkitOverride: Map<string, unknown[]> | null = null;
 let sessionToken = 'jwt-abc';
 let composioModeStatus = { result: { mode: 'backend', api_key_set: true }, logs: [] };
 // CodeRabbit on #2361: failure-path coverage for the agent-ready
@@ -36,9 +39,13 @@ vi.mock('../../lib/skills/hooks', () => ({
 vi.mock('../../lib/composio/hooks', () => ({
   useComposioIntegrations: () => ({
     toolkits: composioToolkits,
+    catalogByToolkit: composioCatalogByToolkit,
     connectionByToolkit: composioConnectionByToolkit,
+    connectionsByToolkit:
+      composioConnectionsByToolkitOverride ??
+      new Map(Array.from(composioConnectionByToolkit.entries()).map(([k, v]) => [k, [v]])),
     refresh: composioRefresh,
-    loading: false,
+    loading: composioLoading,
     error: composioError,
   }),
   // Issue #2283 / CodeRabbit on #2361: Skills.tsx consumes
@@ -59,28 +66,32 @@ vi.mock('../../utils/tauriCommands', async () => {
   const actual = await vi.importActual<typeof import('../../utils/tauriCommands')>(
     '../../utils/tauriCommands'
   );
-  return {
-    ...actual,
-    openhumanComposioGetMode: vi.fn(async () => composioModeStatus),
-    subconsciousEscalationsDismiss: vi.fn(),
-  };
+  return { ...actual, openhumanComposioGetMode: vi.fn(async () => composioModeStatus) };
 });
 
 describe('Skills page — Composio catalog fallback', () => {
   beforeEach(() => {
     composioRefresh = vi.fn();
     composioError = null;
+    composioLoading = false;
     composioToolkits = [];
+    composioCatalogByToolkit = new Map();
     composioConnectionByToolkit = new Map();
+    composioConnectionsByToolkitOverride = null;
     sessionToken = 'jwt-abc';
     composioModeStatus = { result: { mode: 'backend', api_key_set: true }, logs: [] };
     agentReadyState = { agentReady: new Set<string>(), loading: true, error: null };
   });
 
-  it('shows known composio integrations in the integrations icon grid when the live toolkit list is empty', () => {
-    renderWithProviders(<Skills />, { initialEntries: ['/skills'] });
+  function openAppsTab() {
+    fireEvent.click(screen.getByTestId('two-pane-nav-composio'));
+  }
 
-    expect(screen.getByRole('heading', { name: 'Composio Integrations' })).toBeInTheDocument();
+  it('shows known composio integrations in the integrations icon grid when the live toolkit list is empty', () => {
+    renderWithProviders(<Skills />, { initialEntries: ['/connections'] });
+    openAppsTab();
+
+    expect(screen.getByTestId('composio-integrations-card')).toBeInTheDocument();
     expect(screen.getByText('Discord')).toBeInTheDocument();
     expect(screen.getByText('Google Calendar')).toBeInTheDocument();
     expect(screen.getByText('Google Drive')).toBeInTheDocument();
@@ -96,33 +107,137 @@ describe('Skills page — Composio catalog fallback', () => {
     // Scope to the Integrations section so the assertion still catches a
     // missing Composio Zoom tile even though the Meeting bots card also
     // renders a "Zoom" entry on the same page.
-    const integrationsSection = screen
-      .getByRole('heading', { name: 'Composio Integrations' })
-      .closest('.rounded-2xl');
-    expect(integrationsSection).not.toBeNull();
+    const integrationsSection = screen.getByTestId('composio-integrations-card');
     expect(within(integrationsSection as HTMLElement).getByText('Zoom')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Other' })).not.toBeInTheDocument();
+  });
+
+  it('renders integrations from the live dynamic catalog when the backend provides one', () => {
+    // When the backend ships the dynamic catalog, the grid is sourced from
+    // it (names/categories from the entry), not the hardcoded fallback list.
+    composioCatalogByToolkit = new Map([
+      [
+        'acme_crm',
+        { slug: 'acme_crm', name: 'Acme CRM Dynamic', categories: ['crm'], enabled: true },
+      ],
+      [
+        'gmail',
+        { slug: 'gmail', name: 'Gmail Dynamic', categories: ['productivity'], enabled: true },
+      ],
+    ]);
+
+    renderWithProviders(<Skills />, { initialEntries: ['/connections'] });
+    openAppsTab();
+
+    const integrationsSection = screen.getByTestId('composio-integrations-card');
+    // Names come from the dynamic catalog entry, overriding local metadata.
+    expect(
+      within(integrationsSection as HTMLElement).getByText('Acme CRM Dynamic')
+    ).toBeInTheDocument();
+    expect(
+      within(integrationsSection as HTMLElement).getByText('Gmail Dynamic')
+    ).toBeInTheDocument();
+    // A hardcoded-only toolkit absent from the dynamic catalog must NOT
+    // appear — proving the grid is driven by the backend, not KNOWN_*.
+    expect(
+      within(integrationsSection as HTMLElement).queryByText('Discord')
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows a loading skeleton (not the hardcoded list) while the catalog is still being fetched', () => {
+    // #3933: during the in-flight fetch we must NOT flash the hardcoded
+    // KNOWN_COMPOSIO_TOOLKITS list. Until the backend catalog lands the grid
+    // renders a loading skeleton instead.
+    composioLoading = true;
+    composioCatalogByToolkit = new Map();
+    composioToolkits = [];
+
+    renderWithProviders(<Skills />, { initialEntries: ['/connections'] });
+    openAppsTab();
+
+    const integrationsSection = screen.getByTestId('composio-integrations-card');
+    // Loading skeleton is shown…
+    expect(
+      within(integrationsSection as HTMLElement).getByTestId('composio-integrations-loading')
+    ).toBeInTheDocument();
+    expect(
+      within(integrationsSection as HTMLElement).queryAllByTestId('composio-skeleton-tile').length
+    ).toBeGreaterThan(0);
+    // …and none of the hardcoded fallback toolkits are rendered yet.
+    expect(
+      within(integrationsSection as HTMLElement).queryByText('Discord')
+    ).not.toBeInTheDocument();
+    expect(within(integrationsSection as HTMLElement).queryByText('Gmail')).not.toBeInTheDocument();
+    expect(within(integrationsSection as HTMLElement).queryByText('Slack')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the hardcoded list once the fetch finishes without a dynamic catalog', () => {
+    // The hardcoded list is a *post-fetch* fallback: when loading completes and
+    // the backend supplied no catalog (a failure or an older core), the grid
+    // must still render so it is never empty.
+    composioLoading = false;
+    composioCatalogByToolkit = new Map();
+
+    renderWithProviders(<Skills />, { initialEntries: ['/connections'] });
+    openAppsTab();
+
+    const integrationsSection = screen.getByTestId('composio-integrations-card');
+    expect(
+      within(integrationsSection as HTMLElement).queryByTestId('composio-integrations-loading')
+    ).not.toBeInTheDocument();
+    expect(within(integrationsSection as HTMLElement).getByText('Discord')).toBeInTheDocument();
+    expect(within(integrationsSection as HTMLElement).getByText('Gmail')).toBeInTheDocument();
+  });
+
+  it('shows the dynamic catalog (not the skeleton) even if a fetch is still in flight once entries exist', () => {
+    // Defensive: if catalog entries are already present we render them rather
+    // than the skeleton, even should `loading` still be true for a poll cycle.
+    composioLoading = true;
+    composioCatalogByToolkit = new Map([
+      [
+        'gmail',
+        { slug: 'gmail', name: 'Gmail Dynamic', categories: ['productivity'], enabled: true },
+      ],
+    ]);
+
+    renderWithProviders(<Skills />, { initialEntries: ['/connections'] });
+    openAppsTab();
+
+    const integrationsSection = screen.getByTestId('composio-integrations-card');
+    expect(
+      within(integrationsSection as HTMLElement).queryByTestId('composio-integrations-loading')
+    ).not.toBeInTheDocument();
+    expect(
+      within(integrationsSection as HTMLElement).getByText('Gmail Dynamic')
+    ).toBeInTheDocument();
+    // Hardcoded-only toolkit absent from the dynamic catalog stays hidden.
+    expect(
+      within(integrationsSection as HTMLElement).queryByText('Discord')
+    ).not.toBeInTheDocument();
   });
 
   it('shows a stale/error state instead of disconnected toolkits when composio loading fails', () => {
     composioError = 'Backend unavailable';
 
-    renderWithProviders(<Skills />, { initialEntries: ['/skills'] });
+    renderWithProviders(<Skills />, { initialEntries: ['/connections'] });
+    openAppsTab();
 
-    expect(screen.getByText('Connections are showing stale status')).toBeInTheDocument();
-    expect(screen.getByText('Backend unavailable')).toBeInTheDocument();
+    // The page-level "stale status" alert moved into the shell's NoticeCenter
+    // (it is account state, not state about this screen), so it is asserted
+    // there — see `components/notices/__tests__/NoticeCenter.test.tsx`. What
+    // stays local, and is what this test is about, is the per-row degradation.
 
-    const integrationsSection = screen
-      .getByRole('heading', { name: 'Composio Integrations' })
-      .closest('.rounded-2xl');
-    expect(integrationsSection).not.toBeNull();
+    const integrationsSection = screen.getByTestId('composio-integrations-card');
     const gmailTile = within(integrationsSection as HTMLElement).getByRole('button', {
       name: /Gmail.*Status unavailable/i,
     });
     expect(gmailTile).toBeInTheDocument();
     expect(within(gmailTile).getByText('Status unavailable')).toBeInTheDocument();
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Try again' })[0]);
+    // The page-level "Try again" button belonged to the stale-status alert that
+    // moved to NoticeCenter. Retry from a degraded tile still refreshes, which
+    // is the affordance that stayed on this screen.
+    fireEvent.click(gmailTile);
     expect(composioRefresh).toHaveBeenCalledTimes(1);
   });
 
@@ -132,12 +247,10 @@ describe('Skills page — Composio catalog fallback', () => {
       ['gmail', { id: 'ca_expired', toolkit: 'gmail', status: 'EXPIRED' }],
     ]);
 
-    renderWithProviders(<Skills />, { initialEntries: ['/skills'] });
+    renderWithProviders(<Skills />, { initialEntries: ['/connections'] });
+    openAppsTab();
 
-    const integrationsSection = screen
-      .getByRole('heading', { name: 'Composio Integrations' })
-      .closest('.rounded-2xl');
-    expect(integrationsSection).not.toBeNull();
+    const integrationsSection = screen.getByTestId('composio-integrations-card');
     const gmailTile = within(integrationsSection as HTMLElement).getByRole('button', {
       name: /Gmail.*Auth expired.*Reconnect/i,
     });
@@ -150,6 +263,29 @@ describe('Skills page — Composio catalog fallback', () => {
     expect(screen.getByRole('button', { name: /Reconnect Gmail/i })).toBeInTheDocument();
   });
 
+  it('shows a multi-account count badge when a toolkit has more than one active connection', () => {
+    composioToolkits = ['gmail'];
+    composioConnectionByToolkit = new Map([
+      ['gmail', { id: 'ca_1', toolkit: 'gmail', status: 'ACTIVE' }],
+    ]);
+    composioConnectionsByToolkitOverride = new Map([
+      [
+        'gmail',
+        [
+          { id: 'ca_1', toolkit: 'gmail', status: 'ACTIVE' },
+          { id: 'ca_2', toolkit: 'gmail', status: 'ACTIVE' },
+        ],
+      ],
+    ]);
+    agentReadyState = { agentReady: new Set(['gmail']), loading: false, error: null };
+
+    renderWithProviders(<Skills />, { initialEntries: ['/connections'] });
+    openAppsTab();
+
+    const integrationsSection = screen.getByTestId('composio-integrations-card');
+    expect(within(integrationsSection as HTMLElement).getByText('2')).toBeInTheDocument();
+  });
+
   it('does not flood the integrations grid with Preview badges when the agent-ready RPC fails', () => {
     // CodeRabbit on #2361: when the agent-ready hook errors out
     // (loading=false, agentReady=empty, error set), we must NOT
@@ -160,12 +296,10 @@ describe('Skills page — Composio catalog fallback', () => {
     // misrepresenting the agent surface.
     agentReadyState = { agentReady: new Set<string>(), loading: false, error: 'rpc unavailable' };
 
-    renderWithProviders(<Skills />, { initialEntries: ['/skills'] });
+    renderWithProviders(<Skills />, { initialEntries: ['/connections'] });
+    openAppsTab();
 
-    const integrationsSection = screen
-      .getByRole('heading', { name: 'Composio Integrations' })
-      .closest('.rounded-2xl');
-    expect(integrationsSection).not.toBeNull();
+    const integrationsSection = screen.getByTestId('composio-integrations-card');
     // No Preview badges anywhere in the integrations grid. The
     // badge carries a `data-testid` of the form
     // `composio-preview-badge-<slug>`; absence means we degraded
@@ -183,12 +317,10 @@ describe('Skills page — Composio catalog fallback', () => {
     ]);
     agentReadyState = { agentReady: new Set<string>(['gmail']), loading: false, error: null };
 
-    renderWithProviders(<Skills />, { initialEntries: ['/skills'] });
+    renderWithProviders(<Skills />, { initialEntries: ['/connections'] });
+    openAppsTab();
 
-    const integrationsSection = screen
-      .getByRole('heading', { name: 'Composio Integrations' })
-      .closest('.rounded-2xl');
-    expect(integrationsSection).not.toBeNull();
+    const integrationsSection = screen.getByTestId('composio-integrations-card');
     const zohoTile = within(integrationsSection as HTMLElement).getByRole('button', {
       name: /Zoho Mail.*Preview/i,
     });
@@ -207,7 +339,8 @@ describe('Skills page — Composio catalog fallback', () => {
     sessionToken = 'header.payload.local';
     composioModeStatus = { result: { mode: 'direct', api_key_set: false }, logs: [] };
 
-    renderWithProviders(<Skills />, { initialEntries: ['/skills'] });
+    renderWithProviders(<Skills />, { initialEntries: ['/connections'] });
+    openAppsTab();
 
     await waitFor(() => {
       expect(screen.getByText(/No Composio API Key Configured/i)).toBeInTheDocument();

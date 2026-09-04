@@ -50,7 +50,7 @@ async function openChat(page: Page): Promise<void> {
   await page.goto('/#/chat');
   await waitForAppReady(page);
   await dismissWalkthroughIfPresent(page);
-  await expect(page.getByTestId('send-message-button')).toBeVisible();
+  await expect(page.getByTestId('chat-message-input')).toBeVisible();
 }
 
 async function selectedThreadId(page: Page): Promise<string | null> {
@@ -117,7 +117,7 @@ async function waitForSocketConnected(page: Page): Promise<void> {
 async function sendMessage(page: Page, prompt: string): Promise<void> {
   await waitForSocketConnected(page);
   await dismissWalkthroughIfPresent(page);
-  await page.getByPlaceholder('Type a message...').fill(prompt);
+  await page.getByTestId('chat-message-input').fill(prompt);
   await dismissWalkthroughIfPresent(page);
   await expect(page.getByTestId('send-message-button')).toBeEnabled();
   await page.getByTestId('send-message-button').click();
@@ -163,7 +163,18 @@ test.describe('Chat Harness - Scroll Render', () => {
         column?.scrollTo({ top: nextTop, behavior: 'auto' });
       }, targetTop);
 
-      await page.waitForTimeout(500);
+      await expect
+        .poll(
+          async () =>
+            page.evaluate(expected => {
+              const column = document.querySelector(
+                'div.flex-1.overflow-y-auto.bg-\\[\\#f6f6f6\\]'
+              ) as HTMLElement | null;
+              return Math.abs((column?.scrollTop ?? 0) - expected) < 40;
+            }, targetTop),
+          { timeout: 5_000 }
+        )
+        .toBe(true);
 
       const afterScrollUp = await page.evaluate(() => {
         const column = document.querySelector(

@@ -31,7 +31,7 @@ const LOG_PREFIX = '[TelegramChannel]';
 // Types
 // ---------------------------------------------------------------------------
 
-export interface TelegramConnectOptions {
+interface TelegramConnectOptions {
   /** Bot token issued by BotFather. */
   botToken: string;
   /**
@@ -47,7 +47,7 @@ export interface TelegramConnectOptions {
   mentionOnly?: boolean;
 }
 
-export interface TelegramConnectResult {
+interface TelegramConnectResult {
   ok: boolean;
   status?: string;
   restartRequired?: boolean;
@@ -55,14 +55,14 @@ export interface TelegramConnectResult {
   error?: string;
 }
 
-export interface TelegramStatusEntry {
+interface TelegramStatusEntry {
   channelId: string;
   authMode: string;
   connected: boolean;
   hasCredentials: boolean;
 }
 
-export interface TelegramUpdate {
+interface TelegramUpdate {
   update_id: number;
   message: {
     message_id: number;
@@ -79,11 +79,34 @@ export interface TelegramUpdate {
   };
 }
 
-export interface SentMessage {
+interface SentMessage {
   method: string;
   chat_id: string | number;
   text?: string;
   [key: string]: unknown;
+}
+
+function telegramSentBody(entry: SentMessage): Record<string, unknown> {
+  return typeof entry.body === 'object' && entry.body !== null
+    ? (entry.body as Record<string, unknown>)
+    : {};
+}
+
+function normalizeTelegramSentMessage(entry: SentMessage): SentMessage {
+  const body = telegramSentBody(entry);
+  const bodyChatId = body.chat_id;
+  const bodyText = body.text;
+  const message = entry.message;
+  return {
+    ...entry,
+    chat_id:
+      entry.chat_id ??
+      (typeof bodyChatId === 'string' || typeof bodyChatId === 'number' ? bodyChatId : ''),
+    text:
+      entry.text ??
+      (typeof message === 'string' ? message : undefined) ??
+      (typeof bodyText === 'string' ? bodyText : undefined),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -194,11 +217,21 @@ export async function getTelegramChannelStatus(): Promise<TelegramStatusEntry | 
         ? ((result as Record<string, unknown>).result as TelegramStatusEntry[])
         : [];
 
-  const match = entries.find(
+  const raw = entries.find(
     (e: TelegramStatusEntry) =>
-      (e.channelId === 'telegram' || e.channel_id === 'telegram') &&
+      (e.channelId === 'telegram' || (e as Record<string, unknown>).channel_id === 'telegram') &&
       (e.authMode === 'bot_token' || (e as Record<string, unknown>).auth_mode === 'bot_token')
-  ) as TelegramStatusEntry | undefined;
+  ) as (TelegramStatusEntry & Record<string, unknown>) | undefined;
+
+  // Normalise snake_case fields that the Rust core serialises.
+  const match: TelegramStatusEntry | undefined = raw
+    ? {
+        channelId: (raw.channelId ?? raw.channel_id) as string,
+        authMode: (raw.authMode ?? raw.auth_mode) as string,
+        connected: raw.connected,
+        hasCredentials: (raw.hasCredentials ?? raw.has_credentials ?? false) as boolean,
+      }
+    : undefined;
 
   console.log(`${LOG_PREFIX} getTelegramChannelStatus: ${JSON.stringify(match ?? null)}`);
   return match ?? null;
@@ -287,17 +320,22 @@ export async function waitForTelegramReply(opts: {
         String(entry.chat_id) === String(chatId) ||
         // Some mock implementations nest the chat_id inside a request body JSON.
         String((entry as Record<string, unknown>).body_chat_id ?? '') === String(chatId);
+      const body = telegramSentBody(entry);
+      const matchesBodyChat = String(body.chat_id ?? '') === String(chatId);
 
-      if (!matchesChat) return false;
+      if (!matchesChat && !matchesBodyChat) return false;
+      const text = String(entry.text ?? entry.message ?? body.text ?? '');
+      if (!text) return false;
       if (!contains) return true;
-
-      const text = String(entry.text ?? entry.message ?? '');
       return text.includes(contains);
     });
 
     if (match) {
-      console.log(`${LOG_PREFIX} waitForTelegramReply: found match — ${JSON.stringify(match)}`);
-      return match;
+      const normalized = normalizeTelegramSentMessage(match);
+      console.log(
+        `${LOG_PREFIX} waitForTelegramReply: found match — ${JSON.stringify(normalized)}`
+      );
+      return normalized;
     }
 
     await browser.pause(300);

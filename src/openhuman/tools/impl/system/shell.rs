@@ -1,14 +1,17 @@
 use crate::openhuman::agent::host_runtime::RuntimeAdapter;
-use crate::openhuman::javascript::NodeBootstrap;
+use crate::openhuman::runtime::javascript::NodeBootstrap;
+use crate::openhuman::runtime::python::PythonBootstrap;
 use crate::openhuman::security::{AuditLogger, CommandExecutionLog, GateDecision, SecurityPolicy};
-use crate::openhuman::tools::traits::{PermissionLevel, Tool, ToolResult};
+use crate::openhuman::tools::traits::{
+    PermissionLevel, Tool, ToolCallOptions, ToolResult, ToolTimeout,
+};
 use async_trait::async_trait;
 use serde_json::json;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tinytools::ToolRunContext;
 
-/// Maximum shell command execution time before kill.
-const SHELL_TIMEOUT_SECS: u64 = 60;
 /// Maximum output size in bytes (1MB).
 const MAX_OUTPUT_BYTES: usize = 1_048_576;
 /// Environment variables safe to pass to shell commands.
@@ -50,6 +53,12 @@ pub struct ShellTool {
     /// toolchain. Non-blocking: never triggers a download for unrelated
     /// commands (we use `try_cached()`).
     node_bootstrap: Option<Arc<NodeBootstrap>>,
+    /// Optional managed Python bootstrap. Unlike Node PATH injection, Python
+    /// shell support is the primary execution surface for skills, so
+    /// Python-looking commands resolve this lazily before spawn. That keeps
+    /// `pip install foo` and `python3 -m foo` on one interpreter instead of
+    /// mixing arbitrary host `pip` and `python3` binaries.
+    python_bootstrap: Option<Arc<PythonBootstrap>>,
 }
 
 impl ShellTool {
@@ -63,6 +72,7 @@ impl ShellTool {
             runtime,
             audit,
             node_bootstrap: None,
+            python_bootstrap: None,
         }
     }
 
@@ -80,6 +90,27 @@ impl ShellTool {
             runtime,
             audit,
             node_bootstrap: Some(bootstrap),
+            python_bootstrap: None,
+        }
+    }
+
+    /// Attach managed language runtimes used by shell-invoked skills. Node is
+    /// injected only after a dedicated node/npm tool resolved it; Python is
+    /// resolved lazily for python/pip commands because shell is currently the
+    /// user-facing Python skill execution path.
+    pub fn with_language_bootstraps(
+        security: Arc<SecurityPolicy>,
+        runtime: Arc<dyn RuntimeAdapter>,
+        audit: Arc<AuditLogger>,
+        node_bootstrap: Option<Arc<NodeBootstrap>>,
+        python_bootstrap: Option<Arc<PythonBootstrap>>,
+    ) -> Self {
+        Self {
+            security,
+            runtime,
+            audit,
+            node_bootstrap,
+            python_bootstrap,
         }
     }
 
@@ -111,6 +142,44 @@ impl ShellTool {
             );
         }
     }
+
+    /// Resolve the working directory for this shell invocation.
+    ///
+    /// Returns the per-worker git-worktree checkout when the tinyagents harness
+    /// threaded a [`WorkspaceDescriptor`] into this call's
+    /// [`ToolExecutionContext`](tinyagents_harness::tool::ToolExecutionContext) — an edit-capable worker running with
+    /// `isolation = "worktree"`, whose isolated worktree root is carried on the
+    /// run context (`RunContext::with_workspace`) and surfaced per tool call via
+    /// `ToolExecutionContext::from_run_context`. Otherwise falls back to the
+    /// shared `self.security.action_dir`, which preserves the non-isolated
+    /// behaviour exactly. See #3376, #4249 (08.5).
+    fn effective_action_dir_for_context(&self, context: Option<&dyn ToolRunContext>) -> PathBuf {
+        if let Some(workspace) = context.and_then(|ctx| ctx.workspace()) {
+            tracing::debug!(
+                workspace_root = %workspace.root.display(),
+                policy_id = %workspace.policy_id,
+                "[shell] using TinyAgents workspace descriptor as action dir"
+            );
+            return workspace.root.clone();
+        }
+        self.security.action_dir.clone()
+    }
+
+    /// The explicit wall-clock budget for this invocation, or `None` to run
+    /// unbounded.
+    ///
+    /// Shell commands run scripts — builds, test suites, solvers — that
+    /// legitimately take minutes, so there is **no** default timeout: a
+    /// deadline applies only when the caller passes `timeout_secs` (issue
+    /// #4023). A `0` explicitly disables it. Any positive value is clamped to
+    /// `1..=3600`. See
+    /// [`crate::openhuman::tools::timeout::explicit_call_timeout_duration`].
+    fn explicit_timeout(&self, requested: Option<u64>) -> Option<Duration> {
+        crate::openhuman::tools::timeout::explicit_call_timeout_duration(
+            requested,
+            crate::openhuman::tools::timeout::MAX_TIMEOUT_SECS,
+        )
+    }
 }
 
 #[async_trait]
@@ -120,7 +189,7 @@ impl Tool for ShellTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command in the workspace directory"
+        "Execute a shell command: run code, manipulate workspace files, or launch applications (`open -a Music`, `xdg-open music://`). Only stdout/stderr comes back, so a script that computes silently or only writes a file returns nothing — print what you need, or read the file afterwards."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -135,6 +204,12 @@ impl Tool for ShellTool {
                     "type": "string",
                     "enum": ["read", "write", "network", "install", "destructive"],
                     "description": "Optional self-declared risk category for this command. Advisory and ESCALATE-ONLY: it can raise the approval requirement (e.g. flag a destructive command) but never lowers what the runtime determines."
+                },
+                "timeout_secs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3600,
+                    "description": "Optional wall-clock timeout (seconds, 1..=3600) for this command before it is killed. Use a larger value for long-running work (builds, test suites, solvers). Omitted or out-of-range falls back to the configured tool timeout."
                 }
             },
             "required": ["command"]
@@ -148,6 +223,18 @@ impl Tool for ShellTool {
     /// the right move when it does.
     fn max_result_size_chars(&self) -> Option<usize> {
         Some(30_000)
+    }
+
+    /// Shell runs scripts that legitimately take a long time, so it runs
+    /// unbounded unless the caller passes an explicit `timeout_secs`. This
+    /// keeps the harness from hard-killing a long command at the global tool
+    /// timeout (issue #4023).
+    fn timeout_policy(&self, args: &serde_json::Value) -> ToolTimeout {
+        match args.get("timeout_secs").and_then(|v| v.as_u64()) {
+            // `0` (or absent) means "no deadline".
+            None | Some(0) => ToolTimeout::Unbounded,
+            Some(secs) => ToolTimeout::Secs(secs),
+        }
     }
 
     fn permission_level(&self) -> PermissionLevel {
@@ -175,13 +262,40 @@ impl Tool for ShellTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        self.execute_in_context(args, None).await
+    }
+
+    async fn execute_with_context(
+        &self,
+        args: serde_json::Value,
+        _options: ToolCallOptions,
+        context: Option<&dyn ToolRunContext>,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_in_context(args, context).await
+    }
+}
+
+impl ShellTool {
+    async fn execute_in_context(
+        &self,
+        args: serde_json::Value,
+        context: Option<&dyn ToolRunContext>,
+    ) -> anyhow::Result<ToolResult> {
         let command = args
             .get("command")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'command' parameter"))?;
 
+        // Optional per-call wall-clock budget. `None`/`0` ⇒ run unbounded;
+        // a positive value is clamped downstream by
+        // `tool_timeout::explicit_call_timeout_*`. Shell has no default deadline
+        // (issue #4023) — long scripts must run to completion.
+        let requested_timeout = args.get("timeout_secs").and_then(|v| v.as_u64());
+
         let start = Instant::now();
-        let (allowed, result) = self.run_with_security(command).await;
+        let (allowed, result) = self
+            .run_with_security_in_context(command, requested_timeout, context)
+            .await;
         let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         // `allowed` = passed the in-tool security checks. `approved` = the command
         // is Prompt-class (required human approval) and thus went through the
@@ -206,12 +320,40 @@ impl ShellTool {
     /// same gated execution path as the `shell` tool — all security
     /// checks (rate limits, path guards, approval gate routing) apply
     /// identically to workflow-triggered commands.
-    pub(crate) async fn run_with_security(&self, command: &str) -> (bool, ToolResult) {
+    pub(crate) async fn run_with_security(
+        &self,
+        command: &str,
+        requested_timeout: Option<u64>,
+    ) -> (bool, ToolResult) {
+        self.run_with_security_in_context(command, requested_timeout, None)
+            .await
+    }
+
+    async fn run_with_security_in_context(
+        &self,
+        command: &str,
+        requested_timeout: Option<u64>,
+        context: Option<&dyn ToolRunContext>,
+    ) -> (bool, ToolResult) {
         // Read-only `Block` + the Option-2 structural guard. Approval for
         // Write / Network / Destructive already happened at the harness
         // `ApprovalGate` (see `external_effect_with_args`) before `execute()`
         // ran; this enforces what must still hold afterwards.
         if let Err(reason) = self.security.check_gated_command(command) {
+            return (false, ToolResult::error(reason));
+        }
+
+        // Cross-profile write guard (1b), shell call site. File tools enforce
+        // the same boundary per-path in `SecurityPolicy::validate_path`; shell
+        // commands never funnel through that, so scan the command's path-shaped
+        // tokens against the profile's own workspace (its cwd). No-op unless the
+        // session runs under a dedicated-workspace profile. See
+        // `profiles::guard::scan_command_for_cross_profile` for the containment
+        // rationale (the cwd is already rooted at the profile's own dir).
+        let cwd = self.effective_action_dir_for_context(context);
+        if let Err(reason) =
+            super::check_cross_profile_command(self.security.as_ref(), command, &cwd, "shell")
+        {
             return (false, ToolResult::error(reason));
         }
 
@@ -229,13 +371,24 @@ impl ShellTool {
             );
         }
 
+        // When the agent's sandbox mode is `Sandboxed`, route execution
+        // through the sandbox backend (Docker or OS-level jail) instead
+        // of the normal runtime. Security checks above still apply.
+        if matches!(
+            crate::openhuman::agent::harness::current_sandbox_mode(),
+            Some(crate::openhuman::agent::harness::definition::SandboxMode::Sandboxed)
+        ) {
+            let action_dir = self.effective_action_dir_for_context(context);
+            return self
+                .run_sandboxed(command, requested_timeout, &action_dir)
+                .await;
+        }
+
         // Execute with timeout to prevent hanging commands.
         // Clear the environment to prevent leaking API keys and other secrets
         // (CWE-200), then re-add only safe, functional variables.
-        let mut cmd = match self
-            .runtime
-            .build_shell_command(command, &self.security.workspace_dir)
-        {
+        let action_dir = self.effective_action_dir_for_context(context);
+        let mut cmd = match self.runtime.build_shell_command(command, &action_dir) {
             Ok(cmd) => cmd,
             Err(e) => {
                 return (
@@ -252,30 +405,59 @@ impl ShellTool {
             }
         }
 
-        // If a managed Node.js install has already been resolved, transparently
-        // prepend its bin dir to PATH so this shell sees the managed toolchain.
-        // `try_cached()` never blocks and never triggers a download — unrelated
-        // commands (e.g. `ls`) stay fast and byte-identical to before.
-        if let Some(bootstrap) = self.node_bootstrap.as_ref() {
-            if let Some(resolved) = bootstrap.try_cached() {
-                let host_path = std::env::var("PATH").unwrap_or_default();
-                let sep = if cfg!(windows) { ";" } else { ":" };
-                let prepended = if host_path.is_empty() {
-                    resolved.bin_dir.to_string_lossy().into_owned()
-                } else {
-                    format!("{}{}{}", resolved.bin_dir.display(), sep, host_path)
-                };
-                tracing::debug!(
-                    bin_dir = %resolved.bin_dir.display(),
-                    version = %resolved.version,
-                    "[shell] prepending managed node bin to PATH"
+        // Attribute commits made by this agent-owned shell, without persisting
+        // anything in the user's repository or global Git configuration.
+        for (key, value) in crate::openhuman::agent::git_attribution::hook_env() {
+            cmd.env(key, value);
+        }
+
+        // Point the child's temp dir at the agent's granted scratch dir
+        // (`/tmp/openhuman`, a ReadWrite trusted root — see SecurityPolicy
+        // `from_config`) so `python3 tempfile` / `mktemp` / `$TMPDIR` writes land
+        // in a sandboxed, readable location instead of the world-shared /tmp.
+        let scratch_dir = crate::openhuman::security::openhuman_scratch_dir();
+        if scratch_dir.is_dir() {
+            tracing::debug!(
+                scratch_dir = %scratch_dir.display(),
+                "[shell] overriding TMPDIR/TMP/TEMP to the openhuman scratch dir"
+            );
+            cmd.env("TMPDIR", scratch_dir.as_os_str());
+            cmd.env("TMP", scratch_dir.as_os_str());
+            cmd.env("TEMP", scratch_dir.as_os_str());
+        } else {
+            tracing::debug!(
+                scratch_dir = %scratch_dir.display(),
+                "[shell] scratch dir missing — leaving TMPDIR/TMP/TEMP as inherited"
+            );
+        }
+
+        match self.runtime_path_for_command(command).await {
+            Ok(Some(path)) => {
+                tracing::debug!(path = %path, "[shell] applying managed runtime PATH");
+                cmd.env("PATH", path);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return (
+                    true,
+                    ToolResult::error(format!("Failed to resolve command runtime: {error}")),
                 );
-                cmd.env("PATH", prepended);
             }
         }
 
-        let result =
-            tokio::time::timeout(Duration::from_secs(SHELL_TIMEOUT_SECS), cmd.output()).await;
+        // No default deadline — only a caller-supplied `timeout_secs` bounds the
+        // run. `None` ⇒ run to completion (issue #4023).
+        let explicit_timeout = self.explicit_timeout(requested_timeout);
+        tracing::debug!(
+            timeout_secs = ?explicit_timeout.map(|d| d.as_secs()),
+            requested_timeout_secs = ?requested_timeout,
+            "[shell] starting command ({} timeout)",
+            if explicit_timeout.is_some() { "explicit" } else { "no" }
+        );
+        let result = match explicit_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, cmd.output()).await,
+            None => Ok(cmd.output().await),
+        };
 
         let tool_result = match result {
             Ok(Ok(output)) => {
@@ -306,405 +488,218 @@ impl ShellTool {
                         ToolResult::success(format!("{stdout}\n[stderr]\n{stderr}"))
                     }
                 } else {
-                    let err_msg = if stderr.is_empty() { stdout } else { stderr };
-                    ToolResult::error(err_msg)
+                    // Surface the exit code AND both streams so the agent can
+                    // diagnose the failure (e.g. 127 missing dependency, 126
+                    // sandbox/permission wall) instead of looping on it (#4095).
+                    super::command_output::command_failure(output.status.code(), &stdout, &stderr)
                 }
             }
             Ok(Err(e)) => ToolResult::error(format!("Failed to execute command: {e}")),
             Err(_) => ToolResult::error(format!(
-                "Command timed out after {SHELL_TIMEOUT_SECS}s and was killed"
+                "Command timed out after {}s and was killed",
+                explicit_timeout.map(|d| d.as_secs()).unwrap_or(0)
             )),
         };
         (true, tool_result)
     }
+
+    /// Execute a command through the sandbox backend. Called when the
+    /// agent's `SandboxMode` is `Sandboxed`.
+    async fn run_sandboxed(
+        &self,
+        command: &str,
+        requested_timeout: Option<u64>,
+        action_dir: &Path,
+    ) -> (bool, ToolResult) {
+        use crate::openhuman::sandbox;
+
+        let config = crate::openhuman::config::RuntimeConfig::default();
+        let policy = sandbox::resolve_sandbox_policy(
+            crate::openhuman::agent::harness::definition::SandboxMode::Sandboxed,
+            action_dir,
+            &config,
+            false,
+        );
+
+        tracing::debug!(
+            backend = ?policy.backend,
+            command = command,
+            "[shell] routing to sandbox backend"
+        );
+
+        let mut extra_env = std::collections::HashMap::new();
+        match self.runtime_path_for_command(command).await {
+            Ok(Some(path)) => {
+                extra_env.insert("PATH".into(), path.into());
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return (
+                    true,
+                    ToolResult::error(format!("Failed to resolve command runtime: {error}")),
+                );
+            }
+        }
+
+        // The local/no-op sandbox inherits this process's temporary hook
+        // directory, so commits made through a sandboxed shell are attributed
+        // just like native-shell commits. Docker backends safely ignore an
+        // unavailable host path rather than changing repository configuration.
+        extra_env.extend(crate::openhuman::agent::git_attribution::hook_env());
+
+        // Sandbox backends require a finite deadline. Without an explicit
+        // `timeout_secs`, substitute the generous effective-unbounded cap so a
+        // long command isn't killed while still bounding a wedged sandbox.
+        let explicit_timeout = self.explicit_timeout(requested_timeout);
+        let effective = explicit_timeout.unwrap_or_else(|| {
+            Duration::from_secs(crate::openhuman::tools::timeout::SANDBOX_UNBOUNDED_CAP_SECS)
+        });
+        tracing::debug!(
+            timeout_secs = effective.as_secs(),
+            requested_timeout_secs = ?requested_timeout,
+            unbounded = explicit_timeout.is_none(),
+            "[shell] starting sandboxed command"
+        );
+
+        match sandbox::execute_in_sandbox(&policy, command, action_dir, extra_env, effective).await
+        {
+            Ok(result) => {
+                let tool_result = if result.timed_out {
+                    ToolResult::error(format!(
+                        "Command timed out after {}s and was killed",
+                        effective.as_secs()
+                    ))
+                } else if result.success() {
+                    if result.stderr.is_empty() {
+                        ToolResult::success(result.stdout)
+                    } else {
+                        ToolResult::success(format!(
+                            "{}\n[stderr]\n{}",
+                            result.stdout, result.stderr
+                        ))
+                    }
+                } else {
+                    // Same exit-code + both-streams surfacing as the native path
+                    // (#4095); the sandbox `-1` sentinel renders as a signal.
+                    super::command_output::command_failure(
+                        super::command_output::sandbox_exit_code(result.exit_code),
+                        &result.stdout,
+                        &result.stderr,
+                    )
+                };
+                (true, tool_result)
+            }
+            Err(e) => (
+                true,
+                ToolResult::error(format!("Sandbox execution failed: {e}")),
+            ),
+        }
+    }
+
+    async fn runtime_path_for_command(&self, command: &str) -> anyhow::Result<Option<String>> {
+        let mut prepend_dirs = Vec::new();
+
+        // Node injection preserves the existing contract: shell only sees the
+        // managed Node bin directory after a previous node/npm tool resolved it.
+        if let Some(bootstrap) = self.node_bootstrap.as_ref() {
+            if let Some(resolved) = bootstrap.try_cached() {
+                tracing::debug!(
+                    bin_dir = %resolved.bin_dir.display(),
+                    version = %resolved.version,
+                    "[shell] prepending managed node bin to PATH"
+                );
+                prepend_dirs.push(resolved.bin_dir);
+            }
+        }
+
+        if shell_command_needs_python_runtime(command) {
+            if let Some(bootstrap) = self.python_bootstrap.as_ref() {
+                let resolved = bootstrap.resolve().await?;
+                tracing::debug!(
+                    bin_dir = %resolved.bin_dir.display(),
+                    python_bin = %resolved.python_bin.display(),
+                    version = %resolved.version,
+                    source = ?resolved.source,
+                    "[shell] prepending python runtime bin to PATH"
+                );
+                prepend_dirs.push(resolved.bin_dir);
+            }
+        }
+
+        if prepend_dirs.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(prepend_path_dirs(
+                prepend_dirs.iter().map(|p| p.as_path()),
+                &std::env::var("PATH").unwrap_or_default(),
+            )))
+        }
+    }
+}
+
+fn prepend_path_dirs<'a>(
+    dirs: impl IntoIterator<Item = &'a std::path::Path>,
+    host_path: &str,
+) -> String {
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let mut parts: Vec<String> = dirs
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    if !host_path.is_empty() {
+        parts.push(host_path.to_string());
+    }
+    parts.join(sep)
+}
+
+fn shell_command_needs_python_runtime(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    lower
+        .split([';', '&', '|', '\n', '\r'])
+        .any(segment_starts_with_python_command)
+}
+
+fn segment_starts_with_python_command(segment: &str) -> bool {
+    let tokens = segment.split_whitespace().peekable();
+    for token in tokens {
+        let token = token.trim_matches(|ch| matches!(ch, '(' | ')' | '<' | '>'));
+        if token.is_empty() {
+            continue;
+        }
+        if token.contains('=') && !token.starts_with('-') {
+            continue;
+        }
+        if matches!(token, "sudo" | "command" | "time" | "env") {
+            continue;
+        }
+        return is_python_executable_token(token);
+    }
+    false
+}
+
+fn is_python_executable_token(token: &str) -> bool {
+    let executable = token.rsplit('/').next().unwrap_or(token);
+    matches!(
+        executable,
+        "python"
+            | "python3"
+            | "py"
+            | "pip"
+            | "pip3"
+            | "python.exe"
+            | "python3.exe"
+            | "pip.exe"
+            | "pip3.exe"
+    ) || versioned_executable(executable, "python3.")
+        || versioned_executable(executable, "pip3.")
+}
+
+fn versioned_executable(executable: &str, prefix: &str) -> bool {
+    executable
+        .strip_prefix(prefix)
+        .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::openhuman::agent::host_runtime::{NativeRuntime, RuntimeAdapter};
-    use crate::openhuman::security::{AutonomyLevel, CommandClass, SecurityPolicy};
-
-    fn test_security(autonomy: AutonomyLevel) -> Arc<SecurityPolicy> {
-        Arc::new(SecurityPolicy {
-            autonomy,
-            workspace_dir: std::env::temp_dir(),
-            ..SecurityPolicy::default()
-        })
-    }
-
-    fn test_runtime() -> Arc<dyn RuntimeAdapter> {
-        Arc::new(NativeRuntime::new())
-    }
-
-    fn test_audit() -> Arc<AuditLogger> {
-        AuditLogger::disabled()
-    }
-
-    fn audit_with_tempdir() -> (Arc<AuditLogger>, tempfile::TempDir) {
-        use crate::openhuman::config::AuditConfig;
-        let tmp = tempfile::tempdir().expect("create tempdir");
-        let logger = AuditLogger::new(
-            AuditConfig {
-                enabled: true,
-                log_path: "audit.log".into(),
-                max_size_mb: 10,
-            },
-            tmp.path().to_path_buf(),
-        )
-        .expect("create audit logger");
-        (Arc::new(logger), tmp)
-    }
-
-    #[cfg(not(windows))]
-    #[tokio::test]
-    async fn shell_emits_audit_line_on_success() {
-        use crate::openhuman::security::AuditEvent;
-        let (audit, tmp) = audit_with_tempdir();
-        let tool = ShellTool::new(
-            test_security(AutonomyLevel::Supervised),
-            test_runtime(),
-            audit,
-        );
-        let _ = tool
-            .execute(json!({"command": "echo hello"}))
-            .await
-            .unwrap();
-        let log = std::fs::read_to_string(tmp.path().join("audit.log"))
-            .expect("audit log file should exist");
-        assert!(!log.is_empty(), "audit log should not be empty");
-        let parsed: AuditEvent = serde_json::from_str(log.trim()).expect("audit event JSON parses");
-        let action = parsed.action.expect("action present");
-        assert_eq!(action.command, Some("echo hello".to_string()));
-        assert!(action.allowed, "allowed command should set allowed=true");
-        let result = parsed.result.expect("result present");
-        assert!(result.success, "echo hello should succeed");
-        let actor = parsed.actor.expect("actor present");
-        assert_eq!(actor.channel, "tool:shell");
-    }
-
-    #[tokio::test]
-    async fn shell_emits_audit_line_on_denial() {
-        use crate::openhuman::security::AuditEvent;
-        let (audit, tmp) = audit_with_tempdir();
-        let tool = ShellTool::new(
-            test_security(AutonomyLevel::ReadOnly),
-            test_runtime(),
-            audit,
-        );
-        // A write command in read-only mode is denied before execution.
-        let _ = tool
-            .execute(json!({"command": "touch denied_file"}))
-            .await
-            .unwrap();
-        let log = std::fs::read_to_string(tmp.path().join("audit.log"))
-            .expect("audit log file should exist");
-        let parsed: AuditEvent = serde_json::from_str(log.trim()).expect("audit event JSON parses");
-        let action = parsed.action.expect("action present");
-        assert!(
-            !action.allowed,
-            "denied command should set allowed=false on the audit event"
-        );
-    }
-
-    #[test]
-    fn shell_tool_name() {
-        let tool = ShellTool::new(
-            test_security(AutonomyLevel::Supervised),
-            test_runtime(),
-            test_audit(),
-        );
-        assert_eq!(tool.name(), "shell");
-    }
-
-    #[test]
-    fn shell_tool_description() {
-        let tool = ShellTool::new(
-            test_security(AutonomyLevel::Supervised),
-            test_runtime(),
-            test_audit(),
-        );
-        assert!(!tool.description().is_empty());
-    }
-
-    #[test]
-    fn shell_tool_schema_has_command() {
-        let tool = ShellTool::new(
-            test_security(AutonomyLevel::Supervised),
-            test_runtime(),
-            test_audit(),
-        );
-        let schema = tool.parameters_schema();
-        assert!(schema["properties"]["command"].is_object());
-        assert!(schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("command")));
-        // The self-asserted `approved` param was removed — approval now happens
-        // at the harness ApprovalGate, not via a model-set flag.
-        assert!(schema["properties"]["approved"].is_null());
-    }
-
-    #[cfg(not(windows))]
-    #[tokio::test]
-    async fn shell_executes_allowed_command() {
-        let tool = ShellTool::new(
-            test_security(AutonomyLevel::Supervised),
-            test_runtime(),
-            test_audit(),
-        );
-        let result = tool
-            .execute(json!({"command": "echo hello"}))
-            .await
-            .unwrap();
-        assert!(!result.is_error, "{}", result.output());
-        assert!(result.output().trim().contains("hello"));
-        assert!(!result.is_error);
-    }
-
-    #[tokio::test]
-    async fn shell_destructive_command_is_gated_not_run_inline() {
-        // `rm -rf /` is Destructive → it must route through the human approval
-        // gate (external_effect), never auto-run. Assert the classification
-        // here rather than executing it.
-        let security = test_security(AutonomyLevel::Supervised);
-        let tool = ShellTool::new(security.clone(), test_runtime(), test_audit());
-        assert_eq!(
-            security.classify_command("rm -rf /"),
-            CommandClass::Destructive
-        );
-        assert!(tool.external_effect_with_args(&json!({"command": "rm -rf /"})));
-    }
-
-    #[tokio::test]
-    async fn shell_readonly_allows_reads_blocks_writes() {
-        let security = test_security(AutonomyLevel::ReadOnly);
-        // Read commands are permitted in read-only mode…
-        assert_eq!(
-            security.gate_decision(security.classify_command("ls")),
-            GateDecision::Allow
-        );
-        // …but a write command is blocked before execution.
-        let tool = ShellTool::new(security, test_runtime(), test_audit());
-        let blocked = tool
-            .execute(json!({"command": "touch ro_test_file"}))
-            .await
-            .unwrap();
-        assert!(blocked.is_error);
-        assert!(blocked.output().contains("read-only"));
-    }
-
-    #[tokio::test]
-    async fn shell_missing_command_param() {
-        let tool = ShellTool::new(
-            test_security(AutonomyLevel::Supervised),
-            test_runtime(),
-            test_audit(),
-        );
-        let result = tool.execute(json!({})).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("command"));
-    }
-
-    #[tokio::test]
-    async fn shell_wrong_type_param() {
-        let tool = ShellTool::new(
-            test_security(AutonomyLevel::Supervised),
-            test_runtime(),
-            test_audit(),
-        );
-        let result = tool.execute(json!({"command": 123})).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn shell_captures_exit_code() {
-        let tool = ShellTool::new(
-            test_security(AutonomyLevel::Supervised),
-            test_runtime(),
-            test_audit(),
-        );
-        let result = tool
-            .execute(json!({"command": "ls /nonexistent_dir_xyz"}))
-            .await
-            .unwrap();
-        assert!(result.is_error);
-    }
-
-    fn test_security_with_env_cmd() -> Arc<SecurityPolicy> {
-        Arc::new(SecurityPolicy {
-            autonomy: AutonomyLevel::Supervised,
-            workspace_dir: std::env::temp_dir(),
-            allowed_commands: vec!["echo".into(), "mkdir".into()],
-            ..SecurityPolicy::default()
-        })
-    }
-
-    /// RAII guard that restores an environment variable to its original state on drop,
-    /// ensuring cleanup even if the test panics.
-    struct EnvGuard {
-        key: &'static str,
-        original: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let original = std::env::var(key).ok();
-            std::env::set_var(key, value);
-            Self { key, original }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.original {
-                Some(val) => std::env::set_var(self.key, val),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
-
-    #[cfg(not(windows))]
-    #[tokio::test(flavor = "current_thread")]
-    async fn shell_does_not_leak_api_key() {
-        let _g1 = EnvGuard::set("API_KEY", "sk-test-secret-12345");
-
-        let tool = ShellTool::new(test_security_with_env_cmd(), test_runtime(), test_audit());
-        let result = tool
-            .execute(json!({"command": "echo $API_KEY"}))
-            .await
-            .unwrap();
-        assert!(!result.is_error, "{}", result.output());
-        assert!(
-            !result.output().contains("sk-test-secret-12345"),
-            "API_KEY leaked to shell command output"
-        );
-    }
-
-    #[cfg(not(windows))]
-    #[tokio::test]
-    async fn shell_preserves_path_and_home() {
-        let tool = ShellTool::new(test_security_with_env_cmd(), test_runtime(), test_audit());
-
-        let result = tool
-            .execute(json!({"command": "echo $HOME"}))
-            .await
-            .unwrap();
-        assert!(!result.is_error, "{}", result.output());
-        assert!(
-            !result.output().trim().is_empty(),
-            "HOME should be available in shell"
-        );
-
-        let result = tool
-            .execute(json!({"command": "echo $PATH"}))
-            .await
-            .unwrap();
-        assert!(!result.is_error, "{}", result.output());
-        assert!(
-            !result.output().trim().is_empty(),
-            "PATH should be available in shell"
-        );
-    }
-
-    #[tokio::test]
-    async fn shell_writes_are_gated_in_supervised_run_in_full() {
-        // A write command routes through the approval gate in ask-before-edit
-        // (no self-asserted `approved` flag any more)…
-        let supervised = test_security(AutonomyLevel::Supervised);
-        let tool = ShellTool::new(supervised.clone(), test_runtime(), test_audit());
-        assert_eq!(supervised.classify_command("touch f"), CommandClass::Write);
-        assert!(tool.external_effect_with_args(&json!({"command": "touch f"})));
-
-        // …and runs without prompting in Full.
-        let full = test_security(AutonomyLevel::Full);
-        let full_tool = ShellTool::new(full, test_runtime(), test_audit());
-        assert!(!full_tool.external_effect_with_args(&json!({"command": "touch f"})));
-    }
-
-    #[tokio::test]
-    async fn shell_llm_category_escalates_but_never_lowers() {
-        // In Full a Write runs silently…
-        let full = test_security(AutonomyLevel::Full);
-        let tool = ShellTool::new(full, test_runtime(), test_audit());
-        assert!(!tool.external_effect_with_args(&json!({"command": "touch f"})));
-        // …but a self-declared `destructive` escalates it to a prompt.
-        assert!(tool
-            .external_effect_with_args(&json!({"command": "touch f", "category": "destructive"})));
-        // The hint can never LOWER: declaring a destructive command "read"
-        // still prompts (in any acting tier).
-        let supervised = test_security(AutonomyLevel::Supervised);
-        let stool = ShellTool::new(supervised, test_runtime(), test_audit());
-        assert!(
-            stool.external_effect_with_args(&json!({"command": "sudo reboot", "category": "read"}))
-        );
-    }
-
-    // ── §5.2 Shell timeout enforcement tests ─────────────────
-
-    #[test]
-    fn shell_timeout_constant_is_reasonable() {
-        assert_eq!(SHELL_TIMEOUT_SECS, 60, "shell timeout must be 60 seconds");
-    }
-
-    #[test]
-    fn shell_output_limit_is_1mb() {
-        assert_eq!(
-            MAX_OUTPUT_BYTES, 1_048_576,
-            "max output must be 1 MB to prevent OOM"
-        );
-    }
-
-    // ── §5.3 Non-UTF8 binary output tests ────────────────────
-
-    #[test]
-    fn shell_safe_env_vars_excludes_secrets() {
-        for var in SAFE_ENV_VARS {
-            let lower = var.to_lowercase();
-            assert!(
-                !lower.contains("key") && !lower.contains("secret") && !lower.contains("token"),
-                "SAFE_ENV_VARS must not include sensitive variable: {var}"
-            );
-        }
-    }
-
-    #[test]
-    fn shell_safe_env_vars_includes_essentials() {
-        assert!(
-            SAFE_ENV_VARS.contains(&"PATH"),
-            "PATH must be in safe env vars"
-        );
-        assert!(
-            SAFE_ENV_VARS.contains(&"HOME"),
-            "HOME must be in safe env vars"
-        );
-        assert!(
-            SAFE_ENV_VARS.contains(&"TERM"),
-            "TERM must be in safe env vars"
-        );
-    }
-
-    #[test]
-    fn shell_safe_env_vars_include_windows_process_essentials() {
-        for var in ["SystemRoot", "COMSPEC", "PATHEXT", "TEMP", "USERPROFILE"] {
-            assert!(
-                SAFE_ENV_VARS.contains(&var),
-                "{var} must be forwarded for Windows child processes"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn shell_blocks_rate_limited() {
-        let security = Arc::new(SecurityPolicy {
-            autonomy: AutonomyLevel::Supervised,
-            max_actions_per_hour: 0,
-            workspace_dir: std::env::temp_dir(),
-            ..SecurityPolicy::default()
-        });
-        let tool = ShellTool::new(security, test_runtime(), test_audit());
-        let result = tool.execute(json!({"command": "echo test"})).await.unwrap();
-        assert!(result.is_error);
-        assert!(result.output().contains("Rate limit"));
-    }
-}
+#[path = "shell_tests.rs"]
+mod tests;

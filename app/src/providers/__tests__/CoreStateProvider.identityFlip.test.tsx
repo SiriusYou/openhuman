@@ -44,12 +44,7 @@ function makeSnapshot(overrides: {
     chatOnboardingCompleted: false,
     analyticsEnabled: false,
     localState: {},
-    runtime: {
-      screenIntelligence: null as never,
-      localAi: null as never,
-      autocomplete: null as never,
-      service: null as never,
-    },
+    runtime: { localAi: null as never, service: null as never },
   };
 }
 
@@ -74,7 +69,6 @@ function resetCoreStateStore() {
       onboardingCompleted: false,
       chatOnboardingCompleted: false,
       analyticsEnabled: false,
-      meetAutoOrchestratorHandoff: false,
       localState: { encryptionKey: null, onboardingTasks: null, keyringConsent: null },
       keyringStatus: {
         available: true,
@@ -82,7 +76,7 @@ function resetCoreStateStore() {
         activeMode: 'os_keyring',
         backendName: 'os',
       },
-      runtime: { screenIntelligence: null, localAi: null, autocomplete: null, service: null },
+      runtime: { localAi: null, service: null },
     },
     teams: [],
     teamMembersById: {},
@@ -117,7 +111,7 @@ describe('CoreStateProvider — identity flip cleanup (#900)', () => {
     userScopedStorage.setActiveUserId(null);
   });
 
-  it('cold bootstrap on a fresh device (seed=null, nextId=A): RESTART required so CEF picks up A profile', async () => {
+  it('cold bootstrap on a fresh device (seed=null, nextId=A): sets activeUserId without restart (#3107)', async () => {
     fetchSnapshot.mockResolvedValue(makeSnapshot({ userId: 'A', sessionToken: 'tokA' }));
     const setActiveSpy = vi.spyOn(userScopedStorage, 'setActiveUserId');
     const disconnectSpy = vi.spyOn(socketService, 'disconnect').mockImplementation(() => {});
@@ -133,7 +127,7 @@ describe('CoreStateProvider — identity flip cleanup (#900)', () => {
     });
 
     expect(setActiveSpy).toHaveBeenCalledWith('A');
-    expect(restartApp).toHaveBeenCalledTimes(1);
+    expect(restartApp).not.toHaveBeenCalled();
 
     setActiveSpy.mockRestore();
     disconnectSpy.mockRestore();

@@ -1,6 +1,6 @@
 import type { AuthStyle } from '../../../utils/tauriCommands/config';
 
-export type BuiltinCloudProvider = {
+type BuiltinCloudProvider = {
   slug: string;
   label: string;
   endpoint: string;
@@ -13,7 +13,12 @@ const TONE = {
   emerald:
     'bg-emerald-50 dark:bg-emerald-500/10 ring-emerald-200 text-emerald-900 dark:text-emerald-100',
   orange: 'bg-orange-50 dark:bg-orange-500/10 ring-orange-200 text-orange-900 dark:text-orange-100',
-  slate: 'bg-slate-100 dark:bg-slate-500/15 ring-slate-300 text-slate-900 dark:text-slate-100',
+  // Categorical brand hue, not a themeable surface: this is a neutral tone that
+  // must stay visually distinct from `zinc` above. Written as literal slate hex
+  // (100/500/300/900) rather than `slate-*` utilities so it does not ride the
+  // banned palette scale that `lint:ui-tokens` guards. Do NOT swap it for a
+  // saturated hue — that collides with `sky` and changes the design intent.
+  slate: 'bg-[#f1f5f9] dark:bg-[#64748b]/15 ring-[#cbd5e1] text-[#0f172a] dark:text-[#f1f5f9]',
   sky: 'bg-sky-50 dark:bg-sky-500/10 ring-sky-200 text-sky-900 dark:text-sky-100',
   fuchsia:
     'bg-fuchsia-50 dark:bg-fuchsia-500/10 ring-fuchsia-200 text-fuchsia-900 dark:text-fuchsia-100',
@@ -64,7 +69,7 @@ export const BUILTIN_CLOUD_PROVIDERS: BuiltinCloudProvider[] = [
     endpoint: 'https://api.gmi-serving.com/v1',
     authStyle: 'bearer',
     tone: TONE.fuchsia,
-    keyPlaceholder: 'gmi-...',
+    keyPlaceholder: 'eyJ....',
   },
   {
     slug: 'fireworks',
@@ -158,8 +163,12 @@ export const BUILTIN_CLOUD_PROVIDERS: BuiltinCloudProvider[] = [
   {
     slug: 'minimax',
     label: 'MiniMax',
-    endpoint: 'https://api.minimax.io/anthropic',
-    authStyle: 'anthropic',
+    // OpenAI-compatible surface (`/v1/chat/completions`, `/v1/models`). The
+    // prior `/anthropic` base + anthropic auth hit MiniMax's Messages API,
+    // which OpenHuman doesn't speak — both chat and model-listing 404'd
+    // (Sentry TAURI-RUST-8X3). Keep in sync with the Rust catalog.
+    endpoint: 'https://api.minimax.io/v1',
+    authStyle: 'bearer',
     tone: TONE.rose,
   },
   {
@@ -212,7 +221,22 @@ export const BUILTIN_CLOUD_PROVIDERS: BuiltinCloudProvider[] = [
     tone: TONE.amber,
     keyPlaceholder: 'sk-...',
   },
+  {
+    slug: 'modelscope',
+    label: 'ModelScope',
+    endpoint: 'https://api-inference.modelscope.cn/v1',
+    authStyle: 'bearer',
+    tone: TONE.indigo,
+    keyPlaceholder: 'ms-...',
+  },
 ];
+
+// NOTE: Claude Code CLI is intentionally NOT a builtin chip. It is a
+// CLI-backed peer provider surfaced via a dedicated "Sign in with Claude
+// Code" connect action in AIPanel (mirroring the Codex connect button), not
+// a key-based HTTP provider in the chip grid. Its slug is reserved in
+// AIPanel's BUILTIN_RESERVED_SLUGS, and its endpoint/auth-style are handled
+// by the `claude-code` cases in `defaultEndpointFor` / `authStyleForSlug`.
 
 export const BUILTIN_CLOUD_PROVIDER_SLUGS = BUILTIN_CLOUD_PROVIDERS.map(provider => provider.slug);
 

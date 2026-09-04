@@ -1,14 +1,15 @@
+import { IS_DEV } from '../utils/config';
 import { getBackendUrl } from './backendUrl';
 
 export const BACKEND_HEALTH_TIMEOUT_MS = 6_000;
 
-export type BackendHealthFailureReason =
+type BackendHealthFailureReason =
   | 'timeout' // AbortError after BACKEND_HEALTH_TIMEOUT_MS
   | 'network' // fetch rejected before any HTTP response (DNS, CORS, offline, TLS)
   | 'http-5xx' // upstream/edge returned a 5xx (e.g. Cloudflare 504 gateway timeout)
   | 'resolve-failure'; // could not resolve the backend URL at all
 
-export type BackendHealthResult =
+type BackendHealthResult =
   | { healthy: true; status: number; latencyMs: number; backendUrl: string }
   | { healthy: false; reason: BackendHealthFailureReason; status?: number; latencyMs: number };
 
@@ -55,6 +56,8 @@ export async function checkBackendHealthy(
       cache: 'no-store',
       credentials: 'omit',
       signal: controller.signal,
+      // Only skip ngrok interstitials in dev (local tunnels). Never send in production.
+      headers: IS_DEV ? { 'ngrok-skip-browser-warning': '1' } : {},
     });
     const latencyMs = Date.now() - start;
 

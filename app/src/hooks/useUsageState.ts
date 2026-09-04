@@ -1,5 +1,7 @@
+import debug from 'debug';
 import { useCallback, useEffect, useState } from 'react';
 
+import { useCoreState } from '../providers/CoreStateProvider';
 import {
   type AISettings,
   ALL_WORKLOADS,
@@ -12,7 +14,7 @@ import { CoreRpcError } from '../services/coreRpcClient';
 import type { CurrentPlanData, PlanTier } from '../types/api';
 import { subscribeUsageRefresh } from './usageRefresh';
 
-export interface UsageState {
+interface UsageState {
   teamUsage: TeamUsage | null;
   currentPlan: CurrentPlanData | null;
   currentTier: PlanTier;
@@ -33,6 +35,8 @@ export interface UsageState {
   isLoading: boolean;
   refresh: () => void;
 }
+
+const logBillingGate = debug('openhuman:billing:gate');
 
 const CACHE_TTL_MS = 60_000;
 
@@ -113,7 +117,14 @@ async function fetchUsageData(): Promise<{
   return data;
 }
 
-export function useUsageState(): UsageState {
+/**
+ * @param activeChatRole the chat-mode tier the caller is gating on — `chat` for
+ * Quick mode (default), `reasoning` for Reasoning mode. The credits bypass is
+ * checked against this tier so the prompt reflects the mode the user selected.
+ */
+export function useUsageState(activeChatRole: 'chat' | 'reasoning' = 'chat'): UsageState {
+  const { snapshot } = useCoreState();
+  const isAuthenticated = snapshot.auth.isAuthenticated;
   const [teamUsage, setTeamUsage] = useState<TeamUsage | null>(null);
   const [currentPlan, setCurrentPlan] = useState<CurrentPlanData | null>(null);
   const [aiSettings, setAiSettings] = useState<AISettings | null>(null);
@@ -128,6 +139,23 @@ export function useUsageState(): UsageState {
   useEffect(() => subscribeUsageRefresh(refresh), [refresh]);
 
   useEffect(() => {
+    // Gate on auth BEFORE dispatching: `team_get_usage` / `billing_get_current_plan`
+    // require a backend session, so polling them while signed out (pre-login, or
+    // after a `SessionExpired` clear) is a guaranteed 401 — the Sentry
+    // TAURI-RUST-8WY (`/teams/me/usage`) / 8WZ (`/payments/stripe/currentPlan`)
+    // flood (#3297). When unauthenticated, skip the fetch and drop any stale view
+    // instead of round-tripping to a doomed call. The core-side
+    // `require_live_session_token` precheck covers the expired-but-still-stored
+    // window (token present so `isAuthenticated` is still true) without a network
+    // call; this gate covers the absent-token windows.
+    if (!isAuthenticated) {
+      _cache = null;
+      setTeamUsage(null);
+      setCurrentPlan(null);
+      setAiSettings(null);
+      setIsLoading(false);
+      return;
+    }
     let cancelled = false;
     setIsLoading(true);
     fetchUsageData()
@@ -151,7 +179,7 @@ export function useUsageState(): UsageState {
     return () => {
       cancelled = true;
     };
-  }, [fetchCount]);
+  }, [fetchCount, isAuthenticated]);
 
   const currentTier: PlanTier = currentPlan?.plan ?? 'FREE';
   const isFreeTier = currentTier === 'FREE';
@@ -172,7 +200,17 @@ export function useUsageState(): UsageState {
   // user. Conservative on missing aiSettings (treat as still using
   // openhuman) so we never silently disable the gate after a transient
   // fetch failure (#2040, #2041).
-  const isFullyRoutedAway = aiSettings ? workloadsRoutedAway(aiSettings, CHAT_WORKLOADS) : false;
+  //
+  // #3767: prefer the authoritative, core-side `creditsBypass` decision for the
+  // selected chat-mode tier (Quick → `chat`, Reasoning → `reasoning`) — true when
+  // that tier runs on a usable non-managed provider the user funds themselves —
+  // and OR it with the existing routing-string heuristic. This closes the gap
+  // where the selected mode runs on a BYO provider but the raw routing strings
+  // still read as managed, so the buy-credits prompt stayed up.
+  const creditsBypassForMode = aiSettings?.creditsBypass?.[activeChatRole] === true;
+  const isFullyRoutedAway = aiSettings
+    ? creditsBypassForMode || workloadsRoutedAway(aiSettings, CHAT_WORKLOADS)
+    : false;
 
   const rawBudgetExhausted = teamUsage
     ? teamUsage.cycleBudgetUsd > 0.01 && teamUsage.remainingUsd <= 0.01
@@ -189,7 +227,29 @@ export function useUsageState(): UsageState {
 
   const isAtLimit = isBudgetExhausted;
 
-  const isNearLimit = !isAtLimit && teamUsage !== null && usagePct >= 0.8;
+  // Mirror the isAtLimit guard: when every chat workload is routed away from
+  // OpenHuman the included-budget cycle does not gate the user, so the
+  // near-limit warning is equally irrelevant (#3097 — top-up banner shown
+  // despite custom provider).
+  const isNearLimit = !isAtLimit && !isFullyRoutedAway && teamUsage !== null && usagePct >= 0.8;
+
+  // #3767: verbose gate-decision diagnostics — which branch (gated vs bypassed)
+  // and why. Keyed on the inputs so it only fires when the decision changes.
+  useEffect(() => {
+    if (!teamUsage && !aiSettings) return;
+    logBillingGate(
+      `[billing][gate] mode=${activeChatRole} budgetExhausted=${rawBudgetExhausted} ` +
+        `creditsBypass=${creditsBypassForMode} ` +
+        `fullyRoutedAway=${isFullyRoutedAway} -> ${isAtLimit ? 'GATED' : 'bypassed'}`
+    );
+  }, [
+    activeChatRole,
+    creditsBypassForMode,
+    rawBudgetExhausted,
+    isFullyRoutedAway,
+    isAtLimit,
+    teamUsage,
+  ]);
 
   return {
     teamUsage,

@@ -154,6 +154,17 @@ describe('coreWorkbenchClient', () => {
     });
   });
 
+  it('accepts action results that omit list-only context', async () => {
+    const { context: _context, ...actionResult } = alert({ status: 'acknowledged' });
+    mockCallCoreRpc.mockResolvedValueOnce({ result: actionResult });
+    const client = createCoreWorkbenchClient();
+
+    const updated = await client.ackAlert('alert-1', { idempotencyKey: 'idem-ack-2' });
+
+    expect(updated.status).toBe('acknowledged');
+    expect(updated.context).toBeUndefined();
+  });
+
   it('resolves alerts through the core RPC bridge', async () => {
     mockCallCoreRpc.mockResolvedValueOnce(alert({ status: 'resolved' }));
     const client = createCoreWorkbenchClient();

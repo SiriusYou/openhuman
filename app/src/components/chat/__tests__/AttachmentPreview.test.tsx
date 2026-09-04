@@ -8,9 +8,13 @@ function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
   const blob = new Blob([new Uint8Array(512)], { type: 'image/png' });
   return {
     id: 'att-1',
+    kind: 'image',
     file: new File([blob], 'test.png', { type: 'image/png' }),
     dataUri: 'data:image/png;base64,abc',
     mimeType: 'image/png',
+    originalSizeBytes: 512,
+    payloadSizeBytes: 512,
+    compressed: false,
     ...overrides,
   };
 }
@@ -33,6 +37,41 @@ describe('AttachmentPreview', () => {
     render(<AttachmentPreview attachments={[att]} onRemove={vi.fn()} />);
     const img = screen.getByAltText('test.png') as HTMLImageElement;
     expect(img.src).toBe('data:image/png;base64,xyz');
+  });
+
+  it('renders a document icon for non-image files', () => {
+    const file = new File([new Uint8Array(128)], 'doc.pdf', { type: 'application/pdf' });
+    const att = makeAttachment({
+      kind: 'file',
+      file,
+      dataUri: 'data:application/pdf;base64,abc',
+      mimeType: 'application/pdf',
+      originalSizeBytes: 128,
+      payloadSizeBytes: 128,
+    });
+    render(<AttachmentPreview attachments={[att]} onRemove={vi.fn()} />);
+    expect(screen.getByText('doc.pdf')).toBeInTheDocument();
+    expect(screen.queryByAltText('doc.pdf')).not.toBeInTheDocument();
+  });
+
+  it('renders a video poster thumbnail with a play overlay', () => {
+    const file = new File([new Uint8Array(64)], 'clip.mp4', { type: 'video/mp4' });
+    const att = makeAttachment({
+      kind: 'video',
+      file,
+      dataUri: 'data:image/jpeg;base64,poster',
+      previewUri: 'data:image/jpeg;base64,poster',
+      mimeType: 'video/mp4',
+      frames: ['data:image/jpeg;base64,poster'],
+    });
+    const { container } = render(<AttachmentPreview attachments={[att]} onRemove={vi.fn()} />);
+    const img = screen.getByAltText('clip.mp4') as HTMLImageElement;
+    expect(img.src).toBe('data:image/jpeg;base64,poster');
+    expect(screen.getByText('clip.mp4')).toBeInTheDocument();
+    // Explicitly assert the play overlay (the ▶ triangle drawn over the poster)
+    // is rendered — without this the test would still pass if the overlay
+    // disappeared, which is exactly the regression the title promises to catch.
+    expect(container.querySelector('path[d="M8 5v14l11-7z"]')).not.toBeNull();
   });
 
   it('calls onRemove with the attachment id when × is clicked', () => {

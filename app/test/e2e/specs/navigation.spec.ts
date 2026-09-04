@@ -28,14 +28,27 @@ interface Route {
   minChars?: number;
 }
 
+// Phase 2/3/6 IA revamp:
+//   /home        → /chat        (Phase 6 — /home is now the merged chat surface)
+//   /human       → renders the Human surface (first-class tab)
+//   /skills      → /connections (Phase 2 — back-compat redirect)
+//   /intelligence → /settings/notifications (Phase 3 — back-compat redirect)
+//   /activity     → /settings/notifications (back-compat redirect)
+// Note: /home and /activity are intentionally omitted here because AppRoutes.tsx
+// now redirects them (/home → /chat, /activity → /settings/notifications).
+// navigateViaHash settles on the redirect target, so keeping them in ROUTES
+// would fail the `^#<hash>` assertion (actual hash is the redirect destination).
 const ROUTES: Route[] = [
-  { hash: '/home' },
-  { hash: '/human' },
   { hash: '/chat' },
-  { hash: '/skills' },
-  { hash: '/intelligence' },
+  { hash: '/connections' },
   { hash: '/rewards' },
   { hash: '/settings' },
+  { hash: '/flows' },
+  // Orchestration folded under Brain; `/orchestration` now redirects to
+  // `/brain?tab=orchestration`, so we assert the Brain destination instead
+  // (the bare `/orchestration` hash would settle on the redirect target and
+  // fail the `^#/orchestration` match, same reasoning as /home above).
+  { hash: '/brain' },
 ];
 
 async function rootTextLength(): Promise<number> {

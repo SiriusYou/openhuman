@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test';
 
+import { agentMessageText } from '../helpers/chat-locators';
 import {
   bootAuthenticatedPage,
   dismissWalkthroughIfPresent,
@@ -10,6 +11,8 @@ const MOCK_ADMIN_BASE = `http://127.0.0.1:${process.env.E2E_MOCK_PORT || '18473'
 const USER_ID = 'pw-chat-tool-call';
 const PROMPT = 'Fetch the contents of https://example.com for me.';
 const CANARY_FINAL = 'canary-tool-call-fetched-a1b2c3';
+const CANARY_SECOND_PARAGRAPH = 'The entire answer must stay in this same assistant bubble.';
+const FINAL_RESPONSE = `Here is the fetched content: ${CANARY_FINAL}\n\n${CANARY_SECOND_PARAGRAPH}`;
 const FORCED_RESPONSES = [
   {
     content: '',
@@ -21,12 +24,13 @@ const FORCED_RESPONSES = [
       },
     ],
   },
-  { content: `Here is the fetched content: ${CANARY_FINAL}` },
+  { content: FINAL_RESPONSE },
 ];
 
 interface MockRequest {
   method: string;
   url: string;
+  body?: string;
 }
 
 async function resetMock(): Promise<void> {
@@ -51,12 +55,22 @@ async function requests(): Promise<MockRequest[]> {
   return Array.isArray(payload.data) ? payload.data : [];
 }
 
+function findToolInLlmLog(log: MockRequest[], toolName: string): boolean {
+  return log.some(
+    request =>
+      request.method === 'POST' &&
+      request.url.includes('/chat/completions') &&
+      typeof request.body === 'string' &&
+      request.body.includes(`"${toolName}"`)
+  );
+}
+
 async function openChat(page: Page): Promise<void> {
   await bootAuthenticatedPage(page, USER_ID, '/chat');
   await page.goto('/#/chat');
   await waitForAppReady(page);
   await dismissWalkthroughIfPresent(page);
-  await expect(page.getByTestId('send-message-button')).toBeVisible();
+  await expect(page.getByTestId('chat-message-input')).toBeVisible();
 }
 
 async function selectedThreadId(page: Page): Promise<string | null> {
@@ -124,7 +138,7 @@ async function waitForSocketConnected(page: Page): Promise<void> {
 async function sendMessage(page: Page, prompt: string): Promise<void> {
   await waitForSocketConnected(page);
   await dismissWalkthroughIfPresent(page);
-  await page.getByPlaceholder('Type a message...').fill(prompt);
+  await page.getByTestId('chat-message-input').fill(prompt);
   await dismissWalkthroughIfPresent(page);
   await expect(page.getByTestId('send-message-button')).toBeEnabled();
   await page.getByTestId('send-message-button').click();
@@ -158,16 +172,40 @@ test.describe('Chat Tool Call Flow', () => {
     const threadId = await createNewThread(page);
     await sendMessage(page, PROMPT);
 
-    await expect(page.getByText(CANARY_FINAL)).toBeVisible({ timeout: 40_000 });
+    await expect(agentMessageText(page, CANARY_FINAL)).toBeVisible({ timeout: 40_000 });
+    const finalBubble = page.getByTestId('agent-message').filter({ hasText: CANARY_FINAL });
+    await expect(finalBubble).toHaveCount(1);
+    await expect(finalBubble).toContainText(CANARY_SECOND_PARAGRAPH);
+    await expect(page.getByText(CANARY_SECOND_PARAGRAPH, { exact: true })).toHaveCount(1);
 
-    const names = await expect
-      .poll(async () => toolTimelineNames(page, threadId), { timeout: 20_000 })
-      .not.toEqual([]);
+    // Regression: completed tool/reasoning arrays remain in Redux briefly, but
+    // they must not create a synthetic running tail after the final answer.
+    await expect(page.getByLabel('Assistant is working')).toHaveCount(0);
+    await expect(page.getByText('running', { exact: true })).toHaveCount(0);
 
-    void names;
-    expect((await toolTimelineNames(page, threadId)).some(name => name.includes('web_fetch'))).toBe(
-      true
-    );
+    // Tool activity belongs to assistant-ui and renders as a readable card,
+    // never through the removed legacy Agentic task insights timeline.
+    await expect(page.getByTestId('agent-task-insights')).toHaveCount(0);
+    await expect(page.getByTestId('assistant-ui-tool-call')).toHaveCount(1);
+    const toolCard = page.getByTestId('assistant-ui-tool-call');
+    await expect(toolCard).toBeVisible();
+    await expect(toolCard).toContainText('Fetched from the web');
+    await expect(toolCard).not.toContainText('running');
+    const toolTrigger = toolCard.getByRole('button').first();
+    if ((await toolTrigger.getAttribute('aria-expanded')) !== 'true') await toolTrigger.click();
+    await expect(toolCard.getByText('Output', { exact: true })).toBeVisible();
+    await expect(toolCard.getByRole('link', { name: 'https://example.com/' })).toBeVisible();
+
+    await expect
+      .poll(
+        async () => {
+          const names = await toolTimelineNames(page, threadId);
+          if (names.some(name => name.includes('web_fetch'))) return true;
+          return findToolInLlmLog(await requests(), 'web_fetch');
+        },
+        { timeout: 20_000 }
+      )
+      .toBe(true);
 
     await expect
       .poll(async () => {

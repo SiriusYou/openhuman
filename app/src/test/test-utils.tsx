@@ -5,19 +5,28 @@
 import { combineReducers, configureStore } from '@reduxjs/toolkit';
 import { render, type RenderOptions } from '@testing-library/react';
 import type { PropsWithChildren, ReactElement } from 'react';
+import { createPortal } from 'react-dom';
 import { Provider } from 'react-redux';
 import { MemoryRouter } from 'react-router-dom';
 
+import { SidebarSlotOutlet, SidebarSlotProvider } from '../components/layout/shell/SidebarSlot';
 import { getCoreStateSnapshot } from '../lib/coreState/store';
 import { CoreStateContext } from '../providers/coreStateContext';
+import accountsReducer from '../store/accountsSlice';
 import channelConnectionsReducer from '../store/channelConnectionsSlice';
-import companionReducer from '../store/companionSlice';
+import chatRuntimeReducer from '../store/chatRuntimeSlice';
 import connectivityReducer from '../store/connectivitySlice';
 import coreModeReducer from '../store/coreModeSlice';
+import githubStarReducer from '../store/githubStarSlice';
+import layoutReducer from '../store/layoutSlice';
 import localeReducer from '../store/localeSlice';
 import mascotReducer from '../store/mascotSlice';
+import notificationReducer from '../store/notificationSlice';
 import personaReducer from '../store/personaSlice';
+import { pttReducer } from '../store/pttSlice';
 import socketReducer from '../store/socketSlice';
+import themeReducer from '../store/themeSlice';
+import threadReducer from '../store/threadSlice';
 
 /**
  * Creates a fresh Redux store for testing.
@@ -30,14 +39,21 @@ import socketReducer from '../store/socketSlice';
  * against it.
  */
 const testRootReducer = combineReducers({
+  accounts: accountsReducer,
   channelConnections: channelConnectionsReducer,
-  companion: companionReducer,
+  chatRuntime: chatRuntimeReducer,
   connectivity: connectivityReducer,
   coreMode: coreModeReducer,
+  githubStar: githubStarReducer,
+  layout: layoutReducer,
   locale: localeReducer,
   mascot: mascotReducer,
+  notifications: notificationReducer,
   persona: personaReducer,
+  ptt: pttReducer,
   socket: socketReducer,
+  theme: themeReducer,
+  thread: threadReducer,
 });
 
 export function createTestStore(preloadedState?: Record<string, unknown>) {
@@ -84,7 +100,17 @@ export function renderWithProviders(
     return (
       <Provider store={store}>
         <CoreStateContext.Provider value={coreStateStub}>
-          <MemoryRouter initialEntries={initialEntries}>{children}</MemoryRouter>
+          <MemoryRouter initialEntries={initialEntries}>
+            {/* Provide the root sidebar slot so pages that project their nav via
+                SidebarContent (Settings/Brain/Connections/Chat) render it. The
+                outlet is portaled to document.body so it doesn't become the
+                render container's firstChild (which would break tests asserting
+                a null/empty render); `screen` queries still find projected content. */}
+            <SidebarSlotProvider>
+              {createPortal(<SidebarSlotOutlet />, document.body)}
+              {children}
+            </SidebarSlotProvider>
+          </MemoryRouter>
         </CoreStateContext.Provider>
       </Provider>
     );

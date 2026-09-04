@@ -13,35 +13,8 @@ APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$APP_DIR/.." && pwd)"
 cd "$APP_DIR"
 
-# Source Cargo environment from the current HOME only. Certifying runners
-# pass an isolated HOME so this cannot load ambient ~/.cargo/env.
+# Source Cargo environment
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-
-# Bind the vendored CEF-aware cargo-tauri before any later PATH mutation.
-# Install-root must precede any Cargo home. Preserve an already-supplied CEF_PATH.
-INSTALL_ROOT="${OPENHUMAN_CARGO_INSTALL_ROOT:-$REPO_ROOT/.cache/cargo-install}"
-CARGO_TAURI_BIN="$INSTALL_ROOT/bin/cargo-tauri"
-export PATH="$INSTALL_ROOT/bin:$HOME/.cargo/bin:$PATH"
-export CEF_PATH="${CEF_PATH:-$HOME/Library/Caches/tauri-cef}"
-
-if [ "${E2E_BUILD_AUTHORITY_PROBE:-}" = "1" ]; then
-  echo "e2e-build-home=$HOME"
-  echo "e2e-build-cef-path=$CEF_PATH"
-  echo "e2e-build-install-root=$INSTALL_ROOT"
-  echo "e2e-build-cargo-tauri=$CARGO_TAURI_BIN"
-  echo "e2e-build-path=$PATH"
-  echo "e2e-build-command-v-cargo-tauri=$(command -v cargo-tauri || true)"
-  echo "e2e-build-dispatch-start"
-  pnpm tauri:ensure
-  if [ ! -x "$CARGO_TAURI_BIN" ]; then
-    echo "ERROR: vendored cargo-tauri missing at $CARGO_TAURI_BIN" >&2
-    exit 1
-  fi
-  echo "e2e-build-dispatch=$CARGO_TAURI_BIN"
-  "$CARGO_TAURI_BIN" authority-probe
-  echo "e2e-build-dispatch-ok"
-  exit 0
-fi
 
 export VITE_BACKEND_URL="http://127.0.0.1:${E2E_MOCK_PORT:-18473}"
 export VITE_OPENHUMAN_E2E_DEFAULT_CORE_MODE="local"
@@ -91,33 +64,25 @@ TAURI_CONFIG_OVERRIDE='{"bundle":{"createUpdaterArtifacts":false},"build":{"befo
 # Tauri CLI maps env CI to --ci and only accepts true|false; some runners set CI=1.
 case "${CI:-}" in 1) export CI=true ;; 0) export CI=false ;; esac
 
-# CEF runtime requires the vendored CEF-aware tauri-cli (the stock one produces
-# a bundle that panics at startup in cef::library_loader::LibraryLoader::new).
-# All other build scripts in app/package.json do `pnpm tauri:ensure` + use
-# `cargo tauri build`; invoke the install-root binary by absolute path.
-pnpm tauri:ensure
-if [ ! -x "$CARGO_TAURI_BIN" ]; then
-  echo "ERROR: vendored cargo-tauri missing at $CARGO_TAURI_BIN" >&2
-  exit 1
-fi
+# Use the standard Tauri CLI and native WebView runtime.
 
 OS="$(uname)"
 case "$OS" in
   Linux)
     # Linux: build debug binary only.
     echo "Building for Linux (debug binary, no bundle)..."
-    "$CARGO_TAURI_BIN" build -c "$TAURI_CONFIG_OVERRIDE" --debug --no-bundle --features e2e-test-support -- --bin OpenHuman
+    pnpm tauri build -c "$TAURI_CONFIG_OVERRIDE" --debug --no-bundle --features e2e-test-support -- --bin OpenHuman
     ;;
   Darwin)
     # macOS: build .app bundle (wdio.conf points at
     # src-tauri/target/debug/bundle/macos/OpenHuman.app).
     echo "Building for macOS (.app bundle)..."
-    "$CARGO_TAURI_BIN" build -c "$TAURI_CONFIG_OVERRIDE" --bundles app --debug --features e2e-test-support -- --bin OpenHuman
+    pnpm tauri build -c "$TAURI_CONFIG_OVERRIDE" --bundles app --debug --features e2e-test-support -- --bin OpenHuman
     ;;
   MINGW*|MSYS*|CYGWIN*|Windows_NT)
     # Windows: bare .exe at src-tauri/target/debug/OpenHuman.exe.
     echo "Building for Windows (.exe, no bundle)..."
-    "$CARGO_TAURI_BIN" build -c "$TAURI_CONFIG_OVERRIDE" --debug --no-bundle --features e2e-test-support -- --bin OpenHuman
+    pnpm tauri build -c "$TAURI_CONFIG_OVERRIDE" --debug --no-bundle --features e2e-test-support -- --bin OpenHuman
     ;;
   *)
     echo "ERROR: unsupported OS for e2e build: $OS" >&2

@@ -53,6 +53,12 @@ vi.mock('../coreRpcClient', () => ({
   getCoreRpcToken: vi.fn(async () => 'mock-core-bearer'),
 }));
 
+// Capture the metadata-only ingest the `user_error` handler routes through.
+const ingestRuntimeErrorSignalMock = vi.fn();
+vi.mock('../../lib/userErrors/report', () => ({
+  ingestRuntimeErrorSignal: (...args: unknown[]) => ingestRuntimeErrorSignalMock(...args),
+}));
+
 /** Build a mock socket that captures event handlers in `handlers`. */
 function buildMockSocket(): { handlers: EventHandlerMap; mockSocket: object } {
   const handlers: EventHandlerMap = {};

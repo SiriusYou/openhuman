@@ -1,7 +1,8 @@
-import * as Dialog from '@radix-ui/react-dialog';
 import { Command } from 'cmdk';
+import { Dialog } from 'radix-ui';
 import { useMemo, useSyncExternalStore } from 'react';
 
+import { GROUP_LABEL_KEYS } from '../../lib/commands/globalActions';
 import { hotkeyManager } from '../../lib/commands/hotkeyManager';
 import { registry } from '../../lib/commands/registry';
 import type { RegisteredAction } from '../../lib/commands/types';
@@ -71,7 +72,7 @@ export default function CommandPalette({ open, onOpenChange }: Props) {
             <Command.Input
               autoFocus
               placeholder={t('commandPalette.placeholder')}
-              className="w-full px-4 py-3 bg-transparent outline-none border-b border-cmd-border text-cmd-foreground placeholder:text-cmd-foreground-muted"
+              className="w-full px-4 py-3 bg-transparent outline-hidden border-b border-cmd-border text-cmd-foreground placeholder:text-cmd-foreground-muted"
               aria-label={t('commandPalette.searchAria')}
             />
             <Command.List className="max-h-[50vh] overflow-auto py-2">
@@ -81,34 +82,40 @@ export default function CommandPalette({ open, onOpenChange }: Props) {
               {groups.map(([groupName, items]) => (
                 <Command.Group
                   key={groupName}
-                  heading={groupName}
-                  className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:text-cmd-foreground-muted">
-                  {items.map(action => (
-                    <Command.Item
-                      key={action.id}
-                      value={action.id}
-                      keywords={[action.label, ...(action.keywords ?? [])]}
-                      onSelect={() => runAction(action)}
-                      className="flex items-center gap-3 px-4 py-2 cursor-pointer aria-selected:bg-cmd-surface-elevated">
-                      {action.icon ? (
-                        <action.icon className="w-4 h-4 text-cmd-foreground-muted" />
-                      ) : (
-                        <span className="w-4" />
-                      )}
-                      <span className="flex-1 truncate">{action.label}</span>
-                      {action.hint && (
-                        <span className="text-xs text-cmd-foreground-muted truncate">
-                          {action.hint}
-                        </span>
-                      )}
-                      {action.shortcut && <Kbd shortcut={action.shortcut} />}
-                    </Command.Item>
-                  ))}
+                  heading={GROUP_LABEL_KEYS[groupName] ? t(GROUP_LABEL_KEYS[groupName]) : groupName}
+                  className="**:[[cmdk-group-heading]]:px-4 **:[[cmdk-group-heading]]:py-1 **:[[cmdk-group-heading]]:text-xs **:[[cmdk-group-heading]]:uppercase **:[[cmdk-group-heading]]:text-cmd-foreground-muted">
+                  {items.map(action => {
+                    const label = action.labelKey ? t(action.labelKey) : action.label;
+                    return (
+                      <Command.Item
+                        key={action.id}
+                        value={action.id}
+                        keywords={[label, action.label, ...(action.keywords ?? [])]}
+                        onSelect={() => runAction(action)}
+                        className="flex items-center gap-3 px-4 py-2 cursor-pointer aria-selected:bg-cmd-surface-elevated">
+                        {action.icon ? (
+                          <action.icon className="w-4 h-4 text-cmd-foreground-muted" />
+                        ) : (
+                          <span className="w-4" />
+                        )}
+                        <span className="flex-1 truncate">{label}</span>
+                        {action.hint && (
+                          <span className="text-xs text-cmd-foreground-muted truncate">
+                            {action.hint}
+                          </span>
+                        )}
+                        {action.shortcut && <Kbd shortcut={action.shortcut} />}
+                      </Command.Item>
+                    );
+                  })}
                 </Command.Group>
               ))}
             </Command.List>
-            <div className="px-4 py-2 border-t border-cmd-border text-xs text-cmd-foreground-muted">
-              {t('commandPalette.shortcutHint')}
+            <div className="flex items-center gap-1.5 px-4 py-2 border-t border-cmd-border text-xs text-cmd-foreground-muted">
+              {/* Advertise ⌘/ (allowed while this search box is focused) rather
+                  than ?, which the hotkey manager skips inside inputs. */}
+              <Kbd shortcut="mod+/" />
+              <span>{t('shortcuts.title')}</span>
             </div>
           </Command>
         </Dialog.Content>

@@ -13,6 +13,13 @@ export type TaskSourceProvider = 'github' | 'notion' | 'linear' | 'clickup';
 
 export type TaskSourceTarget = 'agent_todo_proactive' | 'todo_only';
 
+/** A selectable container a task source can target (e.g. a Notion database).
+ *  Mirrors the Rust `TaskContainer` (`{ id, title }`). */
+export interface TaskContainer {
+  id: string;
+  title: string;
+}
+
 /** Per-provider filter, discriminated by `provider`. Mirrors the Rust
  *  `FilterSpec` (serde snake_case, tagged by `provider`). */
 export type TaskSourceFilter =
@@ -85,6 +92,7 @@ export interface FetchOutcome {
   fetched: number;
   routed: number;
   skippedDupe: number;
+  pruned: number;
   error?: string;
 }
 
@@ -155,9 +163,9 @@ export async function openhumanTaskSourcesUpdate(
 
 export async function openhumanTaskSourcesRemove(
   id: string
-): Promise<{ id: string; removed: boolean }> {
+): Promise<{ id: string; removed: boolean; pruned?: number }> {
   ensureTauri();
-  return await callCoreRpc<{ id: string; removed: boolean }>({
+  return await callCoreRpc<{ id: string; removed: boolean; pruned?: number }>({
     method: 'openhuman.task_sources_remove',
     params: { id },
   });
@@ -169,6 +177,11 @@ export async function openhumanTaskSourcesFetch(id: string): Promise<FetchOutcom
     method: 'openhuman.task_sources_fetch',
     params: { id },
   });
+}
+
+export async function openhumanTaskSourcesSync(): Promise<FetchOutcome[]> {
+  ensureTauri();
+  return await callCoreRpc<FetchOutcome[]>({ method: 'openhuman.task_sources_sync' });
 }
 
 export async function openhumanTaskSourcesListTasks(
@@ -192,6 +205,20 @@ export async function openhumanTaskSourcesPreviewFilter(
   return await callCoreRpc<NormalizedTask[]>({
     method: 'openhuman.task_sources_preview_filter',
     params: { provider, filter, connection_id: connectionId, max },
+  });
+}
+
+/** List the selectable containers (e.g. Notion databases) a provider exposes
+ *  for the given connection, so the create form can offer a picker instead of
+ *  a raw-id text field. */
+export async function openhumanTaskSourcesListDatabases(
+  provider: TaskSourceProvider,
+  connectionId?: string
+): Promise<TaskContainer[]> {
+  ensureTauri();
+  return await callCoreRpc<TaskContainer[]>({
+    method: 'openhuman.task_sources_list_databases',
+    params: { provider, connection_id: connectionId },
   });
 }
 
